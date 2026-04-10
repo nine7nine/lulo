@@ -187,7 +187,9 @@ int sched_prepare_new_entry(const LuloSchedSnapshot *snap, const LuloSchedState 
                      "enabled=true\n"
                      "nice=0\n"
                      "# policy=other\n"
-                     "# rt_priority=1\n",
+                     "# rt_priority=1\n"
+                     "# io_class=best-effort\n"
+                     "# io_priority=4\n",
                      stem) < 0) {
             if (err && errlen > 0) snprintf(err, errlen, "out of memory");
             return -1;
@@ -283,7 +285,7 @@ static void build_sched_widget_layout(const Ui *ui, const LuloSchedState *state,
     content_h = (int)rows - 4;
     if (inner_w < 20 || content_h < 4) return;
 
-    info_h = 5;
+    info_h = 7;
     layout->show_info = content_h >= info_h + 4;
     if (!sched_preview_open(state)) {
         layout->list.row = 2;
@@ -402,6 +404,22 @@ static Rgb sched_nice_color(const Theme *theme, int nice_value)
     if (nice_value < 0) return theme->cyan;
     if (nice_value > 0) return theme->yellow;
     return theme->white;
+}
+
+static Rgb sched_io_color(const Theme *theme, int io_class, int io_priority)
+{
+    (void)io_priority;
+    switch (io_class) {
+    case 1:
+        return theme->orange;
+    case 2:
+        return io_priority <= 1 ? theme->green : theme->cyan;
+    case 3:
+        return theme->dim;
+    case 0:
+    default:
+        return theme->dim;
+    }
 }
 
 static unsigned fnv1a_u32_local(const char *s)
@@ -574,6 +592,7 @@ static void render_sched_profiles_list(struct ncplane *p, const Theme *theme, co
     int nice_w = 5;
     int pol_w = 5;
     int rt_w = 4;
+    int io_w = 4;
     int name_w;
 
     if (!rect_valid(rect)) return;
@@ -591,7 +610,7 @@ static void render_sched_profiles_list(struct ncplane *p, const Theme *theme, co
         return;
     }
 
-    name_w = rect_inner_cols(rect) - flag_w - nice_w - pol_w - rt_w - 4;
+    name_w = rect_inner_cols(rect) - flag_w - nice_w - pol_w - rt_w - io_w - 5;
     if (name_w < 12) name_w = 12;
     plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "on", flag_w);
     plane_putn(p, rect->row + 1, rect->col + 1 + flag_w + 1, theme->dim, theme->bg, "profile", name_w);
@@ -599,6 +618,9 @@ static void render_sched_profiles_list(struct ncplane *p, const Theme *theme, co
     plane_putn(p, rect->row + 1, rect->col + 1 + flag_w + 1 + name_w + 1 + nice_w + 1, theme->dim, theme->bg, "pol", pol_w);
     plane_putn(p, rect->row + 1, rect->col + 1 + flag_w + 1 + name_w + 1 + nice_w + 1 + pol_w + 1,
                theme->dim, theme->bg, "rt", rt_w);
+    plane_putn(p, rect->row + 1,
+               rect->col + 1 + flag_w + 1 + name_w + 1 + nice_w + 1 + pol_w + 1 + rt_w + 1,
+               theme->dim, theme->bg, "io", io_w);
 
     for (int i = 0; i < visible_rows; i++) {
         int idx = start + i;
@@ -609,6 +631,7 @@ static void render_sched_profiles_list(struct ncplane *p, const Theme *theme, co
         const LuloSchedProfileRow *row;
         char buf[96];
         char policy[16];
+        char io_buf[16];
 
         plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
         if (idx >= snap->profile_count) continue;
@@ -637,6 +660,20 @@ static void render_sched_profiles_list(struct ncplane *p, const Theme *theme, co
         plane_putn(p, y, x, selected ? theme->select_fg :
                    (row->has_rt_priority ? theme->orange : theme->dim),
                    row_bg, buf, rt_w);
+        x += rt_w + 1;
+        if (row->has_io_class || row->has_io_priority) {
+            int io_class = row->has_io_class ? row->io_class : 2;
+            int io_priority = row->has_io_priority ? row->io_priority :
+                              ((io_class == 1 || io_class == 2) ? 4 : 0);
+
+            lulo_sched_format_io(io_buf, sizeof(io_buf), io_class, io_priority);
+            snprintf(buf, sizeof(buf), "%-*s", io_w, io_buf);
+            plane_putn(p, y, x, selected ? theme->select_fg : sched_io_color(theme, io_class, io_priority),
+                       row_bg, buf, io_w);
+        } else {
+            snprintf(buf, sizeof(buf), "%-*s", io_w, "-");
+            plane_putn(p, y, x, selected ? theme->select_fg : theme->dim, row_bg, buf, io_w);
+        }
     }
 }
 
@@ -711,6 +748,7 @@ static void render_sched_live_list(struct ncplane *p, const Theme *theme, const 
     int policy_w = 4;
     int nice_w = 4;
     int rt_w = 3;
+    int io_w = 4;
     int profile_w = clamp_int(rect_inner_cols(rect) / 5, 10, 18);
     int comm_w;
     int status_w;
@@ -732,7 +770,7 @@ static void render_sched_live_list(struct ncplane *p, const Theme *theme, const 
     }
 
     status_w = clamp_int(rect_inner_cols(rect) / 5, 10, 16);
-    comm_w = rect_inner_cols(rect) - pid_w - profile_w - policy_w - nice_w - rt_w - status_w - 5;
+    comm_w = rect_inner_cols(rect) - pid_w - profile_w - policy_w - nice_w - rt_w - io_w - status_w - 6;
     if (comm_w < 12) comm_w = 12;
     plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "pid", pid_w);
     plane_putn(p, rect->row + 1, rect->col + 1 + pid_w + 1, theme->dim, theme->bg, "comm", comm_w);
@@ -742,7 +780,11 @@ static void render_sched_live_list(struct ncplane *p, const Theme *theme, const 
                theme->dim, theme->bg, "ni", nice_w);
     plane_putn(p, rect->row + 1, rect->col + 1 + pid_w + 1 + comm_w + 1 + profile_w + 1 + policy_w + 1 + nice_w + 1,
                theme->dim, theme->bg, "rt", rt_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + pid_w + 1 + comm_w + 1 + profile_w + 1 + policy_w + 1 + nice_w + 1 + rt_w + 1,
+    plane_putn(p, rect->row + 1,
+               rect->col + 1 + pid_w + 1 + comm_w + 1 + profile_w + 1 + policy_w + 1 + nice_w + 1 + rt_w + 1,
+               theme->dim, theme->bg, "io", io_w);
+    plane_putn(p, rect->row + 1,
+               rect->col + 1 + pid_w + 1 + comm_w + 1 + profile_w + 1 + policy_w + 1 + nice_w + 1 + rt_w + 1 + io_w + 1,
                theme->dim, theme->bg, "status", status_w);
 
     for (int i = 0; i < visible_rows; i++) {
@@ -754,6 +796,7 @@ static void render_sched_live_list(struct ncplane *p, const Theme *theme, const 
         const LuloSchedLiveRow *row;
         char buf[64];
         char policy[16];
+        char io_buf[16];
 
         plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
         if (idx >= snap->live_count) continue;
@@ -781,6 +824,11 @@ static void render_sched_live_list(struct ncplane *p, const Theme *theme, const 
                    (row->rt_priority > 0 ? theme->orange : theme->dim),
                    row_bg, buf, rt_w);
         x += rt_w + 1;
+        lulo_sched_format_io(io_buf, sizeof(io_buf), row->io_class, row->io_priority);
+        snprintf(buf, sizeof(buf), "%-*s", io_w, io_buf);
+        plane_putn(p, y, x, selected ? theme->select_fg : sched_io_color(theme, row->io_class, row->io_priority),
+                   row_bg, buf, io_w);
+        x += io_w + 1;
         plane_putn(p, y, x, selected ? theme->select_fg : sched_status_color(theme, row->status),
                    row_bg, row->status, status_w);
     }
@@ -813,6 +861,7 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
         if (state->live_selected >= 0 && state->live_selected < snap->live_count) {
             const LuloSchedLiveRow *row = &snap->live[state->live_selected];
             char policy[16];
+            char io_buf[16];
 
             lulo_format_proc_policy(policy, sizeof(policy), row->policy);
             snprintf(buf, sizeof(buf), "%s (%d)", row->comm, row->pid);
@@ -820,7 +869,8 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             snprintf(buf, sizeof(buf), "%s  %s", row->profile, row->rule);
             plane_putn(p, rect->row + 2, rect->col + 2, sched_profile_color(theme, snap, row->profile),
                        theme->bg, buf, rect->width - 4);
-            snprintf(buf, sizeof(buf), "pol %s  nice %d  rt %d", policy, row->nice, row->rt_priority);
+            lulo_sched_format_io(io_buf, sizeof(io_buf), row->io_class, row->io_priority);
+            snprintf(buf, sizeof(buf), "pol %s  nice %d  rt %d  io %s", policy, row->nice, row->rt_priority, io_buf);
             plane_putn(p, rect->row + 3, rect->col + 2, theme->yellow, theme->bg, buf, rect->width - 4);
             plane_putn(p, rect->row + 4, rect->col + 2, sched_status_color(theme, row->status), theme->bg,
                        row->status, rect->width - 4);
@@ -831,6 +881,7 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
         if (state->profile_selected >= 0 && state->profile_selected < snap->profile_count) {
             const LuloSchedProfileRow *row = &snap->profiles[state->profile_selected];
             char policy[16];
+            char io_buf[16];
 
             plane_putn(p, rect->row + 1, rect->col + 2, sched_profile_color(theme, snap, row->name),
                        theme->bg, row->name, rect->width - 4);
@@ -846,6 +897,17 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             snprintf(buf, sizeof(buf), "rt %s", row->has_rt_priority ? "" : "unchanged");
             if (row->has_rt_priority) snprintf(buf, sizeof(buf), "rt %d", row->rt_priority);
             plane_putn(p, rect->row + 4, rect->col + 2, theme->orange, theme->bg, buf, rect->width - 4);
+            if (row->has_io_class || row->has_io_priority) {
+                int io_class = row->has_io_class ? row->io_class : 2;
+                int io_priority = row->has_io_priority ? row->io_priority :
+                                  ((io_class == 1 || io_class == 2) ? 4 : 0);
+
+                lulo_sched_format_io(io_buf, sizeof(io_buf), io_class, io_priority);
+                snprintf(buf, sizeof(buf), "io %s (%s)", io_buf, lulo_sched_io_class_name(io_class));
+            } else {
+                snprintf(buf, sizeof(buf), "io unchanged");
+            }
+            plane_putn(p, rect->row + 5, rect->col + 2, theme->green, theme->bg, buf, rect->width - 4);
         }
         break;
     }

@@ -22,6 +22,8 @@ Current profile support:
 - `nice`
 - `policy`
 - `rt_priority`
+- `io_class`
+- `io_priority`
 
 Current rule support:
 
@@ -53,5 +55,5 @@ Dynamic policy:
 - the focused-window policy is shown in the SCHED `Rules` view as `(focus)`
 
 This keeps the watcher compact while still supporting session-aware focus
-boosting and systemd-aware matching. I/O classes and richer policy logic can be
-added later without changing the overall service architecture.
+boosting, systemd-aware matching, and per-profile I/O tuning without changing
+the overall service architecture.

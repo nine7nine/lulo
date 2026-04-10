@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_MAGIC 0x4c554c4fU
-#define LULOD_VERSION 10U
+#define LULOD_VERSION 11U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -531,6 +531,10 @@ static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
         if (write_i32(fd, row->policy) < 0) return -1;
         if (write_i32(fd, row->has_rt_priority) < 0) return -1;
         if (write_i32(fd, row->rt_priority) < 0) return -1;
+        if (write_i32(fd, row->has_io_class) < 0) return -1;
+        if (write_i32(fd, row->io_class) < 0) return -1;
+        if (write_i32(fd, row->has_io_priority) < 0) return -1;
+        if (write_i32(fd, row->io_priority) < 0) return -1;
     }
 
     if (write_i32(fd, snap->rule_count) < 0) return -1;
@@ -562,6 +566,8 @@ static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
         if (write_i32(fd, row->policy) < 0) return -1;
         if (write_i32(fd, row->rt_priority) < 0) return -1;
         if (write_i32(fd, row->nice) < 0) return -1;
+        if (write_i32(fd, row->io_class) < 0) return -1;
+        if (write_i32(fd, row->io_priority) < 0) return -1;
         if (write_i32(fd, row->focused) < 0) return -1;
         if (write_string(fd, row->status) < 0) return -1;
     }
@@ -858,6 +864,14 @@ static int deserialize_sched_snapshot(int fd, LuloSchedSnapshot *snap)
         row->has_rt_priority = count;
         if (read_i32(fd, &count) < 0) goto fail;
         row->rt_priority = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->has_io_class = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->io_class = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->has_io_priority = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->io_priority = count;
     }
 
     if (read_i32(fd, &count) < 0) goto fail;
@@ -908,6 +922,10 @@ static int deserialize_sched_snapshot(int fd, LuloSchedSnapshot *snap)
         row->rt_priority = count;
         if (read_i32(fd, &count) < 0) goto fail;
         row->nice = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->io_class = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->io_priority = count;
         if (read_i32(fd, &count) < 0) goto fail;
         row->focused = count;
         if (read_string_fixed(fd, row->status, sizeof(row->status)) < 0) goto fail;

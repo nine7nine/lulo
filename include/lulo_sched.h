@@ -30,6 +30,10 @@ typedef struct {
     int policy;
     int has_rt_priority;
     int rt_priority;
+    int has_io_class;
+    int io_class;
+    int has_io_priority;
+    int io_priority;
 } LuloSchedProfileRow;
 
 typedef struct {
@@ -55,6 +59,8 @@ typedef struct {
     int policy;
     int rt_priority;
     int nice;
+    int io_class;
+    int io_priority;
     int focused;
     char status[96];
 } LuloSchedLiveRow;
@@ -140,5 +146,7 @@ void lulo_sched_prev_view(LuloSchedState *state);
 
 const char *lulo_sched_view_name(LuloSchedView view);
 const char *lulo_sched_match_kind_name(LuloSchedMatchKind kind);
+const char *lulo_sched_io_class_name(int io_class);
+void lulo_sched_format_io(char *buf, size_t len, int io_class, int io_priority);
 
 #endif

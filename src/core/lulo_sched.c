@@ -98,6 +98,41 @@ static void format_sched_policy(char *buf, size_t len, int policy)
     snprintf(buf, len, "%s", label);
 }
 
+const char *lulo_sched_io_class_name(int io_class)
+{
+    switch (io_class) {
+    case 1:
+        return "realtime";
+    case 2:
+        return "best-effort";
+    case 3:
+        return "idle";
+    case 0:
+    default:
+        return "none";
+    }
+}
+
+void lulo_sched_format_io(char *buf, size_t len, int io_class, int io_priority)
+{
+    if (!buf || len == 0) return;
+    switch (io_class) {
+    case 1:
+        snprintf(buf, len, "RT%d", io_priority);
+        break;
+    case 2:
+        snprintf(buf, len, "BE%d", io_priority);
+        break;
+    case 3:
+        snprintf(buf, len, "IDL");
+        break;
+    case 0:
+    default:
+        snprintf(buf, len, "-");
+        break;
+    }
+}
+
 static int *active_cursor(LuloSchedState *state)
 {
     if (!state) return NULL;
@@ -337,6 +372,19 @@ static int format_profile_detail(LuloSchedSnapshot *snap, const LuloSchedProfile
     if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
     if (row->has_rt_priority) snprintf(buf, sizeof(buf), "rt priority: %d", row->rt_priority);
     else snprintf(buf, sizeof(buf), "rt priority: unchanged");
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    if (row->has_io_class) {
+        snprintf(buf, sizeof(buf), "io class: %s", lulo_sched_io_class_name(row->io_class));
+    } else {
+        snprintf(buf, sizeof(buf), "io class: unchanged");
+    }
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    if (row->has_io_priority) snprintf(buf, sizeof(buf), "io priority: %d", row->io_priority);
+    else if (row->has_io_class && (row->io_class == 1 || row->io_class == 2)) {
+        snprintf(buf, sizeof(buf), "io priority: default (4)");
+    } else {
+        snprintf(buf, sizeof(buf), "io priority: unchanged");
+    }
     return append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf);
 }
 
@@ -370,6 +418,7 @@ static int format_live_detail(LuloSchedSnapshot *snap, const LuloSchedLiveRow *r
 {
     char buf[320];
     char policy[16];
+    char io_buf[16];
 
     if (!snap || !row) return -1;
     format_sched_policy(policy, sizeof(policy), row->policy);
@@ -396,6 +445,9 @@ static int format_live_detail(LuloSchedSnapshot *snap, const LuloSchedLiveRow *r
     snprintf(buf, sizeof(buf), "nice: %d", row->nice);
     if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
     snprintf(buf, sizeof(buf), "rt priority: %d", row->rt_priority);
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    lulo_sched_format_io(io_buf, sizeof(io_buf), row->io_class, row->io_priority);
+    snprintf(buf, sizeof(buf), "io: %s (%s)", io_buf, lulo_sched_io_class_name(row->io_class));
     return append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf);
 }
 

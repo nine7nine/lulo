@@ -7,14 +7,33 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fnmatch.h>
+#include <linux/ioprio.h>
 #include <limits.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifndef IOPRIO_WHO_PROCESS
+#define IOPRIO_WHO_PROCESS 1
+#endif
+
+#ifndef IOPRIO_CLASS_NONE
+#define IOPRIO_CLASS_NONE 0
+#define IOPRIO_CLASS_RT 1
+#define IOPRIO_CLASS_BE 2
+#define IOPRIO_CLASS_IDLE 3
+#endif
+
+#ifndef IOPRIO_PRIO_VALUE
+#define IOPRIO_PRIO_VALUE(class, data) (((class) << IOPRIO_CLASS_SHIFT) | (data))
+#define IOPRIO_PRIO_CLASS(mask) (((mask) >> IOPRIO_CLASS_SHIFT) & 0x7)
+#define IOPRIO_PRIO_DATA(mask) ((mask) & ((1 << IOPRIO_CLASS_SHIFT) - 1))
+#endif
 
 static void trim_right(char *text)
 {
@@ -109,6 +128,29 @@ static int parse_policy_value(const char *text, int *policy)
         return 0;
     }
     return parse_int_value(text, 0, 7, policy);
+}
+
+static int parse_io_class_value(const char *text, int *io_class)
+{
+    if (!text || !io_class) return -1;
+    if (!strcasecmp(text, "none") || !strcasecmp(text, "unset")) {
+        *io_class = IOPRIO_CLASS_NONE;
+        return 0;
+    }
+    if (!strcasecmp(text, "realtime") || !strcasecmp(text, "rt")) {
+        *io_class = IOPRIO_CLASS_RT;
+        return 0;
+    }
+    if (!strcasecmp(text, "best-effort") || !strcasecmp(text, "best_effort") ||
+        !strcasecmp(text, "besteffort") || !strcasecmp(text, "be")) {
+        *io_class = IOPRIO_CLASS_BE;
+        return 0;
+    }
+    if (!strcasecmp(text, "idle")) {
+        *io_class = IOPRIO_CLASS_IDLE;
+        return 0;
+    }
+    return parse_int_value(text, 0, 3, io_class);
 }
 
 static int parse_match_kind(const char *text, LuloSchedMatchKind *kind)
@@ -317,6 +359,22 @@ static long sched_profile_priority_score_row(const LuloSchedProfileRow *row)
     return score + rt_score + nice_score;
 }
 
+static int profile_row_cmp(const void *a, const void *b)
+{
+    const LuloSchedProfileRow *ra = a;
+    const LuloSchedProfileRow *rb = b;
+    long sa;
+    long sb;
+    int cmp;
+
+    sa = sched_profile_priority_score_row(ra);
+    sb = sched_profile_priority_score_row(rb);
+    if (sa != sb) return sa > sb ? -1 : 1;
+    cmp = strcmp(ra->name, rb->name);
+    if (cmp != 0) return cmp;
+    return strcmp(ra->path, rb->path);
+}
+
 static long sched_rule_target_score(const LuloSchedSnapshot *snap, const LuloSchedRuleRow *row)
 {
     int idx;
@@ -425,6 +483,12 @@ static int parse_profile_file(const char *path, LuloSchedProfileRow *row, char *
         } else if (!strcmp(key, "rt_priority")) {
             if (parse_int_value(value, 1, 99, &row->rt_priority) < 0) goto bad_value;
             row->has_rt_priority = 1;
+        } else if (!strcmp(key, "io_class")) {
+            if (parse_io_class_value(value, &row->io_class) < 0) goto bad_value;
+            row->has_io_class = 1;
+        } else if (!strcmp(key, "io_priority")) {
+            if (parse_int_value(value, 0, 7, &row->io_priority) < 0) goto bad_value;
+            row->has_io_priority = 1;
         } else {
             if (err && errlen > 0) snprintf(err, errlen, "%s:%u: unknown key '%s'", path, lineno, key);
             goto fail;
@@ -654,6 +718,9 @@ static int load_profiles(LuloSchedSnapshot *snap, const char *config_root, char 
             goto out;
         }
     }
+    if (snap->profile_count > 1) {
+        qsort(snap->profiles, (size_t)snap->profile_count, sizeof(*snap->profiles), profile_row_cmp);
+    }
     rc = 0;
 
 out:
@@ -827,6 +894,47 @@ static int query_process_sched(pid_t pid, int *nice_value, int *policy, int *rt_
     return 0;
 }
 
+static int query_process_io(pid_t pid, int *io_class, int *io_priority)
+{
+    int value;
+
+    if (!io_class || !io_priority) return -1;
+    errno = 0;
+    value = (int)syscall(SYS_ioprio_get, IOPRIO_WHO_PROCESS, (int)pid);
+    if (value < 0) return -1;
+    *io_class = IOPRIO_PRIO_CLASS(value);
+    *io_priority = IOPRIO_PRIO_DATA(value);
+    return 0;
+}
+
+static void desired_io_target(const LuloSchedProfileRow *profile,
+                              int current_io_class, int current_io_priority,
+                              int *target_io_class, int *target_io_priority)
+{
+    int target_class;
+    int target_priority;
+
+    target_class = current_io_class;
+    target_priority = current_io_priority;
+    if (profile->has_io_class) {
+        target_class = profile->io_class;
+    } else if (profile->has_io_priority && target_class == IOPRIO_CLASS_NONE) {
+        target_class = IOPRIO_CLASS_BE;
+    }
+
+    if (target_class == IOPRIO_CLASS_RT || target_class == IOPRIO_CLASS_BE) {
+        if (profile->has_io_priority) target_priority = profile->io_priority;
+        else if (profile->has_io_class) target_priority = 4;
+        if (target_priority < 0) target_priority = 0;
+        if (target_priority > 7) target_priority = 7;
+    } else {
+        target_priority = 0;
+    }
+
+    *target_io_class = target_class;
+    *target_io_priority = target_priority;
+}
+
 static int match_rule_target(const LuloSchedRuleRow *rule, const LuloProcMeta *meta)
 {
     const char *exe_base;
@@ -951,10 +1059,13 @@ static void set_status_error(char *buf, size_t len, const char *prefix)
 }
 
 static int profile_targets_match(const LuloSchedProfileRow *profile,
-                                 int nice_value, int policy, int rt_priority)
+                                 int nice_value, int policy, int rt_priority,
+                                 int io_class, int io_priority)
 {
     int target_policy;
     int target_rt_priority;
+    int target_io_class;
+    int target_io_priority;
 
     if (!profile) return 0;
     if (profile->has_nice && nice_value != profile->nice) return 0;
@@ -975,19 +1086,35 @@ static int profile_targets_match(const LuloSchedProfileRow *profile,
         return 0;
     }
     if (target_policy != SCHED_FIFO && target_policy != SCHED_RR && rt_priority != 0) return 0;
+    desired_io_target(profile, io_class, io_priority, &target_io_class, &target_io_priority);
+    if (profile->has_io_class || profile->has_io_priority) {
+        if (io_class != target_io_class) return 0;
+        if ((target_io_class == IOPRIO_CLASS_RT || target_io_class == IOPRIO_CLASS_BE) &&
+            io_priority != target_io_priority) return 0;
+        if (target_io_class != IOPRIO_CLASS_RT && target_io_class != IOPRIO_CLASS_BE &&
+            io_priority != 0) {
+            return 0;
+        }
+    }
     return 1;
 }
 
 static void apply_profile_to_pid(pid_t pid, const LuloSchedProfileRow *profile,
                                  int current_nice, int current_policy, int current_rt_priority,
+                                 int current_io_class, int current_io_priority,
                                  int *out_nice, int *out_policy, int *out_rt_priority,
+                                 int *out_io_class, int *out_io_priority,
                                  char *status, size_t status_len)
 {
     int changed = 0;
     int target_policy = current_policy;
     int target_rt_priority = current_rt_priority;
+    int target_io_class = current_io_class;
+    int target_io_priority = current_io_priority;
     int sched_attempted = 0;
     int sched_failed = 0;
+    int io_attempted = 0;
+    int io_failed = 0;
     struct sched_param param;
 
     if (status_len > 0) status[0] = '\0';
@@ -1021,18 +1148,45 @@ static void apply_profile_to_pid(pid_t pid, const LuloSchedProfileRow *profile,
         }
     }
 
+    desired_io_target(profile, current_io_class, current_io_priority,
+                      &target_io_class, &target_io_priority);
+    if ((profile->has_io_class || profile->has_io_priority) &&
+        (current_io_class != target_io_class || current_io_priority != target_io_priority)) {
+        io_attempted = 1;
+        if (syscall(SYS_ioprio_set, IOPRIO_WHO_PROCESS, (int)pid,
+                    IOPRIO_PRIO_VALUE(target_io_class, target_io_priority)) < 0) {
+            io_failed = 1;
+            if (!status[0]) set_status_error(status, status_len, "io");
+        } else {
+            changed = 1;
+        }
+    }
+
     if (query_process_sched(pid, out_nice, out_policy, out_rt_priority) < 0) {
         if (!status[0]) set_status_error(status, status_len, "query");
         *out_nice = current_nice;
         *out_policy = current_policy;
         *out_rt_priority = current_rt_priority;
+        *out_io_class = current_io_class;
+        *out_io_priority = current_io_priority;
     } else {
-        if (profile_targets_match(profile, *out_nice, *out_policy, *out_rt_priority)) {
+        if (query_process_io(pid, out_io_class, out_io_priority) < 0) {
+            if (!status[0]) set_status_error(status, status_len, "io-query");
+            *out_io_class = current_io_class;
+            *out_io_priority = current_io_priority;
+        }
+        if (profile_targets_match(profile, *out_nice, *out_policy, *out_rt_priority,
+                                  *out_io_class, *out_io_priority)) {
             snprintf(status, status_len, "%s", changed ? "applied" : "ok");
         } else {
             if (sched_attempted && sched_failed &&
                 normalized_policy(*out_policy) == normalized_policy(target_policy) &&
                 *out_rt_priority == target_rt_priority) {
+                status[0] = '\0';
+            }
+            if (io_attempted && io_failed &&
+                *out_io_class == target_io_class &&
+                *out_io_priority == target_io_priority) {
                 status[0] = '\0';
             }
             if (!status[0]) {
@@ -1048,6 +1202,8 @@ static int live_row_cmp(const void *a, const void *b)
     const LuloSchedLiveRow *rb = b;
     int pa;
     int pb;
+    int ia;
+    int ib;
     int cmp;
 
     pa = normalized_policy(ra->policy);
@@ -1067,6 +1223,19 @@ static int live_row_cmp(const void *a, const void *b)
         if (ra_rank != rb_rank) return ra_rank - rb_rank;
     }
     if (ra->rt_priority != rb->rt_priority) return rb->rt_priority - ra->rt_priority;
+    ia = ra->io_class == IOPRIO_CLASS_RT ? 0 :
+         ra->io_class == IOPRIO_CLASS_BE ? 1 :
+         ra->io_class == IOPRIO_CLASS_NONE ? 2 :
+         ra->io_class == IOPRIO_CLASS_IDLE ? 3 : 4;
+    ib = rb->io_class == IOPRIO_CLASS_RT ? 0 :
+         rb->io_class == IOPRIO_CLASS_BE ? 1 :
+         rb->io_class == IOPRIO_CLASS_NONE ? 2 :
+         rb->io_class == IOPRIO_CLASS_IDLE ? 3 : 4;
+    if (ia != ib) return ia - ib;
+    if ((ra->io_class == IOPRIO_CLASS_RT || ra->io_class == IOPRIO_CLASS_BE) &&
+        ra->io_priority != rb->io_priority) {
+        return ra->io_priority - rb->io_priority;
+    }
     if (ra->nice != rb->nice) return ra->nice - rb->nice;
     if (ra->focused != rb->focused) return rb->focused - ra->focused;
     cmp = strcmp(ra->profile, rb->profile);
@@ -1185,6 +1354,8 @@ int lulod_system_sched_scan(LuloSchedSnapshot *snap, char *err, size_t errlen)
         int nice_value = 0;
         int policy = 0;
         int rt_priority = 0;
+        int io_class = IOPRIO_CLASS_NONE;
+        int io_priority = 0;
         int focused = 0;
         LuloSchedLiveRow row;
         char rule_name[64] = "";
@@ -1209,6 +1380,10 @@ int lulod_system_sched_scan(LuloSchedSnapshot *snap, char *err, size_t errlen)
             if (profile_idx < 0) continue;
         }
         if (query_process_sched(pid, &nice_value, &policy, &rt_priority) < 0) continue;
+        if (query_process_io(pid, &io_class, &io_priority) < 0) {
+            io_class = IOPRIO_CLASS_NONE;
+            io_priority = 0;
+        }
 
         memset(&row, 0, sizeof(row));
         row.pid = pid;
@@ -1223,8 +1398,9 @@ int lulod_system_sched_scan(LuloSchedSnapshot *snap, char *err, size_t errlen)
         snprintf(row.rule, sizeof(row.rule), "%s", rule_name);
 
         apply_profile_to_pid(pid, &snap->profiles[profile_idx],
-                             nice_value, policy, rt_priority,
+                             nice_value, policy, rt_priority, io_class, io_priority,
                              &row.nice, &row.policy, &row.rt_priority,
+                             &row.io_class, &row.io_priority,
                              row.status, sizeof(row.status));
 
         {

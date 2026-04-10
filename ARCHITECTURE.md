@@ -10,6 +10,7 @@
 - `lulod`
   - Unprivileged user daemon.
   - Owns session-facing cache/state, focus integration, and frontend IPC.
+  - Maintains the user-facing snapshots for `SCHED`, `SYSTEMD`, `TUNE`, `CGROUPS`, and `UDEV`.
   - Proxies privileged or system-wide operations toward `lulod-system`.
 - `lulod-system`
   - Privileged system daemon.
@@ -33,7 +34,7 @@ lulo <-> lulod <-> lulod-system
   |        |          +-> cgroup/sysfs/procfs writes
   |        |
   |        +-> session bus / focus integration
-  |        +-> cached snapshots for pages
+  |        +-> cached snapshots for sched/systemd/tune/cgroups/udev
   |
   +-> Notcurses UI
   +-> external editor handoff
@@ -49,7 +50,7 @@ General model:
 
 - `lulo <-> lulod`
   - Unix socket under the user runtime dir.
-  - Used for `SYSTEMD`, `TUNE`, `CGROUPS`, scheduler snapshots, and focus/session-facing state.
+  - Used for `SYSTEMD`, `TUNE`, `CGROUPS`, `UDEV`, scheduler snapshots, and focus/session-facing state.
 - `lulod <-> lulod-system`
   - Unix socket under `/run`.
   - Used for scheduler reload/scan state, focus updates, privileged edits, and file apply/delete operations.
@@ -62,9 +63,9 @@ Shared IPC code lives in:
 ## Source Layout
 
 - `src/app`
-  - TUI shell, input handling, page rendering, widget drawing.
+  - TUI shell, input handling, page rendering, widget drawing, help overlay.
 - `src/core`
-  - Shared page models and user-daemon client backends.
+  - Shared page models and user-daemon client backends for scheduler, systemd, tune, cgroups, and udev.
 - `src/daemon`
   - `lulod`, `lulod-system`, focus helpers, privileged edit/scheduler code.
 - `src/shared`
@@ -82,12 +83,35 @@ Main frontend entrypoint:
 
 Page modules:
 
-- CPU / proc view: main app shell + `src/core/lulo_model.c` + `src/core/lulo_proc.c`
-- DISK: `src/app/lulo_widgets.c` + `src/core/lulo_dizk.c`
-- SCHED: `src/app/lulo_sched_page.c`
-- CGROUPS: `src/app/lulo_cgroups_page.c`
-- SYSTEMD: `src/app/lulo_systemd_page.c`
-- TUNE: `src/app/lulo_tune_page.c`
+- CPU / proc view
+  - main app shell + `src/core/lulo_model.c` + `src/core/lulo_proc.c`
+- DISK
+  - `src/app/lulo_widgets.c` + `src/core/lulo_dizk.c`
+- SCHED
+  - `src/app/lulo_sched_page.c`
+  - `src/core/lulo_sched.c`
+  - `src/core/lulo_sched_backend.c`
+  - subviews: `Profiles`, `Rules`, `Live`
+- CGROUPS
+  - `src/app/lulo_cgroups_page.c`
+  - `src/core/lulo_cgroups.c`
+  - `src/core/lulo_cgroups_backend.c`
+  - subviews: `Tree`, `Files`, `Config`
+- SYSTEMD
+  - `src/app/lulo_systemd_page.c`
+  - `src/core/lulo_systemd.c`
+  - `src/core/lulo_systemd_backend.c`
+  - subviews: `Services`, `Deps`, `Config`
+- UDEV
+  - `src/app/lulo_udev_page.c`
+  - `src/core/lulo_udev.c`
+  - `src/core/lulo_udev_backend.c`
+  - subviews: `Rules`, `Hwdb`, `Devices`
+- TUNE
+  - `src/app/lulo_tune_page.c`
+  - `src/core/lulo_tune.c`
+  - `src/core/lulo_tune_backend.c`
+  - subviews: `Explore`, `Snapshots`, `Presets`
 
 Input handling:
 
@@ -107,14 +131,16 @@ Key files:
 - `src/daemon/lulod_systemd.c`
 - `src/daemon/lulod_tune.c`
 - `src/daemon/lulod_cgroups.c`
+- `src/daemon/lulod_udev.c`
 - `src/daemon/lulod_sched.c`
 - `src/daemon/lulod_focus.c`
 
 Responsibilities:
 
-- maintain user-facing snapshots for UI pages
+- maintain user-facing snapshots for `SCHED`, `SYSTEMD`, `TUNE`, `CGROUPS`, and `UDEV`
 - integrate with KDE focus reporting
 - proxy scheduler/focus requests to `lulod-system`
+- back external-editor flows for file-backed pages before privileged commit happens
 - keep the frontend responsive by moving blocking work out of `lulo`
 
 ### `lulod-system`
@@ -131,6 +157,7 @@ Responsibilities:
 - continuously scan and enforce scheduler policy
 - receive focused-PID updates and apply the `focused` profile dynamically
 - perform privileged edit sessions and direct file writes/deletes
+- handle privileged edits for systemd, cgroup, udev, and other system-managed files
 
 ## Scheduler Design
 
@@ -170,7 +197,7 @@ There are two editing patterns:
   - mainly for `TUNE -> Explore`
   - used for pseudo-files that are not normal config documents
 - external editor handoff
-  - used for scheduler config, systemd config, service files, snapshots/presets, and other file-backed content
+  - used for scheduler config, systemd config, service files, udev rules, hwdb files, tune snapshots/presets, and other file-backed content
   - honors `$VISUAL` / `$EDITOR`
 
 Privileged file edits go through `lulod-system` so the TUI never writes system files directly.
@@ -182,6 +209,9 @@ Installed `/usr` layout:
 - `/usr/bin`: `lulo`, `lulod`, `lulod-system`
 - `/usr/libexec/lulo`: helper binaries
 - `/usr/share/lulo`: shipped data and examples
+- `/usr/lib/systemd/user`: `lulod.service`
+- `/usr/lib/systemd/system`: `lulod-system.service`
+- `/usr/share/polkit-1/actions`: `lulo` policy files
 - `/etc/lulo`: system config
 
 The build also still supports running from the repo checkout for development.

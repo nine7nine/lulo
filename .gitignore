@@ -1,0 +1,10 @@
+lulo
+nc_input_probe
+notcurses-upstream
+cpuz
+cpuz_asan
+cpuz_ubsan
+*.o
+*.swp
+*.swo
+.codex

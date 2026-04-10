@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "lulo_sched.h"
+#include "lulo_cgroups.h"
 #include "lulo_systemd.h"
 #include "lulo_tune.h"
 
@@ -19,6 +20,8 @@ enum {
     LULOD_REQ_SCHED_FULL = 8,
     LULOD_REQ_SCHED_ACTIVE = 9,
     LULOD_REQ_SCHED_RELOAD = 10,
+    LULOD_REQ_CGROUPS_FULL = 11,
+    LULOD_REQ_CGROUPS_ACTIVE = 12,
 };
 
 int lulod_socket_path(char *buf, size_t len);
@@ -43,5 +46,11 @@ int lulod_recv_sched_state(int fd, LuloSchedState *state);
 int lulod_recv_sched_request(int fd, uint32_t *type, LuloSchedState *state);
 int lulod_send_sched_response(int fd, int status, const char *err, const LuloSchedSnapshot *snap);
 int lulod_recv_sched_response(int fd, LuloSchedSnapshot *snap, char *err, size_t errlen);
+
+int lulod_send_cgroups_request(int fd, uint32_t type, const LuloCgroupsState *state);
+int lulod_recv_cgroups_state(int fd, LuloCgroupsState *state);
+int lulod_recv_cgroups_request(int fd, uint32_t *type, LuloCgroupsState *state);
+int lulod_send_cgroups_response(int fd, int status, const char *err, const LuloCgroupsSnapshot *snap);
+int lulod_recv_cgroups_response(int fd, LuloCgroupsSnapshot *snap, char *err, size_t errlen);
 
 #endif

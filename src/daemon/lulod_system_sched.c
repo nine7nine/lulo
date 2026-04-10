@@ -281,6 +281,100 @@ static int append_or_replace_rule(LuloSchedSnapshot *snap, const LuloSchedRuleRo
     return 0;
 }
 
+static int sched_policy_rank_for_profile_row(const LuloSchedProfileRow *row)
+{
+    if (!row || !row->has_policy) return 3;
+    switch (row->policy) {
+    case SCHED_DEADLINE:
+        return 0;
+    case SCHED_FIFO:
+        return 1;
+    case SCHED_RR:
+        return 2;
+    case SCHED_OTHER:
+    default:
+        return 3;
+    case SCHED_BATCH:
+        return 4;
+    case SCHED_IDLE:
+        return 5;
+    }
+}
+
+static long sched_profile_priority_score_row(const LuloSchedProfileRow *row)
+{
+    long score;
+    long nice_score = 0;
+    long rt_score = 0;
+    int rank;
+
+    if (!row) return -1;
+    rank = sched_policy_rank_for_profile_row(row);
+    score = (long)(600 - rank * 100) * 1000L;
+    if (row->has_rt_priority) rt_score = (long)row->rt_priority * 100L;
+    if (row->has_nice) nice_score = (long)(20 - row->nice) * 10L;
+    if (!row->enabled) score -= 250L;
+    return score + rt_score + nice_score;
+}
+
+static long sched_rule_target_score(const LuloSchedSnapshot *snap, const LuloSchedRuleRow *row)
+{
+    int idx;
+
+    if (!row) return -1;
+    if (row->exclude) return 1000000000L;
+    if (!snap || !row->profile[0]) return -1;
+    idx = find_profile_index(snap, row->profile);
+    if (idx < 0) return -1;
+    return sched_profile_priority_score_row(&snap->profiles[idx]);
+}
+
+static int rule_match_kind_rank(LuloSchedMatchKind kind)
+{
+    switch (kind) {
+    case LULO_SCHED_MATCH_DYNAMIC:
+        return 0;
+    case LULO_SCHED_MATCH_UNIT:
+        return 1;
+    case LULO_SCHED_MATCH_EXE:
+        return 2;
+    case LULO_SCHED_MATCH_COMM:
+        return 3;
+    case LULO_SCHED_MATCH_CMDLINE:
+        return 4;
+    case LULO_SCHED_MATCH_SLICE:
+        return 5;
+    case LULO_SCHED_MATCH_CGROUP:
+        return 6;
+    default:
+        return 7;
+    }
+}
+
+static int rule_row_cmp(const void *a, const void *b, void *ctx)
+{
+    const LuloSchedSnapshot *snap = ctx;
+    const LuloSchedRuleRow *ra = a;
+    const LuloSchedRuleRow *rb = b;
+    long sa;
+    long sb;
+    int cmp;
+    int ka;
+    int kb;
+
+    sa = sched_rule_target_score(snap, ra);
+    sb = sched_rule_target_score(snap, rb);
+    if (sa != sb) return sa > sb ? -1 : 1;
+    cmp = strcmp(ra->profile, rb->profile);
+    if (cmp != 0) return cmp;
+    ka = rule_match_kind_rank(ra->match_kind);
+    kb = rule_match_kind_rank(rb->match_kind);
+    if (ka != kb) return ka - kb;
+    cmp = strcmp(ra->pattern, rb->pattern);
+    if (cmp != 0) return cmp;
+    return strcmp(ra->name, rb->name);
+}
+
 static int parse_profile_file(const char *path, LuloSchedProfileRow *row, char *err, size_t errlen)
 {
     FILE *fp = NULL;
@@ -403,7 +497,7 @@ static int parse_rule_file(const char *path, LuloSchedRuleRow *row, char *err, s
             if (parse_match_kind(value, &row->match_kind) < 0) goto bad_value;
         } else if (!strcmp(key, "pattern")) {
             snprintf(row->pattern, sizeof(row->pattern), "%s", value);
-        } else if (!strcmp(key, "profile")) {
+        } else if (!strcmp(key, "profile") || !strcmp(key, "action")) {
             snprintf(row->profile, sizeof(row->profile), "%s", value);
         } else {
             if (err && errlen > 0) snprintf(err, errlen, "%s:%u: unknown key '%s'", path, lineno, key);
@@ -658,6 +752,10 @@ static int load_rules(LuloSchedSnapshot *snap, const char *config_root, char *er
             if (err && errlen > 0) snprintf(err, errlen, "out of memory loading builtin background rule");
             goto out;
         }
+    }
+    if (snap->rule_count > 1) {
+        qsort_r(snap->rules, (size_t)snap->rule_count, sizeof(*snap->rules),
+                rule_row_cmp, snap);
     }
     rc = 0;
 

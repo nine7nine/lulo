@@ -17,6 +17,7 @@ typedef enum {
     EDIT_SCOPE_NONE = 0,
     EDIT_SCOPE_SCHED,
     EDIT_SCOPE_SYSTEMD,
+    EDIT_SCOPE_CGROUPS,
 } EditScope;
 
 typedef struct {
@@ -77,6 +78,7 @@ static int scope_for_path(const char *path, EditScope *scope_out)
         { "/etc/systemd/", EDIT_SCOPE_SYSTEMD },
         { "/usr/lib/systemd/", EDIT_SCOPE_SYSTEMD },
         { "/lib/systemd/", EDIT_SCOPE_SYSTEMD },
+        { "/sys/fs/cgroup/", EDIT_SCOPE_CGROUPS },
     };
 
     if (!path || !scope_out) return -1;
@@ -312,6 +314,63 @@ out:
     return rc;
 }
 
+static int write_fd_from_edit_copy(int out_fd, const char *edit_path)
+{
+    int src_fd = -1;
+    int rc = -1;
+
+    src_fd = open(edit_path, O_RDONLY | O_NOFOLLOW);
+    if (src_fd < 0) return -1;
+    if (lseek(out_fd, 0, SEEK_SET) < 0) goto out;
+    if (copy_fd_all(out_fd, src_fd) < 0) goto out;
+    if (fsync(out_fd) < 0) goto out;
+    rc = 0;
+
+out:
+    if (src_fd >= 0) close(src_fd);
+    return rc;
+}
+
+static int write_direct_file(const char *path, const char *content)
+{
+    int fd = -1;
+    int rc = -1;
+    size_t remaining = content ? strlen(content) : 0;
+    const char *ptr = content ? content : "";
+
+    fd = open(path, O_WRONLY | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    if (lseek(fd, 0, SEEK_SET) < 0) goto out;
+    while (remaining > 0) {
+        ssize_t nw = write(fd, ptr, remaining);
+
+        if (nw < 0) {
+            if (errno == EINTR) continue;
+            goto out;
+        }
+        ptr += (size_t)nw;
+        remaining -= (size_t)nw;
+    }
+    if (fsync(fd) < 0) goto out;
+    rc = 0;
+
+out:
+    if (fd >= 0) close(fd);
+    return rc;
+}
+
+static int commit_direct_file_from_edit(const char *edit_path, const char *original_path)
+{
+    int out_fd = -1;
+    int rc = -1;
+
+    out_fd = open(original_path, O_WRONLY | O_NOFOLLOW);
+    if (out_fd < 0) return -1;
+    rc = write_fd_from_edit_copy(out_fd, edit_path);
+    close(out_fd);
+    return rc;
+}
+
 static int write_string_to_file(const char *path, const char *content)
 {
     struct stat st;
@@ -504,7 +563,9 @@ int lulod_system_edit_commit(const char *session_id, uid_t uid, int *reload_sche
         errno = EPERM;
         return -1;
     }
-    if (replace_file_from_edit(edit_path, meta.original_path) < 0) {
+    if ((meta.scope == EDIT_SCOPE_CGROUPS
+         ? commit_direct_file_from_edit(edit_path, meta.original_path)
+         : replace_file_from_edit(edit_path, meta.original_path)) < 0) {
         if (err && errlen > 0) snprintf(err, errlen, "commit %s: %s", meta.original_path, strerror(errno));
         return -1;
     }
@@ -552,7 +613,9 @@ int lulod_system_write_file(const char *path, const char *content, int *reload_s
         if (err && errlen > 0) snprintf(err, errlen, "write not allowed: %s", path ? path : "");
         return -1;
     }
-    if (write_string_to_file(resolved, content ? content : "") < 0) {
+    if ((scope == EDIT_SCOPE_CGROUPS
+         ? write_direct_file(resolved, content ? content : "")
+         : write_string_to_file(resolved, content ? content : "")) < 0) {
         if (err && errlen > 0) snprintf(err, errlen, "write %s: %s", resolved, strerror(errno));
         return -1;
     }

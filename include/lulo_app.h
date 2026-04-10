@@ -11,6 +11,8 @@
 #include "lulo_dizk.h"
 #include "lulo_model.h"
 #include "lulo_proc.h"
+#include "lulo_cgroups.h"
+#include "lulo_cgroups_backend.h"
 #include "lulo_sched.h"
 #include "lulo_sched_backend.h"
 #include "lulo_systemd.h"
@@ -51,6 +53,7 @@ typedef enum {
     APP_PAGE_CPU = 0,
     APP_PAGE_DIZK,
     APP_PAGE_SCHED,
+    APP_PAGE_CGROUPS,
     APP_PAGE_SYSTEMD,
     APP_PAGE_TUNE,
     APP_PAGE_COUNT
@@ -96,6 +99,7 @@ typedef struct {
 typedef struct {
     struct notcurses *nc;
     struct ncplane *std;
+    struct ncplane *modal;
     struct ncplane *header;
     struct ncplane *tabs;
     struct ncplane *top;
@@ -104,6 +108,7 @@ typedef struct {
     struct ncplane *proc;
     struct ncplane *disk;
     struct ncplane *sched;
+    struct ncplane *cgroups;
     struct ncplane *systemd;
     struct ncplane *tune;
     struct ncplane *load;
@@ -118,6 +123,7 @@ typedef struct {
 
 typedef struct {
     AppPage active_page;
+    int help_visible;
     int proc_refresh_ms;
     LuloProcCpuMode proc_cpu_mode;
     int last_scroll_action;
@@ -127,6 +133,8 @@ typedef struct {
     long long status_until_ms;
     char sched_status[160];
     long long sched_status_until_ms;
+    char cgroups_status[160];
+    long long cgroups_status_until_ms;
     char tune_status[160];
     long long tune_status_until_ms;
     int tune_edit_active;
@@ -151,6 +159,7 @@ typedef struct {
 
 typedef enum {
     INPUT_NONE = 0,
+    INPUT_TOGGLE_HELP,
     INPUT_QUIT,
     INPUT_SAMPLE_FASTER,
     INPUT_SAMPLE_SLOWER,
@@ -214,6 +223,7 @@ typedef struct {
     int need_proc;
     int need_disk;
     int need_sched;
+    int need_cgroups;
     int need_systemd;
     int need_tune;
     int need_rebuild;
@@ -221,6 +231,8 @@ typedef struct {
     int need_disk_refresh;
     int need_sched_refresh;
     int need_sched_reload;
+    int need_cgroups_refresh;
+    int need_cgroups_refresh_full;
     int need_systemd_refresh;
     int need_tune_refresh;
     int need_tune_refresh_full;
@@ -290,6 +302,18 @@ int handle_sched_wheel_target(Ui *ui, LuloSchedState *state,
 int handle_sched_click(Ui *ui, int global_y, int global_x,
                        const LuloSchedSnapshot *snap, LuloSchedState *state,
                        RenderFlags *render);
+int cgroups_list_rows_visible(const Ui *ui, const LuloCgroupsState *state);
+int cgroups_preview_rows_visible(const Ui *ui, const LuloCgroupsState *state);
+const char *active_cgroups_edit_path(const LuloCgroupsSnapshot *snap, const LuloCgroupsState *state);
+void render_cgroups_widget(Ui *ui, const LuloCgroupsSnapshot *snap, const LuloCgroupsState *state);
+void render_cgroups_status(Ui *ui, const LuloCgroupsSnapshot *snap, const LuloCgroupsState *state,
+                           const LuloCgroupsBackendStatus *backend_status, AppState *app);
+int point_on_cgroups_view_tabs(Ui *ui, const LuloCgroupsState *state, int global_y, int global_x);
+int handle_cgroups_click(Ui *ui, int global_y, int global_x,
+                         const LuloCgroupsSnapshot *snap, LuloCgroupsState *state,
+                         RenderFlags *render);
+int handle_cgroups_wheel_target(Ui *ui, LuloCgroupsState *state,
+                                RenderFlags *render, int global_y, int global_x);
 int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state);
 int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state);
 const char *active_systemd_edit_path(const LuloSystemdSnapshot *snap, const LuloSystemdState *state);
@@ -304,6 +328,8 @@ int handle_systemd_wheel_target(Ui *ui, LuloSystemdState *state,
                                 RenderFlags *render, int global_y, int global_x);
 void sched_status_set(AppState *app, const char *fmt, ...);
 const char *sched_status_current(AppState *app);
+void cgroups_status_set(AppState *app, const char *fmt, ...);
+const char *cgroups_status_current(AppState *app);
 void tune_status_set(AppState *app, const char *fmt, ...);
 const char *tune_status_current(AppState *app);
 void tune_edit_prompt_refresh(AppState *app);

@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_MAGIC 0x4c554c4fU
-#define LULOD_VERSION 9U
+#define LULOD_VERSION 10U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -175,6 +175,36 @@ static int serialize_tune_state(int fd, const LuloTuneState *state)
     return 0;
 }
 
+static int serialize_cgroups_state(int fd, const LuloCgroupsState *state)
+{
+    int32_t value = 0;
+
+    if (!state) {
+        LuloCgroupsState empty = {0};
+        return serialize_cgroups_state(fd, &empty);
+    }
+    value = (int32_t)state->view;
+    if (write_i32(fd, value) < 0) return -1;
+    if (write_i32(fd, state->focus_preview) < 0) return -1;
+    if (write_i32(fd, state->tree_cursor) < 0) return -1;
+    if (write_i32(fd, state->tree_selected) < 0) return -1;
+    if (write_i32(fd, state->tree_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->tree_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->file_cursor) < 0) return -1;
+    if (write_i32(fd, state->file_selected) < 0) return -1;
+    if (write_i32(fd, state->file_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->file_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->config_cursor) < 0) return -1;
+    if (write_i32(fd, state->config_selected) < 0) return -1;
+    if (write_i32(fd, state->config_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->config_detail_scroll) < 0) return -1;
+    if (write_string(fd, state->browse_path) < 0) return -1;
+    if (write_string(fd, state->selected_tree_path) < 0) return -1;
+    if (write_string(fd, state->selected_file_path) < 0) return -1;
+    if (write_string(fd, state->selected_config) < 0) return -1;
+    return 0;
+}
+
 static int deserialize_state(int fd, LuloSystemdState *state)
 {
     int32_t value = 0;
@@ -248,6 +278,47 @@ static int deserialize_tune_state(int fd, LuloTuneState *state)
     if (read_string_fixed(fd, state->selected_preset_id, sizeof(state->selected_preset_id)) < 0) return -1;
     if (read_string_fixed(fd, state->staged_path, sizeof(state->staged_path)) < 0) return -1;
     if (read_string_fixed(fd, state->staged_value, sizeof(state->staged_value)) < 0) return -1;
+    return 0;
+}
+
+static int deserialize_cgroups_state(int fd, LuloCgroupsState *state)
+{
+    int32_t value = 0;
+
+    if (!state) return -1;
+    memset(state, 0, sizeof(*state));
+    if (read_i32(fd, &value) < 0) return -1;
+    state->view = (LuloCgroupsView)value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->focus_preview = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tree_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tree_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tree_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tree_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->file_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->file_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->file_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->file_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->config_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->config_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->config_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->config_detail_scroll = value;
+    if (read_string_fixed(fd, state->browse_path, sizeof(state->browse_path)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_tree_path, sizeof(state->selected_tree_path)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_file_path, sizeof(state->selected_file_path)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_config, sizeof(state->selected_config)) < 0) return -1;
     return 0;
 }
 
@@ -495,6 +566,57 @@ static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
         if (write_string(fd, row->status) < 0) return -1;
     }
 
+    if (write_string(fd, snap->detail_title) < 0) return -1;
+    if (write_string(fd, snap->detail_status) < 0) return -1;
+    count = (uint32_t)snap->detail_line_count;
+    if (write_u32(fd, count) < 0) return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (write_string(fd, snap->detail_lines[i]) < 0) return -1;
+    }
+    return 0;
+}
+
+static int serialize_cgroups_snapshot(int fd, const LuloCgroupsSnapshot *snap)
+{
+    uint32_t count = 0;
+
+    if (!snap) return -1;
+    if (write_i32(fd, snap->tree_count) < 0) return -1;
+    for (int i = 0; i < snap->tree_count; i++) {
+        const LuloCgroupTreeRow *row = &snap->tree_rows[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->type) < 0) return -1;
+        if (write_string(fd, row->controllers) < 0) return -1;
+        if (write_i32(fd, row->process_count) < 0) return -1;
+        if (write_i32(fd, row->thread_count) < 0) return -1;
+        if (write_i32(fd, row->subgroup_count) < 0) return -1;
+        if (write_i32(fd, row->is_parent) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->file_count) < 0) return -1;
+    for (int i = 0; i < snap->file_count; i++) {
+        const LuloCgroupFileRow *row = &snap->file_rows[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->value) < 0) return -1;
+        if (write_i32(fd, row->writable) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->config_count) < 0) return -1;
+    for (int i = 0; i < snap->config_count; i++) {
+        const LuloCgroupConfigRow *row = &snap->configs[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->source) < 0) return -1;
+        if (write_string(fd, row->kind) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->configs_loaded) < 0) return -1;
+    if (write_string(fd, snap->browse_path) < 0) return -1;
     if (write_string(fd, snap->detail_title) < 0) return -1;
     if (write_string(fd, snap->detail_status) < 0) return -1;
     count = (uint32_t)snap->detail_line_count;
@@ -811,6 +933,94 @@ fail:
     return -1;
 }
 
+static int deserialize_cgroups_snapshot(int fd, LuloCgroupsSnapshot *snap)
+{
+    int32_t count = 0;
+    uint32_t lines = 0;
+
+    if (!snap) return -1;
+    memset(snap, 0, sizeof(*snap));
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->tree_rows = calloc((size_t)count, sizeof(*snap->tree_rows));
+        if (!snap->tree_rows) goto fail;
+    }
+    snap->tree_count = count;
+    for (int i = 0; i < snap->tree_count; i++) {
+        LuloCgroupTreeRow *row = &snap->tree_rows[i];
+
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->type, sizeof(row->type)) < 0) goto fail;
+        if (read_string_fixed(fd, row->controllers, sizeof(row->controllers)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->process_count = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->thread_count = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->subgroup_count = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->is_parent = count;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->file_rows = calloc((size_t)count, sizeof(*snap->file_rows));
+        if (!snap->file_rows) goto fail;
+    }
+    snap->file_count = count;
+    for (int i = 0; i < snap->file_count; i++) {
+        LuloCgroupFileRow *row = &snap->file_rows[i];
+
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->value, sizeof(row->value)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->writable = count;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->configs = calloc((size_t)count, sizeof(*snap->configs));
+        if (!snap->configs) goto fail;
+    }
+    snap->config_count = count;
+    for (int i = 0; i < snap->config_count; i++) {
+        LuloCgroupConfigRow *row = &snap->configs[i];
+
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->source, sizeof(row->source)) < 0) goto fail;
+        if (read_string_fixed(fd, row->kind, sizeof(row->kind)) < 0) goto fail;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->configs_loaded = count;
+    if (read_string_fixed(fd, snap->browse_path, sizeof(snap->browse_path)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->detail_title, sizeof(snap->detail_title)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->detail_status, sizeof(snap->detail_status)) < 0) goto fail;
+    if (read_u32(fd, &lines) < 0) goto fail;
+    for (uint32_t i = 0; i < lines; i++) {
+        char *line = NULL;
+
+        if (read_string_dyn(fd, &line) < 0) goto fail;
+        if (append_owned_line(&snap->detail_lines, &snap->detail_line_count, line) < 0) {
+            free(line);
+            goto fail;
+        }
+        free(line);
+    }
+    return 0;
+
+fail:
+    lulo_cgroups_snapshot_free(snap);
+    return -1;
+}
+
 int lulod_socket_path(char *buf, size_t len)
 {
     const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
@@ -1040,4 +1250,53 @@ int lulod_recv_sched_response(int fd, LuloSchedSnapshot *snap, char *err, size_t
         return -1;
     }
     return deserialize_sched_snapshot(fd, snap);
+}
+
+int lulod_send_cgroups_request(int fd, uint32_t type, const LuloCgroupsState *state)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_u32(fd, type) < 0) return -1;
+    return serialize_cgroups_state(fd, state);
+}
+
+int lulod_recv_cgroups_state(int fd, LuloCgroupsState *state)
+{
+    return deserialize_cgroups_state(fd, state);
+}
+
+int lulod_recv_cgroups_request(int fd, uint32_t *type, LuloCgroupsState *state)
+{
+    if (lulod_recv_request_header(fd, type) < 0) return -1;
+    return deserialize_cgroups_state(fd, state);
+}
+
+int lulod_send_cgroups_response(int fd, int status, const char *err, const LuloCgroupsSnapshot *snap)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_i32(fd, status) < 0) return -1;
+    if (status < 0) return write_string(fd, err ? err : "request failed");
+    return serialize_cgroups_snapshot(fd, snap);
+}
+
+int lulod_recv_cgroups_response(int fd, LuloCgroupsSnapshot *snap, char *err, size_t errlen)
+{
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    int32_t status = 0;
+    char *msg = NULL;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (read_u32(fd, &magic) < 0) return -1;
+    if (read_u32(fd, &version) < 0) return -1;
+    if (read_i32(fd, &status) < 0) return -1;
+    if (magic != LULOD_MAGIC || version != LULOD_VERSION) return -1;
+    if (status < 0) {
+        if (read_string_dyn(fd, &msg) < 0) return -1;
+        if (err && errlen > 0) snprintf(err, errlen, "%s", msg ? msg : "request failed");
+        free(msg);
+        return -1;
+    }
+    return deserialize_cgroups_snapshot(fd, snap);
 }

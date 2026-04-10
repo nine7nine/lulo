@@ -207,6 +207,8 @@ static void raw_input_consume(RawInput *in, size_t count)
 static InputAction decode_key_byte(unsigned char ch)
 {
     switch (ch) {
+    case '\t':
+        return INPUT_TAB_NEXT;
     case 'q':
     case 'Q':
     case 0x1b:
@@ -263,6 +265,8 @@ static InputAction decode_key_byte(unsigned char ch)
     case 'a':
     case 'A':
         return INPUT_APPLY_SELECTED;
+    case '?':
+        return INPUT_TOGGLE_HELP;
     default:
         return INPUT_NONE;
     }
@@ -300,12 +304,12 @@ static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
         return 1;
     }
     if (buf[2] == 'C') {
-        out->action = INPUT_TAB_NEXT;
+        out->action = INPUT_NONE;
         raw_input_consume(in, 3);
         return 1;
     }
     if (buf[2] == 'D') {
-        out->action = INPUT_TAB_PREV;
+        out->action = INPUT_NONE;
         raw_input_consume(in, 3);
         return 1;
     }
@@ -316,6 +320,11 @@ static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
     }
     if (buf[2] == 'F') {
         out->action = INPUT_END;
+        raw_input_consume(in, 3);
+        return 1;
+    }
+    if (buf[2] == 'Z') {
+        out->action = INPUT_VIEW_NEXT;
         raw_input_consume(in, 3);
         return 1;
     }
@@ -404,8 +413,8 @@ static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
             switch (buf[pos]) {
             case 'A': out->action = INPUT_SCROLL_UP; break;
             case 'B': out->action = INPUT_SCROLL_DOWN; break;
-            case 'C': out->action = INPUT_TAB_NEXT; break;
-            case 'D': out->action = INPUT_TAB_PREV; break;
+            case 'C': out->action = INPUT_NONE; break;
+            case 'D': out->action = INPUT_NONE; break;
             case 'H': out->action = INPUT_HOME; break;
             case 'F': out->action = INPUT_END; break;
             default: return 0;
@@ -443,10 +452,10 @@ int raw_input_decode_one(RawInput *in, DecodedInput *out)
                 out->action = INPUT_SCROLL_DOWN;
                 break;
             case 'C':
-                out->action = INPUT_TAB_NEXT;
+                out->action = INPUT_NONE;
                 break;
             case 'D':
-                out->action = INPUT_TAB_PREV;
+                out->action = INPUT_NONE;
                 break;
             case 'H':
                 out->action = INPUT_HOME;
@@ -523,8 +532,10 @@ InputAction decode_notcurses_input(uint32_t id)
     case NCKEY_DOWN:
         return INPUT_SCROLL_DOWN;
     case NCKEY_LEFT:
-        return INPUT_TAB_PREV;
+        return INPUT_NONE;
     case NCKEY_RIGHT:
+        return INPUT_NONE;
+    case NCKEY_TAB:
         return INPUT_TAB_NEXT;
     case NCKEY_PGUP:
         return INPUT_PAGE_UP;
@@ -557,6 +568,8 @@ InputAction decode_notcurses_input(uint32_t id)
     case 'a':
     case 'A':
         return INPUT_APPLY_SELECTED;
+    case '?':
+        return INPUT_TOGGLE_HELP;
     case NCKEY_RESIZE:
         return INPUT_RESIZE;
     case NCKEY_SCROLL_UP:

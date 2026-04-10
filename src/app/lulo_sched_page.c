@@ -404,18 +404,156 @@ static Rgb sched_nice_color(const Theme *theme, int nice_value)
     return theme->white;
 }
 
-static Rgb sched_profile_color(const Theme *theme, const char *profile)
+static unsigned fnv1a_u32_local(const char *s)
 {
+    unsigned h = 2166136261u;
+
+    if (!s) return h;
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static int sched_policy_rank_for_profile(const LuloSchedProfileRow *row)
+{
+    if (!row || !row->has_policy) return 3;
+    switch (row->policy) {
+    case 6:
+        return 0;
+    case 1:
+        return 1;
+    case 2:
+        return 2;
+    case 0:
+    default:
+        return 3;
+    case 3:
+        return 4;
+    case 5:
+        return 5;
+    }
+}
+
+static long sched_profile_priority_score(const LuloSchedProfileRow *row)
+{
+    long score;
+    long nice_score = 0;
+    long rt_score = 0;
+    int rank;
+
+    if (!row) return -1;
+    rank = sched_policy_rank_for_profile(row);
+    score = (long)(600 - rank * 100) * 1000L;
+    if (row->has_rt_priority) rt_score = (long)row->rt_priority * 100L;
+    if (row->has_nice) nice_score = (long)(20 - row->nice) * 10L;
+    if (!row->enabled) score -= 250L;
+    return score + rt_score + nice_score;
+}
+
+static int sched_profile_priority_cmp(const LuloSchedProfileRow *a, const LuloSchedProfileRow *b)
+{
+    long sa;
+    long sb;
+    int cmp;
+
+    sa = sched_profile_priority_score(a);
+    sb = sched_profile_priority_score(b);
+    if (sa != sb) return sa > sb ? -1 : 1;
+    cmp = strcmp(a->name, b->name);
+    if (cmp != 0) return cmp;
+    return strcmp(a->path, b->path);
+}
+
+static Rgb hsv_rgb_local(unsigned h_deg, unsigned sat_pct, unsigned val_pct)
+{
+    unsigned region;
+    unsigned rem;
+    unsigned p;
+    unsigned q;
+    unsigned t;
+    unsigned v;
+    Rgb rgb;
+
+    if (sat_pct > 100) sat_pct = 100;
+    if (val_pct > 100) val_pct = 100;
+    h_deg %= 360;
+    v = (255u * val_pct) / 100u;
+    if (sat_pct == 0) {
+        rgb.r = v;
+        rgb.g = v;
+        rgb.b = v;
+        return rgb;
+    }
+    region = h_deg / 60u;
+    rem = ((h_deg % 60u) * 255u) / 60u;
+    p = (v * (100u - sat_pct)) / 100u;
+    q = (v * (255u - ((sat_pct * rem) / 100u))) / 255u;
+    t = (v * (255u - ((sat_pct * (255u - rem)) / 100u))) / 255u;
+    switch (region) {
+    case 0: rgb.r = v; rgb.g = t; rgb.b = p; break;
+    case 1: rgb.r = q; rgb.g = v; rgb.b = p; break;
+    case 2: rgb.r = p; rgb.g = v; rgb.b = t; break;
+    case 3: rgb.r = p; rgb.g = q; rgb.b = v; break;
+    case 4: rgb.r = t; rgb.g = p; rgb.b = v; break;
+    default: rgb.r = v; rgb.g = p; rgb.b = q; break;
+    }
+    return rgb;
+}
+
+static int sched_profile_index(const LuloSchedSnapshot *snap, const char *profile)
+{
+    if (!snap || !profile || !*profile) return -1;
+    for (int i = 0; i < snap->profile_count; i++) {
+        if (!strcmp(snap->profiles[i].name, profile)) return i;
+    }
+    return -1;
+}
+
+static int sched_profile_priority_rank(const LuloSchedSnapshot *snap, int idx)
+{
+    int rank = 0;
+
+    if (!snap || idx < 0 || idx >= snap->profile_count) return -1;
+    for (int i = 0; i < snap->profile_count; i++) {
+        if (i == idx) continue;
+        if (sched_profile_priority_cmp(&snap->profiles[i], &snap->profiles[idx]) < 0) rank++;
+    }
+    return rank;
+}
+
+static Rgb sched_profile_color(const Theme *theme, const LuloSchedSnapshot *snap, const char *profile)
+{
+    int idx;
+    int rank;
+    unsigned hue;
+    unsigned val;
+    unsigned sat;
+
+    (void)theme;
     if (!profile || !*profile) return theme->dim;
-    if (!strcmp(profile, "audio-rt")) return theme->orange;
-    if (!strcmp(profile, "multimedia")) return theme->yellow;
-    if (!strcmp(profile, "desktop-fg")) return theme->cyan;
-    if (!strcmp(profile, "desktop")) return theme->blue;
-    if (!strcmp(profile, "desktop-bg")) return theme->green;
-    if (!strcmp(profile, "focused")) return theme->red;
-    if (!strcmp(profile, "background")) return theme->green;
-    if (!strcmp(profile, "idle")) return theme->dim;
-    return theme->white;
+    idx = sched_profile_index(snap, profile);
+    if (idx >= 0 && snap->profile_count > 0) {
+        rank = sched_profile_priority_rank(snap, idx);
+        if (rank < 0) rank = idx;
+        if (snap->profile_count == 1) {
+            hue = 20u;
+            sat = 85u;
+            val = 98u;
+        } else {
+            unsigned denom = (unsigned)(snap->profile_count - 1);
+
+            hue = 20u + (unsigned)rank * 220u / denom;
+            sat = 88u - (unsigned)rank * 18u / denom;
+            val = 98u - (unsigned)rank * 26u / denom;
+        }
+    } else {
+        hue = fnv1a_u32_local(profile) % 360u;
+        sat = 72u;
+        val = 86u;
+    }
+    return hsv_rgb_local(hue, sat, val);
 }
 
 static Rgb sched_status_color(const Theme *theme, const char *status)
@@ -478,7 +616,7 @@ static void render_sched_profiles_list(struct ncplane *p, const Theme *theme, co
         plane_putn(p, y, x, selected ? theme->select_fg : (row->enabled ? theme->green : theme->dim),
                    row_bg, row->enabled ? "on" : "--", flag_w);
         x += flag_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : sched_profile_color(theme, row->name),
+        plane_putn(p, y, x, selected ? theme->select_fg : sched_profile_color(theme, snap, row->name),
                    row_bg, row->name, name_w);
         x += name_w + 1;
         snprintf(buf, sizeof(buf), "%*s", nice_w, row->has_nice ? "" : "-");
@@ -558,7 +696,7 @@ static void render_sched_rules_list(struct ncplane *p, const Theme *theme, const
         plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, row->pattern, pattern_w);
         x += pattern_w + 1;
         plane_putn(p, y, x, selected ? theme->select_fg :
-                   (row->exclude ? theme->red : sched_profile_color(theme, row->profile)),
+                   (row->exclude ? theme->red : sched_profile_color(theme, snap, row->profile)),
                    row_bg, target, target_w);
     }
 }
@@ -625,7 +763,7 @@ static void render_sched_live_list(struct ncplane *p, const Theme *theme, const 
         x += pid_w + 1;
         plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, row->comm, comm_w);
         x += comm_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : sched_profile_color(theme, row->profile),
+        plane_putn(p, y, x, selected ? theme->select_fg : sched_profile_color(theme, snap, row->profile),
                    row_bg, row->profile, profile_w);
         x += profile_w + 1;
         lulo_format_proc_policy(policy, sizeof(policy), row->policy);
@@ -664,7 +802,7 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             snprintf(buf, sizeof(buf), "%s  %s", row->enabled ? "enabled" : "disabled",
                      row->exclude ? "exclude" : row->profile);
             plane_putn(p, rect->row + 2, rect->col + 2,
-                       row->exclude ? theme->red : sched_profile_color(theme, row->profile),
+                       row->exclude ? theme->red : sched_profile_color(theme, snap, row->profile),
                        theme->bg, buf, rect->width - 4);
             snprintf(buf, sizeof(buf), "%s  %s", lulo_sched_match_kind_name(row->match_kind), row->pattern);
             plane_putn(p, rect->row + 3, rect->col + 2, theme->cyan, theme->bg, buf, rect->width - 4);
@@ -680,7 +818,7 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             snprintf(buf, sizeof(buf), "%s (%d)", row->comm, row->pid);
             plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, buf, rect->width - 4);
             snprintf(buf, sizeof(buf), "%s  %s", row->profile, row->rule);
-            plane_putn(p, rect->row + 2, rect->col + 2, sched_profile_color(theme, row->profile),
+            plane_putn(p, rect->row + 2, rect->col + 2, sched_profile_color(theme, snap, row->profile),
                        theme->bg, buf, rect->width - 4);
             snprintf(buf, sizeof(buf), "pol %s  nice %d  rt %d", policy, row->nice, row->rt_priority);
             plane_putn(p, rect->row + 3, rect->col + 2, theme->yellow, theme->bg, buf, rect->width - 4);
@@ -694,7 +832,7 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             const LuloSchedProfileRow *row = &snap->profiles[state->profile_selected];
             char policy[16];
 
-            plane_putn(p, rect->row + 1, rect->col + 2, sched_profile_color(theme, row->name),
+            plane_putn(p, rect->row + 1, rect->col + 2, sched_profile_color(theme, snap, row->name),
                        theme->bg, row->name, rect->width - 4);
             plane_putn(p, rect->row + 2, rect->col + 2, row->enabled ? theme->green : theme->dim, theme->bg,
                        row->enabled ? "enabled" : "disabled", rect->width - 4);

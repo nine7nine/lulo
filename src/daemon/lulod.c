@@ -1,8 +1,10 @@
 #define _GNU_SOURCE
 
+#include "lulo_cgroups.h"
 #include "lulo_sched.h"
 #include "lulo_systemd.h"
 #include "lulo_tune.h"
+#include "lulod_cgroups.h"
 #include "lulod_focus.h"
 #include "lulod_sched.h"
 #include "lulod_systemd.h"
@@ -99,6 +101,20 @@ static int refresh_tune_cache(LuloTuneSnapshot *cache, const LuloTuneState *stat
     return 0;
 }
 
+static int refresh_cgroups_cache(LuloCgroupsSnapshot *cache, const LuloCgroupsState *state,
+                                 LuloCgroupsState *cache_state, long long *due_ms)
+{
+    LuloCgroupsSnapshot fresh = {0};
+    LuloCgroupsState gather_state = state ? *state : (LuloCgroupsState){0};
+
+    if (lulod_cgroups_snapshot_gather(&fresh, &gather_state) < 0) return -1;
+    lulo_cgroups_snapshot_free(cache);
+    *cache = fresh;
+    if (cache_state) *cache_state = gather_state;
+    *due_ms = mono_ms_now() + 5000;
+    return 0;
+}
+
 static int state_has_active_preview(const LuloSystemdState *state)
 {
     if (!state) return 0;
@@ -133,6 +149,20 @@ static int sched_state_has_active_preview(const LuloSchedState *state)
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return state->profile_selected >= 0 && state->selected_profile[0];
+    }
+}
+
+static int cgroups_state_has_active_preview(const LuloCgroupsState *state)
+{
+    if (!state) return 0;
+    switch (state->view) {
+    case LULO_CGROUPS_VIEW_CONFIG:
+        return state->config_selected >= 0 && state->selected_config[0];
+    case LULO_CGROUPS_VIEW_FILES:
+        return state->file_selected >= 0 && state->selected_file_path[0];
+    case LULO_CGROUPS_VIEW_TREE:
+    default:
+        return state->tree_selected >= 0 && state->selected_tree_path[0];
     }
 }
 
@@ -246,6 +276,40 @@ static int reply_for_sched_request(uint32_t type, const LuloSchedState *state,
     return 0;
 }
 
+static int reply_for_cgroups_request(uint32_t type, const LuloCgroupsState *state,
+                                     LuloCgroupsSnapshot *cache, LuloCgroupsState *cache_state,
+                                     int *have_cache, long long *due_ms,
+                                     LuloCgroupsSnapshot *reply,
+                                     char *err, size_t errlen)
+{
+    int need_full;
+    int browse_changed = 0;
+
+    if (err && errlen > 0) err[0] = '\0';
+    memset(reply, 0, sizeof(*reply));
+    if (state && cache_state) browse_changed = strcmp(cache_state->browse_path, state->browse_path) != 0;
+    need_full = !*have_cache || mono_ms_now() >= *due_ms || browse_changed;
+    if (need_full) {
+        if (refresh_cgroups_cache(cache, state, cache_state, due_ms) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "failed to refresh cgroups cache");
+            return -1;
+        }
+        *have_cache = 1;
+    }
+    if (lulo_cgroups_snapshot_clone(reply, cache) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "failed to clone cgroups snapshot");
+        return -1;
+    }
+    if ((type == LULOD_REQ_CGROUPS_ACTIVE ||
+         (type == LULOD_REQ_CGROUPS_FULL && cgroups_state_has_active_preview(state))) &&
+        lulod_cgroups_snapshot_refresh_active(reply, state) < 0) {
+        lulo_cgroups_snapshot_free(reply);
+        if (err && errlen > 0) snprintf(err, errlen, "failed to refresh cgroups preview");
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     char socket_path[108];
@@ -253,13 +317,17 @@ int main(int argc, char *argv[])
     LuloSystemdSnapshot cache = {0};
     LuloSchedSnapshot sched_cache = {0};
     LuloTuneSnapshot tune_cache = {0};
+    LuloCgroupsSnapshot cgroups_cache = {0};
     LuloTuneState tune_cache_state = {0};
+    LuloCgroupsState cgroups_cache_state = {0};
     int have_cache = 0;
     int have_sched_cache = 0;
     int have_tune_cache = 0;
+    int have_cgroups_cache = 0;
     long long due_ms = 0;
     long long sched_due_ms = 0;
     long long tune_due_ms = 0;
+    long long cgroups_due_ms = 0;
     LulodFocusMonitor focus_monitor;
     LulodFocusSyncState focus_sync = {0};
     char focus_err[160] = {0};
@@ -293,9 +361,11 @@ int main(int argc, char *argv[])
         LuloSystemdState state = {0};
         LuloSchedState sched_state = {0};
         LuloTuneState tune_state = {0};
+        LuloCgroupsState cgroups_state = {0};
         LuloSystemdSnapshot reply = {0};
         LuloSchedSnapshot sched_reply = {0};
         LuloTuneSnapshot tune_reply = {0};
+        LuloCgroupsSnapshot cgroups_reply = {0};
         char errbuf[160] = {0};
         struct pollfd pfds[2];
         nfds_t nfds = 1;
@@ -402,6 +472,21 @@ int main(int argc, char *argv[])
                 lulod_send_tune_response(client_fd, 0, NULL, &tune_reply);
             }
             lulo_tune_snapshot_free(&tune_reply);
+        } else if (type == LULOD_REQ_CGROUPS_FULL || type == LULOD_REQ_CGROUPS_ACTIVE) {
+            if (lulod_recv_cgroups_state(client_fd, &cgroups_state) < 0) {
+                lulod_send_cgroups_response(client_fd, -1, "bad request", NULL);
+                close(client_fd);
+                continue;
+            }
+            if (reply_for_cgroups_request(type, &cgroups_state, &cgroups_cache, &cgroups_cache_state,
+                                          &have_cgroups_cache, &cgroups_due_ms, &cgroups_reply,
+                                          errbuf, sizeof(errbuf)) < 0) {
+                lulod_send_cgroups_response(client_fd, -1,
+                                            errbuf[0] ? errbuf : "cgroups request failed", NULL);
+            } else {
+                lulod_send_cgroups_response(client_fd, 0, NULL, &cgroups_reply);
+            }
+            lulo_cgroups_snapshot_free(&cgroups_reply);
         } else {
             lulod_send_systemd_response(client_fd, -1, "unknown request", NULL);
         }
@@ -420,5 +505,6 @@ int main(int argc, char *argv[])
     lulo_systemd_snapshot_free(&cache);
     lulo_sched_snapshot_free(&sched_cache);
     lulo_tune_snapshot_free(&tune_cache);
+    lulo_cgroups_snapshot_free(&cgroups_cache);
     return 0;
 }

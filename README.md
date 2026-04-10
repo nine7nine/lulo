@@ -19,7 +19,13 @@ Current areas include:
 
 - [INSTALL.md](INSTALL.md): build, install, update, and packaging flow
 - [ARCHITECTURE.md](ARCHITECTURE.md): process split, source layout, and design notes
+- [CPU.md](CPU.md): CPU sampling and process-tree behavior
+- [DISK.md](DISK.md): filesystem usage view
 - [SCHED.md](SCHED.md): scheduler model, config layout, and focused-app behavior
+- [CGROUPS.md](CGROUPS.md): cgroup hierarchy, files, and related config
+- [SYSTEMD.md](SYSTEMD.md): service, dependency, and config inspection
+- [TUNE.md](TUNE.md): tunables explorer, snapshots, and presets
+- [UDEV.md](UDEV.md): udev rules, hwdb, and live device inspection
 
 ## Build
 

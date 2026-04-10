@@ -243,6 +243,8 @@ static const char *app_page_name(AppPage page)
         return "SCHED";
     case APP_PAGE_CGROUPS:
         return "CGROUPS";
+    case APP_PAGE_UDEV:
+        return "UDEV";
     case APP_PAGE_TUNE:
         return "TUNE";
     case APP_PAGE_SYSTEMD:
@@ -260,6 +262,7 @@ static const char *footer_hint(AppPage page)
     switch (page) {
     case APP_PAGE_SCHED:
     case APP_PAGE_CGROUPS:
+    case APP_PAGE_UDEV:
     case APP_PAGE_SYSTEMD:
     case APP_PAGE_TUNE:
         return "q exit   Tab page   Shift-Tab subview   ? help";
@@ -277,6 +280,8 @@ static const char *help_title(AppPage page)
         return " Scheduler Help ";
     case APP_PAGE_CGROUPS:
         return " Cgroups Help ";
+    case APP_PAGE_UDEV:
+        return " Udev Help ";
     case APP_PAGE_TUNE:
         return " Tunables Help ";
     case APP_PAGE_SYSTEMD:
@@ -340,6 +345,18 @@ static const HelpEntry *help_entries(AppPage page, int *count)
         {"R", "reload the active cgroups view"},
         {"? / Esc / click", "close help"},
     };
+    static const HelpEntry udev_lines[] = {
+        {"Tab", "switch top-level pages"},
+        {"Shift-Tab", "change udev subview"},
+        {"click Rules/Hwdb/Devices", "change udev view"},
+        {"j/k or arrows", "move the active pane"},
+        {"PgUp/PgDn, Home/End", "jump the active pane"},
+        {"f", "toggle list / preview focus"},
+        {"space", "open or close the selected item"},
+        {"i", "edit the selected rule or hwdb file"},
+        {"R", "reload the active udev view"},
+        {"? / Esc / click", "close help"},
+    };
     static const HelpEntry systemd_lines[] = {
         {"Tab", "switch top-level pages"},
         {"Shift-Tab", "change systemd subview"},
@@ -377,6 +394,9 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     case APP_PAGE_CGROUPS:
         *count = (int)(sizeof(cgroups_lines) / sizeof(cgroups_lines[0]));
         return cgroups_lines;
+    case APP_PAGE_UDEV:
+        *count = (int)(sizeof(udev_lines) / sizeof(udev_lines[0]));
+        return udev_lines;
     case APP_PAGE_TUNE:
         *count = (int)(sizeof(tune_lines) / sizeof(tune_lines[0]));
         return tune_lines;
@@ -474,6 +494,28 @@ const char *cgroups_status_current(AppState *app)
     return app->cgroups_status;
 }
 
+void udev_status_set(AppState *app, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!app) return;
+    va_start(ap, fmt);
+    vsnprintf(app->udev_status, sizeof(app->udev_status), fmt, ap);
+    va_end(ap);
+    app->udev_status_until_ms = mono_ms_now() + 2500;
+}
+
+const char *udev_status_current(AppState *app)
+{
+    if (!app || !app->udev_status[0]) return NULL;
+    if (mono_ms_now() > app->udev_status_until_ms) {
+        app->udev_status[0] = '\0';
+        app->udev_status_until_ms = 0;
+        return NULL;
+    }
+    return app->udev_status;
+}
+
 void tune_status_set(AppState *app, const char *fmt, ...)
 {
     va_list ap;
@@ -569,6 +611,7 @@ static void ui_forget_planes(Ui *ui)
     ui->disk = NULL;
     ui->sched = NULL;
     ui->cgroups = NULL;
+    ui->udev = NULL;
     ui->systemd = NULL;
     ui->tune = NULL;
     ui->load = NULL;
@@ -1031,6 +1074,7 @@ static void ui_destroy_planes(Ui *ui)
     destroy_plane(&ui->proc);
     destroy_plane(&ui->mem);
     destroy_plane(&ui->cpu);
+    destroy_plane(&ui->udev);
     destroy_plane(&ui->top);
     destroy_plane(&ui->tabs);
     destroy_plane(&ui->header);
@@ -1086,6 +1130,12 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
             ui->cgroups = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1,
                                        cgroups_height, lo->top.width - 2, "cgroups");
         }
+    } else if (page == APP_PAGE_UDEV) {
+        int udev_height = lo->top.height - 3;
+        if (udev_height > 0) {
+            ui->udev = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1,
+                                    udev_height, lo->top.width - 2, "udev");
+        }
     } else {
         int systemd_height = lo->top.height - 3;
         if (systemd_height > 0) {
@@ -1112,6 +1162,9 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
     if (page == APP_PAGE_CGROUPS && !ui->cgroups) {
         return -1;
     }
+    if (page == APP_PAGE_UDEV && !ui->udev) {
+        return -1;
+    }
     if (page == APP_PAGE_SYSTEMD && !ui->systemd) {
         return -1;
     }
@@ -1124,6 +1177,8 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
         draw_box_title(ui->sched, ui->theme, ui->theme->border_panel, " Scheduler ", ui->theme->white);
     } else if (ui->cgroups) {
         draw_box_title(ui->cgroups, ui->theme, ui->theme->border_panel, " Cgroups ", ui->theme->white);
+    } else if (ui->udev) {
+        draw_box_title(ui->udev, ui->theme, ui->theme->border_panel, " Udev ", ui->theme->white);
     } else if (ui->tune) {
         draw_box_title(ui->tune, ui->theme, ui->theme->border_panel, " Tunables ", ui->theme->white);
     } else if (ui->systemd) {
@@ -1929,6 +1984,15 @@ static void render_cgroups_page(Ui *ui, AppState *app, const DashboardState *das
     render_cgroups_status(ui, cgroups_snap, cgroups_state, cgroups_backend_status, app);
 }
 
+static void render_udev_page(Ui *ui, AppState *app, const DashboardState *dash,
+                             const LuloUdevSnapshot *udev_snap, const LuloUdevState *udev_state,
+                             const LuloUdevBackendStatus *udev_backend_status)
+{
+    render_header_widget(ui, dash, app);
+    render_udev_widget(ui, udev_snap, udev_state);
+    render_udev_status(ui, udev_snap, udev_state, udev_backend_status, app);
+}
+
 static void render_systemd_page(Ui *ui, const AppState *app, const DashboardState *dash,
                                 const LuloSystemdSnapshot *systemd_snap, const LuloSystemdState *systemd_state,
                                 const LuloSystemdBackendStatus *systemd_backend_status)
@@ -1974,6 +2038,15 @@ static void render_cgroups_only(Ui *ui, const LuloCgroupsSnapshot *cgroups_snap,
 {
     render_cgroups_widget(ui, cgroups_snap, cgroups_state);
     render_cgroups_status(ui, cgroups_snap, cgroups_state, cgroups_backend_status, app);
+}
+
+static void render_udev_only(Ui *ui, const LuloUdevSnapshot *udev_snap,
+                             const LuloUdevState *udev_state,
+                             AppState *app,
+                             const LuloUdevBackendStatus *udev_backend_status)
+{
+    render_udev_widget(ui, udev_snap, udev_state);
+    render_udev_status(ui, udev_snap, udev_state, udev_backend_status, app);
 }
 
 static void render_systemd_only(Ui *ui, const LuloSystemdSnapshot *systemd_snap,
@@ -2100,6 +2173,18 @@ static int cgroups_backend_status_changed(const LuloCgroupsBackendStatus *a,
            strcmp(a->error, b->error) != 0;
 }
 
+static int udev_backend_status_changed(const LuloUdevBackendStatus *a,
+                                       const LuloUdevBackendStatus *b)
+{
+    if (!a || !b) return 0;
+    return a->busy != b->busy ||
+           a->have_snapshot != b->have_snapshot ||
+           a->loading_full != b->loading_full ||
+           a->loading_active != b->loading_active ||
+           a->generation != b->generation ||
+           strcmp(a->error, b->error) != 0;
+}
+
 static int poll_sched_backend(Ui *ui, AppState *app, LuloSchedBackend *backend,
                               LuloSchedSnapshot *snap, LuloSchedState *state,
                               LuloSchedBackendStatus *status, unsigned *generation,
@@ -2143,6 +2228,30 @@ static int poll_cgroups_backend(Ui *ui, AppState *app, LuloCgroupsBackend *backe
         }
     } else if (app->active_page == APP_PAGE_CGROUPS && cgroups_backend_status_changed(&prev_status, status)) {
         render->need_cgroups = 1;
+        render->need_render = 1;
+    }
+    return changed;
+}
+
+static int poll_udev_backend(Ui *ui, AppState *app, LuloUdevBackend *backend,
+                             LuloUdevSnapshot *snap, LuloUdevState *state,
+                             LuloUdevBackendStatus *status, unsigned *generation,
+                             RenderFlags *render)
+{
+    LuloUdevBackendStatus prev_status = *status;
+    int changed = lulo_udev_backend_consume(backend, snap, generation, status);
+
+    if (changed < 0) return -1;
+    if (changed > 0) {
+        lulo_udev_view_sync(state, snap,
+                            udev_list_rows_visible(ui, state),
+                            udev_preview_rows_visible(ui, state));
+        if (app->active_page == APP_PAGE_UDEV) {
+            render->need_udev = 1;
+            render->need_render = 1;
+        }
+    } else if (app->active_page == APP_PAGE_UDEV && udev_backend_status_changed(&prev_status, status)) {
+        render->need_udev = 1;
         render->need_render = 1;
     }
     return changed;
@@ -2212,6 +2321,7 @@ static int handle_tab_click(Ui *ui, int global_y, int global_x, AppState *app, R
                 app->active_page = (AppPage)i;
                 if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
                 else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
+                else if (app->active_page == APP_PAGE_UDEV) render->need_udev_refresh_full = 1;
                 else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
                 else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
                 render->need_rebuild = 1;
@@ -2309,6 +2419,7 @@ static int handle_proc_click(Ui *ui, int global_y, int global_x,
 static int point_on_inner_tabs(Ui *ui, AppPage page,
                                const LuloSchedState *sched_state,
                                const LuloCgroupsState *cgroups_state,
+                               const LuloUdevState *udev_state,
                                const LuloTuneState *tune_state,
                                const LuloSystemdState *systemd_state,
                                int global_y, int global_x)
@@ -2318,6 +2429,9 @@ static int point_on_inner_tabs(Ui *ui, AppPage page,
     }
     if (page == APP_PAGE_CGROUPS && ui->cgroups && cgroups_state) {
         return point_on_cgroups_view_tabs(ui, cgroups_state, global_y, global_x);
+    }
+    if (page == APP_PAGE_UDEV && ui->udev && udev_state) {
+        return point_on_udev_view_tabs(ui, udev_state, global_y, global_x);
     }
     if (page == APP_PAGE_TUNE && ui->tune && tune_state) {
         return point_on_tune_view_tabs(ui, tune_state, global_y, global_x);
@@ -2331,6 +2445,7 @@ static int point_on_inner_tabs(Ui *ui, AppPage page,
 static int handle_mouse_wheel_target(Ui *ui, AppState *app,
                                      LuloSchedState *sched_state,
                                      LuloCgroupsState *cgroups_state,
+                                     LuloUdevState *udev_state,
                                      LuloTuneState *tune_state,
                                      LuloSystemdState *systemd_state,
                                      RenderFlags *render,
@@ -2338,7 +2453,7 @@ static int handle_mouse_wheel_target(Ui *ui, AppState *app,
 {
     if (!ui || !app) return 0;
     if (point_on_page_tabs(ui, global_y, global_x)) return 0;
-    if (point_on_inner_tabs(ui, app->active_page, sched_state, cgroups_state, tune_state, systemd_state, global_y, global_x)) return 0;
+    if (point_on_inner_tabs(ui, app->active_page, sched_state, cgroups_state, udev_state, tune_state, systemd_state, global_y, global_x)) return 0;
     switch (app->active_page) {
     case APP_PAGE_CPU:
         return global_y >= ui->lo.proc.row + 2 &&
@@ -2355,6 +2470,8 @@ static int handle_mouse_wheel_target(Ui *ui, AppState *app,
         return handle_sched_wheel_target(ui, sched_state, render, global_y, global_x);
     case APP_PAGE_CGROUPS:
         return handle_cgroups_wheel_target(ui, cgroups_state, render, global_y, global_x);
+    case APP_PAGE_UDEV:
+        return handle_udev_wheel_target(ui, udev_state, render, global_y, global_x);
     case APP_PAGE_SYSTEMD:
         return handle_systemd_wheel_target(ui, systemd_state, render, global_y, global_x);
     case APP_PAGE_TUNE:
@@ -2368,6 +2485,7 @@ static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
                               const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
                               const LuloSchedSnapshot *sched_snap, LuloSchedState *sched_state,
                               const LuloCgroupsSnapshot *cgroups_snap, LuloCgroupsState *cgroups_state,
+                              const LuloUdevSnapshot *udev_snap, LuloUdevState *udev_state,
                               const LuloTuneSnapshot *tune_snap, LuloTuneState *tune_state,
                               const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                               RenderFlags *render)
@@ -2388,6 +2506,10 @@ static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
     }
     if (app->active_page == APP_PAGE_CGROUPS &&
         handle_cgroups_click(ui, global_y, global_x, cgroups_snap, cgroups_state, render)) {
+        return 1;
+    }
+    if (app->active_page == APP_PAGE_UDEV &&
+        handle_udev_click(ui, global_y, global_x, udev_snap, udev_state, render)) {
         return 1;
     }
     if (app->active_page == APP_PAGE_TUNE &&
@@ -2576,11 +2698,53 @@ static void update_cgroups_render_flags(RenderFlags *render, const LuloCgroupsSt
     }
 }
 
+static void update_udev_render_flags(RenderFlags *render, const LuloUdevState *state,
+                                     int prev_view,
+                                     int prev_rule_cursor, int prev_rule_selected,
+                                     int prev_rule_list_scroll, int prev_rule_detail_scroll,
+                                     int prev_hwdb_cursor, int prev_hwdb_selected,
+                                     int prev_hwdb_list_scroll, int prev_hwdb_detail_scroll,
+                                     int prev_device_cursor, int prev_device_selected,
+                                     int prev_device_list_scroll, int prev_device_detail_scroll,
+                                     int prev_focus)
+{
+    if (!render || !state) return;
+    if ((int)state->view != prev_view) {
+        render->need_udev_refresh = 1;
+        return;
+    }
+    switch (state->view) {
+    case LULO_UDEV_VIEW_HWDB:
+        if (state->hwdb_selected != prev_hwdb_selected) render->need_udev_refresh = 1;
+        else if (state->hwdb_cursor != prev_hwdb_cursor ||
+                 state->hwdb_list_scroll != prev_hwdb_list_scroll ||
+                 state->hwdb_detail_scroll != prev_hwdb_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_udev = 1;
+        break;
+    case LULO_UDEV_VIEW_DEVICES:
+        if (state->device_selected != prev_device_selected) render->need_udev_refresh = 1;
+        else if (state->device_cursor != prev_device_cursor ||
+                 state->device_list_scroll != prev_device_list_scroll ||
+                 state->device_detail_scroll != prev_device_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_udev = 1;
+        break;
+    case LULO_UDEV_VIEW_RULES:
+    default:
+        if (state->rule_selected != prev_rule_selected) render->need_udev_refresh = 1;
+        else if (state->rule_cursor != prev_rule_cursor ||
+                 state->rule_list_scroll != prev_rule_list_scroll ||
+                 state->rule_detail_scroll != prev_rule_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_udev = 1;
+        break;
+    }
+}
+
 static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
                                const LuloDizkSnapshot *dizk_snap, LuloDizkState *dizk_state,
                                const LuloSchedSnapshot *sched_snap, LuloSchedState *sched_state,
                                const LuloCgroupsSnapshot *cgroups_snap, LuloCgroupsState *cgroups_state,
+                               const LuloUdevSnapshot *udev_snap, LuloUdevState *udev_state,
                                const LuloTuneSnapshot *tune_snap, LuloTuneState *tune_state,
                                const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                                InputBackend input_backend, RawInput *rawin, DebugLog *dlog,
@@ -2619,6 +2783,20 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     int prev_cgroups_config_list_scroll = cgroups_state ? cgroups_state->config_list_scroll : 0;
     int prev_cgroups_config_detail_scroll = cgroups_state ? cgroups_state->config_detail_scroll : 0;
     int prev_cgroups_focus = cgroups_state ? cgroups_state->focus_preview : 0;
+    int prev_udev_view = udev_state ? (int)udev_state->view : 0;
+    int prev_udev_rule_cursor = udev_state ? udev_state->rule_cursor : -1;
+    int prev_udev_rule_selected = udev_state ? udev_state->rule_selected : -1;
+    int prev_udev_rule_list_scroll = udev_state ? udev_state->rule_list_scroll : 0;
+    int prev_udev_rule_detail_scroll = udev_state ? udev_state->rule_detail_scroll : 0;
+    int prev_udev_hwdb_cursor = udev_state ? udev_state->hwdb_cursor : -1;
+    int prev_udev_hwdb_selected = udev_state ? udev_state->hwdb_selected : -1;
+    int prev_udev_hwdb_list_scroll = udev_state ? udev_state->hwdb_list_scroll : 0;
+    int prev_udev_hwdb_detail_scroll = udev_state ? udev_state->hwdb_detail_scroll : 0;
+    int prev_udev_device_cursor = udev_state ? udev_state->device_cursor : -1;
+    int prev_udev_device_selected = udev_state ? udev_state->device_selected : -1;
+    int prev_udev_device_list_scroll = udev_state ? udev_state->device_list_scroll : 0;
+    int prev_udev_device_detail_scroll = udev_state ? udev_state->device_detail_scroll : 0;
+    int prev_udev_focus = udev_state ? udev_state->focus_preview : 0;
     int prev_systemd_cursor = systemd_state ? systemd_state->cursor : -1;
     int prev_systemd_selected = systemd_state ? systemd_state->selected : 0;
     int prev_systemd_config_cursor = systemd_state ? systemd_state->config_cursor : -1;
@@ -2699,6 +2877,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                       cgroups_preview_rows_visible(ui, cgroups_state));
             render->need_cgroups = 1;
             render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            lulo_udev_toggle_focus(udev_state, udev_snap,
+                                   udev_list_rows_visible(ui, udev_state),
+                                   udev_preview_rows_visible(ui, udev_state));
+            render->need_udev = 1;
+            render->need_render = 1;
         } else if (app->active_page == APP_PAGE_SYSTEMD) {
             lulo_systemd_toggle_focus(systemd_state, systemd_snap,
                                       systemd_list_rows_visible(ui, systemd_state),
@@ -2755,6 +2939,21 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                         prev_cgroups_config_cursor, prev_cgroups_config_selected,
                                         prev_cgroups_config_list_scroll, prev_cgroups_config_detail_scroll,
                                         prev_cgroups_focus);
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_udev_view_move(udev_state, udev_snap,
+                                udev_list_rows_visible(ui, udev_state),
+                                udev_preview_rows_visible(ui, udev_state), -delta);
+            update_udev_render_flags(render, udev_state,
+                                     prev_udev_view,
+                                     prev_udev_rule_cursor, prev_udev_rule_selected,
+                                     prev_udev_rule_list_scroll, prev_udev_rule_detail_scroll,
+                                     prev_udev_hwdb_cursor, prev_udev_hwdb_selected,
+                                     prev_udev_hwdb_list_scroll, prev_udev_hwdb_detail_scroll,
+                                     prev_udev_device_cursor, prev_udev_device_selected,
+                                     prev_udev_device_list_scroll, prev_udev_device_detail_scroll,
+                                     prev_udev_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -2827,6 +3026,21 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                         prev_cgroups_config_cursor, prev_cgroups_config_selected,
                                         prev_cgroups_config_list_scroll, prev_cgroups_config_detail_scroll,
                                         prev_cgroups_focus);
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_udev_view_move(udev_state, udev_snap,
+                                udev_list_rows_visible(ui, udev_state),
+                                udev_preview_rows_visible(ui, udev_state), +delta);
+            update_udev_render_flags(render, udev_state,
+                                     prev_udev_view,
+                                     prev_udev_rule_cursor, prev_udev_rule_selected,
+                                     prev_udev_rule_list_scroll, prev_udev_rule_detail_scroll,
+                                     prev_udev_hwdb_cursor, prev_udev_hwdb_selected,
+                                     prev_udev_hwdb_list_scroll, prev_udev_hwdb_detail_scroll,
+                                     prev_udev_device_cursor, prev_udev_device_selected,
+                                     prev_udev_device_list_scroll, prev_udev_device_detail_scroll,
+                                     prev_udev_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -2913,6 +3127,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                         prev_cgroups_config_cursor, prev_cgroups_config_selected,
                                         prev_cgroups_config_list_scroll, prev_cgroups_config_detail_scroll,
                                         prev_cgroups_focus);
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            lulo_udev_view_page(udev_state, udev_snap,
+                                udev_list_rows_visible(ui, udev_state),
+                                udev_preview_rows_visible(ui, udev_state), -1);
+            update_udev_render_flags(render, udev_state,
+                                     prev_udev_view,
+                                     prev_udev_rule_cursor, prev_udev_rule_selected,
+                                     prev_udev_rule_list_scroll, prev_udev_rule_detail_scroll,
+                                     prev_udev_hwdb_cursor, prev_udev_hwdb_selected,
+                                     prev_udev_hwdb_list_scroll, prev_udev_hwdb_detail_scroll,
+                                     prev_udev_device_cursor, prev_udev_device_selected,
+                                     prev_udev_device_list_scroll, prev_udev_device_detail_scroll,
+                                     prev_udev_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_page(tune_state, tune_snap,
                                 tune_list_rows_visible(ui, tune_state),
@@ -2973,6 +3200,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                         prev_cgroups_config_cursor, prev_cgroups_config_selected,
                                         prev_cgroups_config_list_scroll, prev_cgroups_config_detail_scroll,
                                         prev_cgroups_focus);
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            lulo_udev_view_page(udev_state, udev_snap,
+                                udev_list_rows_visible(ui, udev_state),
+                                udev_preview_rows_visible(ui, udev_state), +1);
+            update_udev_render_flags(render, udev_state,
+                                     prev_udev_view,
+                                     prev_udev_rule_cursor, prev_udev_rule_selected,
+                                     prev_udev_rule_list_scroll, prev_udev_rule_detail_scroll,
+                                     prev_udev_hwdb_cursor, prev_udev_hwdb_selected,
+                                     prev_udev_hwdb_list_scroll, prev_udev_hwdb_detail_scroll,
+                                     prev_udev_device_cursor, prev_udev_device_selected,
+                                     prev_udev_device_list_scroll, prev_udev_device_detail_scroll,
+                                     prev_udev_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_page(tune_state, tune_snap,
                                 tune_list_rows_visible(ui, tune_state),
@@ -3033,6 +3273,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                         prev_cgroups_config_cursor, prev_cgroups_config_selected,
                                         prev_cgroups_config_list_scroll, prev_cgroups_config_detail_scroll,
                                         prev_cgroups_focus);
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            lulo_udev_view_home(udev_state, udev_snap,
+                                udev_list_rows_visible(ui, udev_state),
+                                udev_preview_rows_visible(ui, udev_state));
+            update_udev_render_flags(render, udev_state,
+                                     prev_udev_view,
+                                     prev_udev_rule_cursor, prev_udev_rule_selected,
+                                     prev_udev_rule_list_scroll, prev_udev_rule_detail_scroll,
+                                     prev_udev_hwdb_cursor, prev_udev_hwdb_selected,
+                                     prev_udev_hwdb_list_scroll, prev_udev_hwdb_detail_scroll,
+                                     prev_udev_device_cursor, prev_udev_device_selected,
+                                     prev_udev_device_list_scroll, prev_udev_device_detail_scroll,
+                                     prev_udev_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_home(tune_state, tune_snap,
                                 tune_list_rows_visible(ui, tune_state),
@@ -3093,6 +3346,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                         prev_cgroups_config_cursor, prev_cgroups_config_selected,
                                         prev_cgroups_config_list_scroll, prev_cgroups_config_detail_scroll,
                                         prev_cgroups_focus);
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            lulo_udev_view_end(udev_state, udev_snap,
+                               udev_list_rows_visible(ui, udev_state),
+                               udev_preview_rows_visible(ui, udev_state));
+            update_udev_render_flags(render, udev_state,
+                                     prev_udev_view,
+                                     prev_udev_rule_cursor, prev_udev_rule_selected,
+                                     prev_udev_rule_list_scroll, prev_udev_rule_detail_scroll,
+                                     prev_udev_hwdb_cursor, prev_udev_hwdb_selected,
+                                     prev_udev_hwdb_list_scroll, prev_udev_hwdb_detail_scroll,
+                                     prev_udev_device_cursor, prev_udev_device_selected,
+                                     prev_udev_device_list_scroll, prev_udev_device_detail_scroll,
+                                     prev_udev_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_end(tune_state, tune_snap,
                                tune_list_rows_visible(ui, tune_state),
@@ -3123,6 +3389,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         app->active_page = (AppPage)((app->active_page + 1) % APP_PAGE_COUNT);
         if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
         else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
+        else if (app->active_page == APP_PAGE_UDEV) render->need_udev_refresh_full = 1;
         else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
         else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
         render->need_rebuild = 1;
@@ -3132,6 +3399,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         app->active_page = (AppPage)((app->active_page + APP_PAGE_COUNT - 1) % APP_PAGE_COUNT);
         if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
         else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
+        else if (app->active_page == APP_PAGE_UDEV) render->need_udev_refresh_full = 1;
         else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
         else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
         render->need_rebuild = 1;
@@ -3145,6 +3413,10 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_next_view(cgroups_state);
             render->need_cgroups_refresh = 1;
+            render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            lulo_udev_next_view(udev_state);
+            render->need_udev_refresh = 1;
             render->need_render = 1;
         } else if (app->active_page == APP_PAGE_SYSTEMD) {
             lulo_systemd_next_view(systemd_state);
@@ -3164,6 +3436,10 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_prev_view(cgroups_state);
             render->need_cgroups_refresh = 1;
+            render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            lulo_udev_prev_view(udev_state);
+            render->need_udev_refresh = 1;
             render->need_render = 1;
         } else if (app->active_page == APP_PAGE_SYSTEMD) {
             lulo_systemd_prev_view(systemd_state);
@@ -3193,6 +3469,14 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             if (rc == 2) render->need_cgroups_refresh_full = 1;
             else if (rc == 1) render->need_cgroups_refresh = 1;
             if (rc > 0) render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            int rc = lulo_udev_open_current(udev_state, udev_snap,
+                                            udev_list_rows_visible(ui, udev_state),
+                                            udev_preview_rows_visible(ui, udev_state));
+            if (rc > 0) {
+                render->need_udev_refresh = 1;
+                render->need_render = 1;
+            }
         } else if (app->active_page == APP_PAGE_TUNE) {
             int rc = lulo_tune_open_current(tune_state, tune_snap,
                                             tune_list_rows_visible(ui, tune_state),
@@ -3219,6 +3503,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             render->need_cgroups_refresh_full = 1;
             render->need_cgroups = 1;
             cgroups_status_set(app, "reloading cgroups view");
+            render->need_load = 1;
+            render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            render->need_udev_refresh_full = 1;
+            render->need_udev = 1;
+            udev_status_set(app, "reloading udev view");
             render->need_load = 1;
             render->need_render = 1;
         }
@@ -3477,6 +3767,36 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 cgroups_status_set(app, "%s", err[0] ? err : "edit failed");
             }
             render->need_load = 1;
+        } else if (app->active_page == APP_PAGE_UDEV) {
+            const char *edit_path = active_udev_edit_path(udev_snap, udev_state);
+            char err[192];
+            int fatal = 0;
+            int rc;
+
+            if (!edit_path) {
+                udev_status_set(app, "edit from Rules or Hwdb");
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            rc = run_external_edit(ui, input_backend, rawin, dlog, edit_path, &fatal, err, sizeof(err));
+            render->need_rebuild = 1;
+            render->need_render = 1;
+            if (fatal) {
+                fprintf(stderr, "%s\n", err[0] ? err : "failed to restore terminal after editing");
+                *exit_requested = 1;
+                break;
+            }
+            if (rc > 0) {
+                udev_status_set(app, "saved %s", path_basename_local(edit_path));
+                render->need_udev_refresh_full = 1;
+                render->need_udev = 1;
+            } else if (rc == 0) {
+                udev_status_set(app, "edit cancelled");
+            } else {
+                udev_status_set(app, "%s", err[0] ? err : "edit failed");
+            }
+            render->need_load = 1;
         } else if (app->active_page == APP_PAGE_SCHED) {
             const char *edit_path = active_sched_edit_path(sched_snap, sched_state);
             char err[192];
@@ -3614,6 +3934,8 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
                            const LuloSchedBackendStatus *sched_backend_status,
                            const LuloCgroupsSnapshot *cgroups_snap, const LuloCgroupsState *cgroups_state,
                            const LuloCgroupsBackendStatus *cgroups_backend_status,
+                           const LuloUdevSnapshot *udev_snap, const LuloUdevState *udev_state,
+                           const LuloUdevBackendStatus *udev_backend_status,
                            const LuloTuneSnapshot *tune_snap, const LuloTuneState *tune_state,
                            const LuloTuneBackendStatus *tune_backend_status,
                            const LuloSystemdSnapshot *systemd_snap, const LuloSystemdState *systemd_state,
@@ -3642,6 +3964,11 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
         if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_cgroups || render->need_load) {
             render_cgroups_only(ui, cgroups_snap, cgroups_state, app, cgroups_backend_status);
+        }
+    } else if (app->active_page == APP_PAGE_UDEV) {
+        if (render->need_header) render_header_only(ui, dash, app);
+        if (render->need_udev || render->need_load) {
+            render_udev_only(ui, udev_snap, udev_state, app, udev_backend_status);
         }
     } else if (app->active_page == APP_PAGE_TUNE) {
         if (render->need_header) render_header_only(ui, dash, app);
@@ -3680,6 +4007,8 @@ int main(int argc, char *argv[])
     LuloSchedBackend sched_backend;
     LuloCgroupsState cgroups_state;
     LuloCgroupsBackend cgroups_backend;
+    LuloUdevState udev_state;
+    LuloUdevBackend udev_backend;
     LuloTuneState tune_state;
     LuloTuneBackend tune_backend;
     LuloSystemdState systemd_state;
@@ -3689,6 +4018,8 @@ int main(int argc, char *argv[])
     LuloSchedBackendStatus sched_backend_status = {0};
     LuloCgroupsSnapshot cgroups_snap = {0};
     LuloCgroupsBackendStatus cgroups_backend_status = {0};
+    LuloUdevSnapshot udev_snap = {0};
+    LuloUdevBackendStatus udev_backend_status = {0};
     LuloTuneSnapshot tune_snap = {0};
     LuloTuneBackendStatus tune_backend_status = {0};
     LuloSystemdSnapshot systemd_snap = {0};
@@ -3708,15 +4039,18 @@ int main(int argc, char *argv[])
     long long proc_due_ms = 0;
     long long sched_due_ms = 0;
     long long cgroups_due_ms = 0;
+    long long udev_due_ms = 0;
     long long tune_due_ms = 0;
     long long systemd_due_ms = 0;
     int proc_snapshot_valid = 0;
     int sched_snapshot_valid = 0;
     int cgroups_snapshot_valid = 0;
+    int udev_snapshot_valid = 0;
     int tune_snapshot_valid = 0;
     int systemd_snapshot_valid = 0;
     unsigned sched_generation = 0;
     unsigned cgroups_generation = 0;
+    unsigned udev_generation = 0;
     unsigned tune_generation = 0;
     unsigned systemd_generation = 0;
     LuloProcCpuMode proc_snapshot_mode = LULO_PROC_CPU_TOTAL;
@@ -3780,12 +4114,14 @@ int main(int argc, char *argv[])
     lulo_dizk_state_init(&dizk_state);
     lulo_sched_state_init(&sched_state);
     lulo_cgroups_state_init(&cgroups_state);
+    lulo_udev_state_init(&udev_state);
     lulo_tune_state_init(&tune_state);
     lulo_systemd_state_init(&systemd_state);
     if (lulo_sched_backend_start(&sched_backend) < 0) {
         fprintf(stderr, "failed to start sched backend\n");
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_tune_state_cleanup(&tune_state);
+        lulo_udev_state_cleanup(&udev_state);
         lulo_cgroups_state_cleanup(&cgroups_state);
         lulo_sched_state_cleanup(&sched_state);
         lulo_dizk_state_cleanup(&dizk_state);
@@ -3799,6 +4135,22 @@ int main(int argc, char *argv[])
         lulo_sched_backend_stop(&sched_backend);
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_tune_state_cleanup(&tune_state);
+        lulo_udev_state_cleanup(&udev_state);
+        lulo_cgroups_state_cleanup(&cgroups_state);
+        lulo_sched_state_cleanup(&sched_state);
+        lulo_dizk_state_cleanup(&dizk_state);
+        lulo_proc_state_cleanup(&proc_state);
+        notcurses_stop(ui.nc);
+        debug_log_close(&dlog);
+        return 1;
+    }
+    if (lulo_udev_backend_start(&udev_backend) < 0) {
+        fprintf(stderr, "failed to start udev backend\n");
+        lulo_cgroups_backend_stop(&cgroups_backend);
+        lulo_sched_backend_stop(&sched_backend);
+        lulo_systemd_state_cleanup(&systemd_state);
+        lulo_tune_state_cleanup(&tune_state);
+        lulo_udev_state_cleanup(&udev_state);
         lulo_cgroups_state_cleanup(&cgroups_state);
         lulo_sched_state_cleanup(&sched_state);
         lulo_dizk_state_cleanup(&dizk_state);
@@ -3809,10 +4161,12 @@ int main(int argc, char *argv[])
     }
     if (lulo_tune_backend_start(&tune_backend) < 0) {
         fprintf(stderr, "failed to start tune backend\n");
+        lulo_udev_backend_stop(&udev_backend);
         lulo_cgroups_backend_stop(&cgroups_backend);
         lulo_sched_backend_stop(&sched_backend);
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_tune_state_cleanup(&tune_state);
+        lulo_udev_state_cleanup(&udev_state);
         lulo_cgroups_state_cleanup(&cgroups_state);
         lulo_sched_state_cleanup(&sched_state);
         lulo_dizk_state_cleanup(&dizk_state);
@@ -3824,12 +4178,14 @@ int main(int argc, char *argv[])
     if (lulo_systemd_backend_start(&systemd_backend) < 0) {
         fprintf(stderr, "failed to start systemd backend\n");
         lulo_tune_backend_stop(&tune_backend);
+        lulo_udev_backend_stop(&udev_backend);
         lulo_cgroups_backend_stop(&cgroups_backend);
         lulo_sched_backend_stop(&sched_backend);
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_proc_state_cleanup(&proc_state);
         lulo_sched_state_cleanup(&sched_state);
         lulo_cgroups_state_cleanup(&cgroups_state);
+        lulo_udev_state_cleanup(&udev_state);
         lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
         notcurses_stop(ui.nc);
@@ -3842,6 +4198,9 @@ int main(int argc, char *argv[])
     lulo_cgroups_backend_request_full(&cgroups_backend, &cgroups_state);
     lulo_cgroups_backend_status(&cgroups_backend, &cgroups_backend_status);
     cgroups_due_ms = mono_ms_now() + 5000;
+    lulo_udev_backend_request_full(&udev_backend, &udev_state);
+    lulo_udev_backend_status(&udev_backend, &udev_backend_status);
+    udev_due_ms = mono_ms_now() + 5000;
     lulo_tune_backend_request_full(&tune_backend, &tune_state);
     lulo_tune_backend_status(&tune_backend, &tune_backend_status);
     tune_due_ms = mono_ms_now() + 5000;
@@ -3852,11 +4211,13 @@ int main(int argc, char *argv[])
         fprintf(stderr, "failed to read /proc/stat\n");
         lulo_sched_backend_stop(&sched_backend);
         lulo_cgroups_backend_stop(&cgroups_backend);
+        lulo_udev_backend_stop(&udev_backend);
         lulo_tune_backend_stop(&tune_backend);
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_proc_state_cleanup(&proc_state);
         lulo_sched_state_cleanup(&sched_state);
         lulo_cgroups_state_cleanup(&cgroups_state);
+        lulo_udev_state_cleanup(&udev_state);
         lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_systemd_backend_stop(&systemd_backend);
@@ -3871,10 +4232,12 @@ int main(int argc, char *argv[])
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_sched_state_cleanup(&sched_state);
         lulo_cgroups_state_cleanup(&cgroups_state);
+        lulo_udev_state_cleanup(&udev_state);
         lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_sched_backend_stop(&sched_backend);
         lulo_cgroups_backend_stop(&cgroups_backend);
+        lulo_udev_backend_stop(&udev_backend);
         lulo_tune_backend_stop(&tune_backend);
         lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
@@ -3888,10 +4251,12 @@ int main(int argc, char *argv[])
             lulo_dizk_state_cleanup(&dizk_state);
             lulo_sched_state_cleanup(&sched_state);
             lulo_cgroups_state_cleanup(&cgroups_state);
+            lulo_udev_state_cleanup(&udev_state);
             lulo_tune_state_cleanup(&tune_state);
             lulo_systemd_state_cleanup(&systemd_state);
             lulo_sched_backend_stop(&sched_backend);
             lulo_cgroups_backend_stop(&cgroups_backend);
+            lulo_udev_backend_stop(&udev_backend);
             lulo_tune_backend_stop(&tune_backend);
             lulo_systemd_backend_stop(&systemd_backend);
             notcurses_stop(ui.nc);
@@ -3929,6 +4294,12 @@ int main(int argc, char *argv[])
             break;
         }
         cgroups_snapshot_valid = cgroups_backend_status.have_snapshot;
+        if (poll_udev_backend(&ui, &app, &udev_backend, &udev_snap, &udev_state,
+                              &udev_backend_status, &udev_generation, &(RenderFlags){0}) < 0) {
+            fprintf(stderr, "failed to consume udev backend snapshot\n");
+            break;
+        }
+        udev_snapshot_valid = udev_backend_status.have_snapshot;
         if (poll_tune_backend(&ui, &app, &tune_backend, &tune_snap, &tune_state,
                               &tune_backend_status, &tune_generation, &(RenderFlags){0}) < 0) {
             fprintf(stderr, "failed to consume tune backend snapshot\n");
@@ -4031,6 +4402,16 @@ int main(int argc, char *argv[])
             lulo_cgroups_view_sync(&cgroups_state, &cgroups_snap,
                                    cgroups_list_rows_visible(&ui, &cgroups_state),
                                    cgroups_preview_rows_visible(&ui, &cgroups_state));
+        } else if (app.active_page == APP_PAGE_UDEV) {
+            if ((!udev_snapshot_valid || mono_ms_now() >= udev_due_ms) &&
+                !udev_backend_status.busy) {
+                lulo_udev_backend_request_full(&udev_backend, &udev_state);
+                lulo_udev_backend_status(&udev_backend, &udev_backend_status);
+                udev_due_ms = mono_ms_now() + 5000;
+            }
+            lulo_udev_view_sync(&udev_state, &udev_snap,
+                                udev_list_rows_visible(&ui, &udev_state),
+                                udev_preview_rows_visible(&ui, &udev_state));
         } else if (app.active_page == APP_PAGE_TUNE) {
             if ((!tune_snapshot_valid || mono_ms_now() >= tune_due_ms) &&
                 !tune_backend_status.busy) {
@@ -4064,6 +4445,8 @@ int main(int argc, char *argv[])
             render_sched_page(&ui, &app, &dash, &sched_snap, &sched_state, &sched_backend_status);
         } else if (app.active_page == APP_PAGE_CGROUPS) {
             render_cgroups_page(&ui, &app, &dash, &cgroups_snap, &cgroups_state, &cgroups_backend_status);
+        } else if (app.active_page == APP_PAGE_UDEV) {
+            render_udev_page(&ui, &app, &dash, &udev_snap, &udev_state, &udev_backend_status);
         } else if (app.active_page == APP_PAGE_TUNE) {
             render_tune_page(&ui, &app, &dash, &tune_snap, &tune_state, &tune_backend_status);
         } else {
@@ -4163,7 +4546,8 @@ int main(int argc, char *argv[])
                             }
                         }
                         if (in.mouse_wheel &&
-                            !handle_mouse_wheel_target(&ui, &app, &sched_state, &cgroups_state, &tune_state, &systemd_state, &render,
+                            !handle_mouse_wheel_target(&ui, &app, &sched_state, &cgroups_state, &udev_state,
+                                                       &tune_state, &systemd_state, &render,
                                                        in.mouse_y, in.mouse_x)) {
                             continue;
                         }
@@ -4171,6 +4555,7 @@ int main(int argc, char *argv[])
                             handle_mouse_click(&ui, in.mouse_y, in.mouse_x, &app, &proc_snap, &proc_state,
                                                &sched_snap, &sched_state,
                                                &cgroups_snap, &cgroups_state,
+                                               &udev_snap, &udev_state,
                                                &tune_snap, &tune_state, &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, in.action, in.mouse_wheel, in.key_repeat);
@@ -4178,6 +4563,7 @@ int main(int argc, char *argv[])
                             apply_input_action(&ui, in.action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
                                                &sched_snap, &sched_state,
                                                &cgroups_snap, &cgroups_state,
+                                               &udev_snap, &udev_state,
                                                &tune_snap, &tune_state,
                                                &systemd_snap, &systemd_state, input_backend, &rawin, &dlog,
                                                &dash, &sample_ms, &deadline,
@@ -4257,7 +4643,8 @@ int main(int argc, char *argv[])
                             }
                         }
                         if ((id == NCKEY_SCROLL_UP || id == NCKEY_SCROLL_DOWN) &&
-                            !handle_mouse_wheel_target(&ui, &app, &sched_state, &cgroups_state, &tune_state, &systemd_state, &render,
+                            !handle_mouse_wheel_target(&ui, &app, &sched_state, &cgroups_state, &udev_state,
+                                                       &tune_state, &systemd_state, &render,
                                                        ni.y + 1, ni.x + 1)) {
                             continue;
                         }
@@ -4265,6 +4652,7 @@ int main(int argc, char *argv[])
                             handle_mouse_click(&ui, ni.y + 1, ni.x + 1, &app, &proc_snap, &proc_state,
                                                &sched_snap, &sched_state,
                                                &cgroups_snap, &cgroups_state,
+                                               &udev_snap, &udev_state,
                                                &tune_snap, &tune_state, &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, action,
@@ -4274,6 +4662,7 @@ int main(int argc, char *argv[])
                             apply_input_action(&ui, action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
                                                &sched_snap, &sched_state,
                                                &cgroups_snap, &cgroups_state,
+                                               &udev_snap, &udev_state,
                                                &tune_snap, &tune_state,
                                                &systemd_snap, &systemd_state, input_backend, &rawin, &dlog,
                                                &dash, &sample_ms, &deadline,
@@ -4307,6 +4696,12 @@ int main(int argc, char *argv[])
                     break;
                 }
                 cgroups_snapshot_valid = cgroups_backend_status.have_snapshot;
+                if (poll_udev_backend(&ui, &app, &udev_backend, &udev_snap, &udev_state,
+                                      &udev_backend_status, &udev_generation, &render) < 0) {
+                    exit_requested = 1;
+                    break;
+                }
+                udev_snapshot_valid = udev_backend_status.have_snapshot;
                 if (poll_tune_backend(&ui, &app, &tune_backend, &tune_snap, &tune_state,
                                       &tune_backend_status, &tune_generation, &render) < 0) {
                     exit_requested = 1;
@@ -4353,6 +4748,18 @@ int main(int argc, char *argv[])
                     lulo_cgroups_backend_request_active(&cgroups_backend, &cgroups_state);
                     lulo_cgroups_backend_status(&cgroups_backend, &cgroups_backend_status);
                     render.need_cgroups = 1;
+                }
+                if (render.need_udev_refresh_full && app.active_page == APP_PAGE_UDEV) {
+                    if (udev_snapshot_valid) lulo_udev_snapshot_mark_loading(&udev_snap, &udev_state);
+                    lulo_udev_backend_request_full(&udev_backend, &udev_state);
+                    lulo_udev_backend_status(&udev_backend, &udev_backend_status);
+                    udev_due_ms = mono_ms_now() + 5000;
+                    render.need_udev = 1;
+                } else if (render.need_udev_refresh && app.active_page == APP_PAGE_UDEV) {
+                    if (udev_snapshot_valid) lulo_udev_snapshot_mark_loading(&udev_snap, &udev_state);
+                    lulo_udev_backend_request_active(&udev_backend, &udev_state);
+                    lulo_udev_backend_status(&udev_backend, &udev_backend_status);
+                    render.need_udev = 1;
                 }
                 if (render.need_tune_refresh_full && app.active_page == APP_PAGE_TUNE) {
                     if (tune_snapshot_valid) lulo_tune_snapshot_mark_loading(&tune_snap, &tune_state);
@@ -4405,7 +4812,8 @@ int main(int argc, char *argv[])
                                        cpu_temps, ncpu_temp, &proc_snap, &proc_state,
                                        &dizk_snap, &dizk_state, &sched_snap, &sched_state,
                                        &sched_backend_status, &cgroups_snap, &cgroups_state,
-                                       &cgroups_backend_status, &tune_snap, &tune_state,
+                                       &cgroups_backend_status, &udev_snap, &udev_state,
+                                       &udev_backend_status, &tune_snap, &tune_state,
                                        &tune_backend_status, &systemd_snap, &systemd_state,
                                        &systemd_backend_status, &render);
                     }
@@ -4423,7 +4831,8 @@ int main(int argc, char *argv[])
                                    cpu_temps, ncpu_temp, &proc_snap, &proc_state,
                                    &dizk_snap, &dizk_state, &sched_snap, &sched_state,
                                    &sched_backend_status, &cgroups_snap, &cgroups_state,
-                                   &cgroups_backend_status, &tune_snap, &tune_state,
+                                   &cgroups_backend_status, &udev_snap, &udev_state,
+                                   &udev_backend_status, &tune_snap, &tune_state,
                                    &tune_backend_status, &systemd_snap, &systemd_state,
                                    &systemd_backend_status, &render);
                 }
@@ -4447,16 +4856,19 @@ int main(int argc, char *argv[])
     lulo_proc_snapshot_free(&proc_snap);
     lulo_sched_snapshot_free(&sched_snap);
     lulo_cgroups_snapshot_free(&cgroups_snap);
+    lulo_udev_snapshot_free(&udev_snap);
     lulo_tune_snapshot_free(&tune_snap);
     lulo_systemd_snapshot_free(&systemd_snap);
     lulo_sched_backend_stop(&sched_backend);
     lulo_cgroups_backend_stop(&cgroups_backend);
+    lulo_udev_backend_stop(&udev_backend);
     lulo_tune_backend_stop(&tune_backend);
     lulo_systemd_backend_stop(&systemd_backend);
     lulo_proc_state_cleanup(&proc_state);
     lulo_dizk_state_cleanup(&dizk_state);
     lulo_sched_state_cleanup(&sched_state);
     lulo_cgroups_state_cleanup(&cgroups_state);
+    lulo_udev_state_cleanup(&udev_state);
     lulo_tune_state_cleanup(&tune_state);
     lulo_systemd_state_cleanup(&systemd_state);
     notcurses_stop(ui.nc);

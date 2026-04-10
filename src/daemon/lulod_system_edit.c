@@ -18,6 +18,7 @@ typedef enum {
     EDIT_SCOPE_SCHED,
     EDIT_SCOPE_SYSTEMD,
     EDIT_SCOPE_CGROUPS,
+    EDIT_SCOPE_UDEV,
 } EditScope;
 
 typedef struct {
@@ -79,6 +80,9 @@ static int scope_for_path(const char *path, EditScope *scope_out)
         { "/usr/lib/systemd/", EDIT_SCOPE_SYSTEMD },
         { "/lib/systemd/", EDIT_SCOPE_SYSTEMD },
         { "/sys/fs/cgroup/", EDIT_SCOPE_CGROUPS },
+        { "/etc/udev/", EDIT_SCOPE_UDEV },
+        { "/usr/lib/udev/", EDIT_SCOPE_UDEV },
+        { "/lib/udev/", EDIT_SCOPE_UDEV },
     };
 
     if (!path || !scope_out) return -1;

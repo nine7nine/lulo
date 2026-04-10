@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_MAGIC 0x4c554c4fU
-#define LULOD_VERSION 11U
+#define LULOD_VERSION 12U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -205,6 +205,35 @@ static int serialize_cgroups_state(int fd, const LuloCgroupsState *state)
     return 0;
 }
 
+static int serialize_udev_state(int fd, const LuloUdevState *state)
+{
+    int32_t value = 0;
+
+    if (!state) {
+        LuloUdevState empty = {0};
+        return serialize_udev_state(fd, &empty);
+    }
+    value = (int32_t)state->view;
+    if (write_i32(fd, value) < 0) return -1;
+    if (write_i32(fd, state->focus_preview) < 0) return -1;
+    if (write_i32(fd, state->rule_cursor) < 0) return -1;
+    if (write_i32(fd, state->rule_selected) < 0) return -1;
+    if (write_i32(fd, state->rule_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->rule_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->hwdb_cursor) < 0) return -1;
+    if (write_i32(fd, state->hwdb_selected) < 0) return -1;
+    if (write_i32(fd, state->hwdb_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->hwdb_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->device_cursor) < 0) return -1;
+    if (write_i32(fd, state->device_selected) < 0) return -1;
+    if (write_i32(fd, state->device_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->device_detail_scroll) < 0) return -1;
+    if (write_string(fd, state->selected_rule) < 0) return -1;
+    if (write_string(fd, state->selected_hwdb) < 0) return -1;
+    if (write_string(fd, state->selected_device) < 0) return -1;
+    return 0;
+}
+
 static int deserialize_state(int fd, LuloSystemdState *state)
 {
     int32_t value = 0;
@@ -319,6 +348,46 @@ static int deserialize_cgroups_state(int fd, LuloCgroupsState *state)
     if (read_string_fixed(fd, state->selected_tree_path, sizeof(state->selected_tree_path)) < 0) return -1;
     if (read_string_fixed(fd, state->selected_file_path, sizeof(state->selected_file_path)) < 0) return -1;
     if (read_string_fixed(fd, state->selected_config, sizeof(state->selected_config)) < 0) return -1;
+    return 0;
+}
+
+static int deserialize_udev_state(int fd, LuloUdevState *state)
+{
+    int32_t value = 0;
+
+    if (!state) return -1;
+    memset(state, 0, sizeof(*state));
+    if (read_i32(fd, &value) < 0) return -1;
+    state->view = (LuloUdevView)value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->focus_preview = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->hwdb_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->hwdb_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->hwdb_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->hwdb_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->device_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->device_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->device_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->device_detail_scroll = value;
+    if (read_string_fixed(fd, state->selected_rule, sizeof(state->selected_rule)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_hwdb, sizeof(state->selected_hwdb)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_device, sizeof(state->selected_device)) < 0) return -1;
     return 0;
 }
 
@@ -623,6 +692,47 @@ static int serialize_cgroups_snapshot(int fd, const LuloCgroupsSnapshot *snap)
 
     if (write_i32(fd, snap->configs_loaded) < 0) return -1;
     if (write_string(fd, snap->browse_path) < 0) return -1;
+    if (write_string(fd, snap->detail_title) < 0) return -1;
+    if (write_string(fd, snap->detail_status) < 0) return -1;
+    count = (uint32_t)snap->detail_line_count;
+    if (write_u32(fd, count) < 0) return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (write_string(fd, snap->detail_lines[i]) < 0) return -1;
+    }
+    return 0;
+}
+
+static int serialize_udev_snapshot(int fd, const LuloUdevSnapshot *snap)
+{
+    uint32_t count = 0;
+
+    if (!snap) return -1;
+    if (write_i32(fd, snap->rule_count) < 0) return -1;
+    for (int i = 0; i < snap->rule_count; i++) {
+        const LuloUdevConfigRow *row = &snap->rules[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->source) < 0) return -1;
+    }
+    if (write_i32(fd, snap->hwdb_count) < 0) return -1;
+    for (int i = 0; i < snap->hwdb_count; i++) {
+        const LuloUdevConfigRow *row = &snap->hwdb[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->source) < 0) return -1;
+    }
+    if (write_i32(fd, snap->device_count) < 0) return -1;
+    for (int i = 0; i < snap->device_count; i++) {
+        const LuloUdevDeviceRow *row = &snap->devices[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->subsystem) < 0) return -1;
+        if (write_string(fd, row->devnode) < 0) return -1;
+        if (write_string(fd, row->devpath) < 0) return -1;
+    }
     if (write_string(fd, snap->detail_title) < 0) return -1;
     if (write_string(fd, snap->detail_status) < 0) return -1;
     count = (uint32_t)snap->detail_line_count;
@@ -1039,6 +1149,80 @@ fail:
     return -1;
 }
 
+static int deserialize_udev_snapshot(int fd, LuloUdevSnapshot *snap)
+{
+    int32_t count = 0;
+    uint32_t lines = 0;
+
+    if (!snap) return -1;
+    memset(snap, 0, sizeof(*snap));
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->rules = calloc((size_t)count, sizeof(*snap->rules));
+        if (!snap->rules) goto fail;
+    }
+    snap->rule_count = count;
+    for (int i = 0; i < snap->rule_count; i++) {
+        LuloUdevConfigRow *row = &snap->rules[i];
+
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->source, sizeof(row->source)) < 0) goto fail;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->hwdb = calloc((size_t)count, sizeof(*snap->hwdb));
+        if (!snap->hwdb) goto fail;
+    }
+    snap->hwdb_count = count;
+    for (int i = 0; i < snap->hwdb_count; i++) {
+        LuloUdevConfigRow *row = &snap->hwdb[i];
+
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->source, sizeof(row->source)) < 0) goto fail;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->devices = calloc((size_t)count, sizeof(*snap->devices));
+        if (!snap->devices) goto fail;
+    }
+    snap->device_count = count;
+    for (int i = 0; i < snap->device_count; i++) {
+        LuloUdevDeviceRow *row = &snap->devices[i];
+
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->subsystem, sizeof(row->subsystem)) < 0) goto fail;
+        if (read_string_fixed(fd, row->devnode, sizeof(row->devnode)) < 0) goto fail;
+        if (read_string_fixed(fd, row->devpath, sizeof(row->devpath)) < 0) goto fail;
+    }
+    if (read_string_fixed(fd, snap->detail_title, sizeof(snap->detail_title)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->detail_status, sizeof(snap->detail_status)) < 0) goto fail;
+    if (read_u32(fd, &lines) < 0) goto fail;
+    for (uint32_t i = 0; i < lines; i++) {
+        char *line = NULL;
+
+        if (read_string_dyn(fd, &line) < 0) goto fail;
+        if (append_owned_line(&snap->detail_lines, &snap->detail_line_count, line) < 0) {
+            free(line);
+            goto fail;
+        }
+        free(line);
+    }
+    return 0;
+
+fail:
+    lulo_udev_snapshot_free(snap);
+    return -1;
+}
+
 int lulod_socket_path(char *buf, size_t len)
 {
     const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
@@ -1317,4 +1501,53 @@ int lulod_recv_cgroups_response(int fd, LuloCgroupsSnapshot *snap, char *err, si
         return -1;
     }
     return deserialize_cgroups_snapshot(fd, snap);
+}
+
+int lulod_send_udev_request(int fd, uint32_t type, const LuloUdevState *state)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_u32(fd, type) < 0) return -1;
+    return serialize_udev_state(fd, state);
+}
+
+int lulod_recv_udev_state(int fd, LuloUdevState *state)
+{
+    return deserialize_udev_state(fd, state);
+}
+
+int lulod_recv_udev_request(int fd, uint32_t *type, LuloUdevState *state)
+{
+    if (lulod_recv_request_header(fd, type) < 0) return -1;
+    return deserialize_udev_state(fd, state);
+}
+
+int lulod_send_udev_response(int fd, int status, const char *err, const LuloUdevSnapshot *snap)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_i32(fd, status) < 0) return -1;
+    if (status < 0) return write_string(fd, err ? err : "request failed");
+    return serialize_udev_snapshot(fd, snap);
+}
+
+int lulod_recv_udev_response(int fd, LuloUdevSnapshot *snap, char *err, size_t errlen)
+{
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    int32_t status = 0;
+    char *msg = NULL;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (read_u32(fd, &magic) < 0) return -1;
+    if (read_u32(fd, &version) < 0) return -1;
+    if (read_i32(fd, &status) < 0) return -1;
+    if (magic != LULOD_MAGIC || version != LULOD_VERSION) return -1;
+    if (status < 0) {
+        if (read_string_dyn(fd, &msg) < 0) return -1;
+        if (err && errlen > 0) snprintf(err, errlen, "%s", msg ? msg : "request failed");
+        free(msg);
+        return -1;
+    }
+    return deserialize_udev_snapshot(fd, snap);
 }

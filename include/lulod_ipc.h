@@ -8,6 +8,7 @@
 #include "lulo_cgroups.h"
 #include "lulo_systemd.h"
 #include "lulo_tune.h"
+#include "lulo_udev.h"
 
 enum {
     LULOD_REQ_SYSTEMD_FULL = 1,
@@ -22,6 +23,8 @@ enum {
     LULOD_REQ_SCHED_RELOAD = 10,
     LULOD_REQ_CGROUPS_FULL = 11,
     LULOD_REQ_CGROUPS_ACTIVE = 12,
+    LULOD_REQ_UDEV_FULL = 13,
+    LULOD_REQ_UDEV_ACTIVE = 14,
 };
 
 int lulod_socket_path(char *buf, size_t len);
@@ -52,5 +55,11 @@ int lulod_recv_cgroups_state(int fd, LuloCgroupsState *state);
 int lulod_recv_cgroups_request(int fd, uint32_t *type, LuloCgroupsState *state);
 int lulod_send_cgroups_response(int fd, int status, const char *err, const LuloCgroupsSnapshot *snap);
 int lulod_recv_cgroups_response(int fd, LuloCgroupsSnapshot *snap, char *err, size_t errlen);
+
+int lulod_send_udev_request(int fd, uint32_t type, const LuloUdevState *state);
+int lulod_recv_udev_state(int fd, LuloUdevState *state);
+int lulod_recv_udev_request(int fd, uint32_t *type, LuloUdevState *state);
+int lulod_send_udev_response(int fd, int status, const char *err, const LuloUdevSnapshot *snap);
+int lulod_recv_udev_response(int fd, LuloUdevSnapshot *snap, char *err, size_t errlen);
 
 #endif

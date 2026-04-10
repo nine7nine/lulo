@@ -19,6 +19,8 @@
 #include "lulo_systemd_backend.h"
 #include "lulo_tune.h"
 #include "lulo_tune_backend.h"
+#include "lulo_udev.h"
+#include "lulo_udev_backend.h"
 
 typedef struct {
     unsigned r;
@@ -54,6 +56,7 @@ typedef enum {
     APP_PAGE_DIZK,
     APP_PAGE_SCHED,
     APP_PAGE_CGROUPS,
+    APP_PAGE_UDEV,
     APP_PAGE_SYSTEMD,
     APP_PAGE_TUNE,
     APP_PAGE_COUNT
@@ -111,6 +114,7 @@ typedef struct {
     struct ncplane *disk;
     struct ncplane *sched;
     struct ncplane *cgroups;
+    struct ncplane *udev;
     struct ncplane *systemd;
     struct ncplane *tune;
     struct ncplane *load;
@@ -137,6 +141,8 @@ typedef struct {
     long long sched_status_until_ms;
     char cgroups_status[160];
     long long cgroups_status_until_ms;
+    char udev_status[160];
+    long long udev_status_until_ms;
     char tune_status[160];
     long long tune_status_until_ms;
     int tune_edit_active;
@@ -233,6 +239,7 @@ typedef struct {
     int need_disk;
     int need_sched;
     int need_cgroups;
+    int need_udev;
     int need_systemd;
     int need_tune;
     int need_rebuild;
@@ -242,6 +249,8 @@ typedef struct {
     int need_sched_reload;
     int need_cgroups_refresh;
     int need_cgroups_refresh_full;
+    int need_udev_refresh;
+    int need_udev_refresh_full;
     int need_systemd_refresh;
     int need_tune_refresh;
     int need_tune_refresh_full;
@@ -323,6 +332,18 @@ int handle_cgroups_click(Ui *ui, int global_y, int global_x,
                          RenderFlags *render);
 int handle_cgroups_wheel_target(Ui *ui, LuloCgroupsState *state,
                                 RenderFlags *render, int global_y, int global_x);
+int udev_list_rows_visible(const Ui *ui, const LuloUdevState *state);
+int udev_preview_rows_visible(const Ui *ui, const LuloUdevState *state);
+const char *active_udev_edit_path(const LuloUdevSnapshot *snap, const LuloUdevState *state);
+void render_udev_widget(Ui *ui, const LuloUdevSnapshot *snap, const LuloUdevState *state);
+void render_udev_status(Ui *ui, const LuloUdevSnapshot *snap, const LuloUdevState *state,
+                        const LuloUdevBackendStatus *backend_status, AppState *app);
+int point_on_udev_view_tabs(Ui *ui, const LuloUdevState *state, int global_y, int global_x);
+int handle_udev_click(Ui *ui, int global_y, int global_x,
+                      const LuloUdevSnapshot *snap, LuloUdevState *state,
+                      RenderFlags *render);
+int handle_udev_wheel_target(Ui *ui, LuloUdevState *state,
+                             RenderFlags *render, int global_y, int global_x);
 int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state);
 int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state);
 const char *active_systemd_edit_path(const LuloSystemdSnapshot *snap, const LuloSystemdState *state);
@@ -339,6 +360,8 @@ void sched_status_set(AppState *app, const char *fmt, ...);
 const char *sched_status_current(AppState *app);
 void cgroups_status_set(AppState *app, const char *fmt, ...);
 const char *cgroups_status_current(AppState *app);
+void udev_status_set(AppState *app, const char *fmt, ...);
+const char *udev_status_current(AppState *app);
 void tune_status_set(AppState *app, const char *fmt, ...);
 const char *tune_status_current(AppState *app);
 void tune_edit_prompt_refresh(AppState *app);

@@ -61,8 +61,16 @@ typedef struct {
     int index;
 } LeaderRef;
 
+typedef struct {
+    uid_t uid;
+    char name[LULO_PROC_USER_MAX];
+} UidNameCacheEntry;
+
 static const ProcNodeList *proc_sort_nodes;
 static const LuloProcState *proc_sort_state;
+static UidNameCacheEntry uid_cache[16];
+static int uid_cache_count;
+static int uid_cache_next;
 
 static int proc_key_cmp(int pid_a, int is_thread_a, int pid_b, int is_thread_b)
 {
@@ -214,16 +222,36 @@ static int read_cmdline_joined(const char *path, char *buf, size_t len)
 
 static void uid_to_name(uid_t uid, char *buf, size_t len)
 {
-    struct passwd *pw = getpwuid(uid);
-    if (pw && pw->pw_name && *pw->pw_name) {
-        snprintf(buf, len, "%s", pw->pw_name);
-    } else {
-        snprintf(buf, len, "%u", (unsigned)uid);
+    for (int i = 0; i < uid_cache_count; i++) {
+        if (uid_cache[i].uid == uid) {
+            snprintf(buf, len, "%s", uid_cache[i].name);
+            return;
+        }
+    }
+
+    {
+        struct passwd *pw = getpwuid(uid);
+        char resolved[LULO_PROC_USER_MAX];
+
+        if (pw && pw->pw_name && *pw->pw_name) snprintf(resolved, sizeof(resolved), "%s", pw->pw_name);
+        else snprintf(resolved, sizeof(resolved), "%u", (unsigned)uid);
+        snprintf(buf, len, "%s", resolved);
+
+        if (uid_cache_count < (int)(sizeof(uid_cache) / sizeof(uid_cache[0]))) {
+            uid_cache[uid_cache_count].uid = uid;
+            snprintf(uid_cache[uid_cache_count].name, sizeof(uid_cache[uid_cache_count].name), "%s", resolved);
+            uid_cache_count++;
+        } else {
+            uid_cache[uid_cache_next].uid = uid;
+            snprintf(uid_cache[uid_cache_next].name, sizeof(uid_cache[uid_cache_next].name), "%s", resolved);
+            uid_cache_next = (uid_cache_next + 1) % (int)(sizeof(uid_cache) / sizeof(uid_cache[0]));
+        }
     }
 }
 
 static int parse_proc_stat_line(const char *line, char *comm, size_t comm_len,
                                 char *state, int *ppid,
+                                int *num_threads,
                                 int *policy, int *rt_priority,
                                 int *priority, int *nice_value,
                                 unsigned long long *total_ticks,
@@ -242,6 +270,7 @@ static int parse_proc_stat_line(const char *line, char *comm, size_t comm_len,
     *rt_priority = 0;
     *priority = 0;
     *nice_value = 0;
+    *num_threads = 0;
     {
         size_t n = (size_t)(close - open - 1);
         if (n >= comm_len) n = comm_len - 1;
@@ -270,6 +299,9 @@ static int parse_proc_stat_line(const char *line, char *comm, size_t comm_len,
         case 16:
             *nice_value = atoi(tok);
             break;
+        case 17:
+            *num_threads = atoi(tok);
+            break;
         case 37:
             *rt_priority = atoi(tok);
             break;
@@ -290,6 +322,7 @@ static int parse_proc_stat_line(const char *line, char *comm, size_t comm_len,
 
 static int read_proc_stat(const char *path, char *comm, size_t comm_len,
                           char *state, int *ppid,
+                          int *num_threads,
                           int *policy, int *rt_priority,
                           int *priority, int *nice_value,
                           unsigned long long *total_ticks,
@@ -297,7 +330,7 @@ static int read_proc_stat(const char *path, char *comm, size_t comm_len,
 {
     char line[4096];
     if (read_text_file(path, line, sizeof(line)) < 0) return -1;
-    return parse_proc_stat_line(line, comm, comm_len, state, ppid, policy, rt_priority,
+    return parse_proc_stat_line(line, comm, comm_len, state, ppid, num_threads, policy, rt_priority,
                                 priority, nice_value,
                                 total_ticks, rss_pages);
 }
@@ -432,7 +465,8 @@ static int build_proc_node(ProcNode *node,
                            long page_size,
                            long hz,
                            unsigned long long cpu_total_delta,
-                           int logical_cpus)
+                           int logical_cpus,
+                           LuloProcCpuMode cpu_mode)
 {
     unsigned long long prev_ticks = prev_total_ticks(state, pid, is_thread);
     unsigned long long delta = total_ticks > prev_ticks ? total_ticks - prev_ticks : 0;
@@ -440,8 +474,10 @@ static int build_proc_node(ProcNode *node,
     double mem_pct = 0.0;
     unsigned long long rss_bytes = rss_pages > 0 ? (unsigned long long)rss_pages * (unsigned long long)page_size : 0;
 
-    if (cpu_total_delta > 0 && logical_cpus > 0) {
-        cpu_pct = (double)delta * (double)logical_cpus * 1000.0 / (double)cpu_total_delta;
+    if (cpu_total_delta > 0) {
+        double scale = cpu_mode == LULO_PROC_CPU_TOTAL ? 1.0 :
+                       (logical_cpus > 0 ? (double)logical_cpus : 1.0);
+        cpu_pct = (double)delta * scale * 1000.0 / (double)cpu_total_delta;
     }
     if (mem_total > 0) {
         mem_pct = (double)rss_bytes * 1000.0 / (double)mem_total;
@@ -475,14 +511,18 @@ static int gather_threads_for_process(ProcNodeList *nodes,
                                       const LuloProcState *state,
                                       int pid,
                                       const char *user,
+                                      int thread_count,
                                       unsigned long long cpu_total_delta,
                                       int logical_cpus,
-                                      long hz)
+                                      long hz,
+                                      LuloProcCpuMode cpu_mode)
 {
     char task_path[128];
     DIR *dir;
     struct dirent *ent;
 
+    if (state && (state->parents_only || proc_is_collapsed(state, pid, 0))) return 0;
+    if (thread_count <= 1) return 0;
     snprintf(task_path, sizeof(task_path), "/proc/%d/task", pid);
     dir = opendir(task_path);
     if (!dir) return 0;
@@ -499,12 +539,12 @@ static int gather_threads_for_process(ProcNodeList *nodes,
         if (tid == pid) continue;
 
         snprintf(stat_path, sizeof(stat_path), "/proc/%d/task/%d/stat", pid, tid);
-        if (read_proc_stat(stat_path, comm, sizeof(comm), &state_ch, &ppid, &policy, &rt_priority,
+        if (read_proc_stat(stat_path, comm, sizeof(comm), &state_ch, &ppid, &thread_count, &policy, &rt_priority,
                            &priority, &nice_value, &total_ticks, &rss_pages) < 0) continue;
         snprintf(display, sizeof(display), "{%s}", comm);
         if (build_proc_node(&node, state, tid, pid, pid, 1, user, display, comm, state_ch,
                             policy, rt_priority, priority, nice_value, 0, total_ticks, 0, 1, hz,
-                            cpu_total_delta, logical_cpus) < 0) {
+                            cpu_total_delta, logical_cpus, cpu_mode) < 0) {
             closedir(dir);
             return -1;
         }
@@ -521,7 +561,8 @@ static int gather_processes(ProcNodeList *nodes,
                             const LuloProcState *state,
                             unsigned long long cpu_total_delta,
                             unsigned long long mem_total,
-                            int logical_cpus)
+                            int logical_cpus,
+                            LuloProcCpuMode cpu_mode)
 {
     DIR *dir = opendir("/proc");
     struct dirent *ent;
@@ -537,7 +578,7 @@ static int gather_processes(ProcNodeList *nodes,
         char user[LULO_PROC_USER_MAX], comm[128], cmdline[LULO_PROC_LABEL_MAX], display[LULO_PROC_LABEL_MAX];
         struct stat st;
         char state_ch;
-        int pid, ppid, policy = 0, rt_priority = 0, priority = 0, nice_value = 0;
+        int pid, ppid, num_threads = 0, policy = 0, rt_priority = 0, priority = 0, nice_value = 0;
         long rss_pages = 0;
         unsigned long long total_ticks = 0;
         ProcNode node;
@@ -547,7 +588,7 @@ static int gather_processes(ProcNodeList *nodes,
         snprintf(proc_dir, sizeof(proc_dir), "/proc/%d", pid);
         if (stat(proc_dir, &st) < 0) continue;
         snprintf(stat_path, sizeof(stat_path), "%s/stat", proc_dir);
-        if (read_proc_stat(stat_path, comm, sizeof(comm), &state_ch, &ppid, &policy, &rt_priority,
+        if (read_proc_stat(stat_path, comm, sizeof(comm), &state_ch, &ppid, &num_threads, &policy, &rt_priority,
                            &priority, &nice_value, &total_ticks, &rss_pages) < 0) continue;
         uid_to_name(st.st_uid, user, sizeof(user));
 
@@ -561,7 +602,7 @@ static int gather_processes(ProcNodeList *nodes,
         if (build_proc_node(&node, state, pid, ppid, pid, 0, user, display, comm, state_ch,
                             policy, rt_priority, priority, nice_value,
                             rss_pages, total_ticks, mem_total, page_size, hz,
-                            cpu_total_delta, logical_cpus) < 0) {
+                            cpu_total_delta, logical_cpus, cpu_mode) < 0) {
             closedir(dir);
             return -1;
         }
@@ -569,7 +610,8 @@ static int gather_processes(ProcNodeList *nodes,
             closedir(dir);
             return -1;
         }
-        if (gather_threads_for_process(nodes, state, pid, user, cpu_total_delta, logical_cpus, hz) < 0) {
+        if (gather_threads_for_process(nodes, state, pid, user, num_threads,
+                                       cpu_total_delta, logical_cpus, hz, cpu_mode) < 0) {
             closedir(dir);
             return -1;
         }
@@ -787,22 +829,34 @@ static int flatten_process_rows(const ProcNodeList *nodes, const LuloProcState *
     return 0;
 }
 
+LuloProcCpuMode lulo_next_proc_cpu_mode(LuloProcCpuMode mode)
+{
+    return mode == LULO_PROC_CPU_TOTAL ? LULO_PROC_CPU_PER_CORE : LULO_PROC_CPU_TOTAL;
+}
+
+const char *lulo_proc_cpu_mode_name(LuloProcCpuMode mode)
+{
+    return mode == LULO_PROC_CPU_TOTAL ? "total" : "per-core";
+}
+
 static void replace_prev_times(LuloProcState *state, const ProcNodeList *nodes)
 {
-    struct LuloProcTimeSample *times;
     int cap = nodes->count > 0 ? nodes->count : 1;
-    times = calloc((size_t)cap, sizeof(*times));
-    if (!times) return;
+    struct LuloProcTimeSample *times = state->times;
+
+    if (state->time_cap < cap) {
+        times = realloc(state->times, (size_t)cap * sizeof(*times));
+        if (!times) return;
+        state->times = times;
+        state->time_cap = cap;
+    }
     for (int i = 0; i < nodes->count; i++) {
         times[i].pid = nodes->items[i].pid;
         times[i].is_thread = nodes->items[i].is_thread;
         times[i].total_ticks = nodes->items[i].total_ticks;
     }
     qsort(times, (size_t)nodes->count, sizeof(*times), prev_time_cmp);
-    free(state->times);
-    state->times = times;
     state->time_count = nodes->count;
-    state->time_cap = cap;
 }
 
 static int clamp_int(int value, int lo, int hi)
@@ -843,7 +897,8 @@ void lulo_proc_state_cleanup(LuloProcState *state)
 int lulo_proc_snapshot_gather(LuloProcSnapshot *snap, LuloProcState *state,
                               unsigned long long cpu_total_delta,
                               unsigned long long mem_total,
-                              int logical_cpus)
+                              int logical_cpus,
+                              LuloProcCpuMode cpu_mode)
 {
     ProcNodeList nodes = {0};
     ProcRowList rows = {0};
@@ -851,7 +906,7 @@ int lulo_proc_snapshot_gather(LuloProcSnapshot *snap, LuloProcState *state,
 
     snap->rows = NULL;
     snap->count = 0;
-    if (gather_processes(&nodes, state, cpu_total_delta, mem_total, logical_cpus) < 0) goto done;
+    if (gather_processes(&nodes, state, cpu_total_delta, mem_total, logical_cpus, cpu_mode) < 0) goto done;
     link_process_tree(&nodes);
     if (flatten_process_rows(&nodes, state, &rows) < 0) goto done;
     replace_prev_times(state, &nodes);

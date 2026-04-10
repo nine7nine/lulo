@@ -17,6 +17,12 @@ typedef enum {
     LULO_PROC_SORT_COUNT
 } LuloProcSortKey;
 
+typedef enum {
+    LULO_PROC_CPU_PER_CORE = 0,
+    LULO_PROC_CPU_TOTAL,
+    LULO_PROC_CPU_MODE_COUNT
+} LuloProcCpuMode;
+
 typedef struct {
     int pid;
     int tgid;
@@ -69,7 +75,8 @@ void lulo_proc_state_cleanup(LuloProcState *state);
 int lulo_proc_snapshot_gather(LuloProcSnapshot *snap, LuloProcState *state,
                               unsigned long long cpu_total_delta,
                               unsigned long long mem_total,
-                              int logical_cpus);
+                              int logical_cpus,
+                              LuloProcCpuMode cpu_mode);
 void lulo_proc_snapshot_free(LuloProcSnapshot *snap);
 
 void lulo_proc_view_sync(LuloProcState *state, const LuloProcSnapshot *snap, int visible_rows);
@@ -82,5 +89,7 @@ void lulo_proc_sort_toggle(LuloProcState *state, LuloProcSortKey key);
 int lulo_proc_toggle_row(LuloProcState *state, const LuloProcSnapshot *snap, int index);
 void lulo_proc_expand_all(LuloProcState *state);
 int lulo_proc_collapse_all(LuloProcState *state, const LuloProcSnapshot *snap);
+LuloProcCpuMode lulo_next_proc_cpu_mode(LuloProcCpuMode mode);
+const char *lulo_proc_cpu_mode_name(LuloProcCpuMode mode);
 
 #endif

@@ -121,6 +121,11 @@ typedef struct {
 
 typedef struct {
     AppPage active_page;
+    int proc_refresh_ms;
+    LuloProcCpuMode proc_cpu_mode;
+    int last_scroll_action;
+    long long last_scroll_ms;
+    int scroll_streak;
     char status[160];
     long long status_until_ms;
 } AppState;
@@ -144,6 +149,8 @@ typedef enum {
     INPUT_SAMPLE_FASTER,
     INPUT_SAMPLE_SLOWER,
     INPUT_TOGGLE_HEAT,
+    INPUT_TOGGLE_PROC_CPU,
+    INPUT_CYCLE_PROC_REFRESH,
     INPUT_SCROLL_UP,
     INPUT_SCROLL_DOWN,
     INPUT_PAGE_UP,
@@ -164,6 +171,8 @@ typedef struct {
     InputAction action;
     int mouse_press;
     int mouse_release;
+    int mouse_wheel;
+    int key_repeat;
     int mouse_x;
     int mouse_y;
     int mouse_button;
@@ -187,6 +196,10 @@ typedef struct {
     int need_rebuild;
     int need_proc_refresh;
     int need_disk_refresh;
+    int need_proc_cursor_only;
+    int need_proc_body_only;
+    int proc_prev_selected;
+    int proc_prev_scroll;
 } RenderFlags;
 
 typedef struct NcQueuedInput {
@@ -343,6 +356,13 @@ static void plane_fill(struct ncplane *p, int y, int x, int width, Rgb fg, Rgb b
     }
 }
 
+static void plane_clear_inner(struct ncplane *p, const Theme *theme, int rows, int cols)
+{
+    for (int y = 1; y < rows - 1; y++) {
+        plane_fill(p, y, 1, cols - 2, theme->bg, theme->bg);
+    }
+}
+
 static int plane_segment_fit(struct ncplane *p, int y, int x, int remaining, Rgb fg, Rgb bg, const char *text)
 {
     int n;
@@ -387,6 +407,17 @@ static int clamp_int(int value, int lo, int hi)
     if (value < lo) return lo;
     if (value > hi) return hi;
     return value;
+}
+
+static int digits_int(int value)
+{
+    int digits = 1;
+
+    while (value >= 10) {
+        value /= 10;
+        digits++;
+    }
+    return digits;
 }
 
 static int terminal_get_size(int *rows, int *cols)
@@ -450,8 +481,25 @@ static const char *footer_hint(AppPage page)
         return "q / ESC exit   tab or <- -> switch   j/k or arrows scroll filesystems   PgUp/PgDn jump";
     case APP_PAGE_CPU:
     default:
-        return "q / ESC exit   tab or <- -> switch   +/- sample   t heat   space fold   c/e all   x/X term/kill";
+        return "q / ESC exit   tab or <- -> switch   +/- sample   t heat   p proc cpu   r proc ms   space fold   c/e all   x/X term/kill";
     }
+}
+
+static int next_proc_refresh_ms(int current)
+{
+    static const int steps[] = { 1000, 2000, 3000, 5000 };
+    size_t count = sizeof(steps) / sizeof(steps[0]);
+
+    for (size_t i = 0; i < count; i++) {
+        if (current < steps[i]) return steps[i];
+        if (current == steps[i]) return steps[(i + 1) % count];
+    }
+    return steps[0];
+}
+
+static int effective_proc_refresh_ms(int sample_ms, int proc_refresh_ms)
+{
+    return proc_refresh_ms > sample_ms ? proc_refresh_ms : sample_ms;
 }
 
 static void app_status_set(AppState *app, const char *fmt, ...)
@@ -474,6 +522,41 @@ static const char *app_status_current(AppState *app)
         return NULL;
     }
     return app->status;
+}
+
+static void reset_scroll_repeat(AppState *app)
+{
+    if (!app) return;
+    app->last_scroll_action = INPUT_NONE;
+    app->last_scroll_ms = 0;
+    app->scroll_streak = 0;
+}
+
+static int scroll_units_for_input(AppState *app, InputAction action, int wheel, int repeat)
+{
+    long long now;
+
+    if (!app) return 1;
+    if (action != INPUT_SCROLL_UP && action != INPUT_SCROLL_DOWN) {
+        reset_scroll_repeat(app);
+        return 1;
+    }
+    if (wheel) {
+        reset_scroll_repeat(app);
+        return 1;
+    }
+    now = mono_ms_now();
+    if (app->last_scroll_action == (int)action &&
+        (repeat || (app->last_scroll_ms > 0 && now - app->last_scroll_ms <= 120))) {
+        app->scroll_streak++;
+    } else {
+        app->last_scroll_action = (int)action;
+        app->scroll_streak = 1;
+    }
+    app->last_scroll_ms = now;
+    if (app->scroll_streak >= 10) return 3;
+    if (app->scroll_streak >= 4) return 2;
+    return 1;
 }
 
 static void debug_log_open(DebugLog *log)
@@ -774,6 +857,12 @@ static InputAction decode_key_byte(unsigned char ch)
     case 't':
     case 'T':
         return INPUT_TOGGLE_HEAT;
+    case 'p':
+    case 'P':
+        return INPUT_TOGGLE_PROC_CPU;
+    case 'r':
+    case 'R':
+        return INPUT_CYCLE_PROC_REFRESH;
     case '\t':
     case ']':
         return INPUT_TAB_NEXT;
@@ -855,6 +944,7 @@ static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
         out->mouse_y = cy;
         out->mouse_button = (cb & 3) + 1;
         if (cb & 64) {
+            out->mouse_wheel = 1;
             out->action = (cb & 1) ? INPUT_SCROLL_DOWN : INPUT_SCROLL_UP;
         } else if (final == 'M' && (cb & 3) == 0) {
             out->mouse_press = 1;
@@ -1243,6 +1333,12 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
     if (page == APP_PAGE_DIZK && !ui->disk) {
         return -1;
     }
+    if (page == APP_PAGE_CPU) {
+        if (ui->mem) draw_box_title(ui->mem, ui->theme, ui->theme->border_panel, " Memory ", ui->theme->white);
+        if (ui->proc) draw_box_title(ui->proc, ui->theme, ui->theme->border_panel, " Process Tree ", ui->theme->white);
+    } else if (ui->disk) {
+        draw_box_title(ui->disk, ui->theme, ui->theme->border_panel, " Dizk ", ui->theme->white);
+    }
     return 0;
 }
 
@@ -1251,11 +1347,13 @@ static void render_top_frame(Ui *ui)
     draw_box_title(ui->top, ui->theme, ui->theme->border_frame, NULL, ui->theme->fg);
 }
 
-static void render_header_widget(Ui *ui, const DashboardState *dash)
+static void render_header_widget(Ui *ui, const DashboardState *dash, const AppState *app)
 {
     char tb[32];
     char sample_buf[24];
     char heat_buf[24];
+    char proc_buf[32];
+    char proc_cpu_buf[24];
     int row;
     int x;
     int remaining;
@@ -1267,6 +1365,10 @@ static void render_header_widget(Ui *ui, const DashboardState *dash)
     strftime(tb, sizeof(tb), "%a %d %b %Y  %H:%M:%S", localtime(&(time_t){ time(NULL) }));
     snprintf(sample_buf, sizeof(sample_buf), "%dms", dash->sample_ms);
     snprintf(heat_buf, sizeof(heat_buf), "heat %s", lulo_heat_mode_name(dash->heat_mode));
+    snprintf(proc_buf, sizeof(proc_buf), "proc %dms",
+             app ? effective_proc_refresh_ms(dash->sample_ms, app->proc_refresh_ms) : 1000);
+    snprintf(proc_cpu_buf, sizeof(proc_cpu_buf), "cpu %s",
+             app ? lulo_proc_cpu_mode_name(app->proc_cpu_mode) : lulo_proc_cpu_mode_name(LULO_PROC_CPU_PER_CORE));
 
     row = 1;
     x = 2;
@@ -1292,6 +1394,14 @@ static void render_header_widget(Ui *ui, const DashboardState *dash)
     remaining = ui->lo.header.width - 4 - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
     remaining = ui->lo.header.width - 4 - (x - 2);
+    x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->green, ui->theme->bg, proc_cpu_buf);
+    remaining = ui->lo.header.width - 4 - (x - 2);
+    x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
+    remaining = ui->lo.header.width - 4 - (x - 2);
+    x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->cyan, ui->theme->bg, proc_buf);
+    remaining = ui->lo.header.width - 4 - (x - 2);
+    x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
+    remaining = ui->lo.header.width - 4 - (x - 2);
     plane_segment_fit(ui->header, row, x, remaining, ui->theme->white, ui->theme->bg, tb);
 }
 
@@ -1301,7 +1411,7 @@ static void render_cpu_headers(Ui *ui, const DashboardState *dash)
     int x = 0;
     Rgb accent = heat_mode_accent(ui->theme, dash->heat_mode);
 
-    plane_reset(ui->cpu, ui->theme);
+    plane_fill(ui->cpu, 0, 0, ui->lo.cpu.width, ui->theme->bg, ui->theme->bg);
     snprintf(buf, sizeof(buf), "%-*s", ui->lo.cpu_label_w, "CPU");
     plane_putn(ui->cpu, 0, x, ui->theme->white, ui->theme->bg, buf, ui->lo.cpu_label_w);
     x += ui->lo.cpu_label_w + 2;
@@ -1350,6 +1460,7 @@ static void render_cpu_widget(Ui *ui, const CpuInfo *ci, DashboardState *dash,
         if (append_sample) lulo_dashboard_append_heat(dash, i, heat_raw, heat_task);
         hist = lulo_dashboard_history(dash, i, ui->lo.cpu_hist_w);
 
+        plane_fill(ui->cpu, y, 0, ui->lo.cpu.width, ui->theme->bg, ui->theme->bg);
         snprintf(label, sizeof(label), "cpu%d", i);
         snprintf(buf, sizeof(buf), "%-*s", ui->lo.cpu_label_w, label);
         plane_putn(ui->cpu, y, x, ui->theme->white, ui->theme->bg, buf, ui->lo.cpu_label_w);
@@ -1405,9 +1516,12 @@ static void render_memory_widget(Ui *ui, const MemInfo *mi)
     char buf[32];
     unsigned long long mem_used;
     unsigned long long swap_used;
+    unsigned rows = 0;
+    unsigned cols = 0;
 
     if (!ui->mem || !ui->lo.show_mem || ui->lo.mem_rows <= 0) return;
-    draw_box_title(ui->mem, ui->theme, ui->theme->border_panel, " Memory ", ui->theme->white);
+    ncplane_dim_yx(ui->mem, &rows, &cols);
+    plane_clear_inner(ui->mem, ui->theme, (int)rows, (int)cols);
     mem_used = mi->total > mi->available ? mi->total - mi->available : 0;
     swap_used = mi->swap_total > mi->swap_free ? mi->swap_total - mi->swap_free : 0;
 
@@ -1591,21 +1705,33 @@ static void format_sort_header(char *buf, size_t len, const char *label,
     else snprintf(buf, len, "%*.*s%s", width - (int)strlen(arrow), width - (int)strlen(arrow), core, arrow);
 }
 
-static void render_process_widget(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
+static void render_process_count(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
 {
+    int count_digits;
+    int field_w;
+    int rows_x;
     char rows_buf[32];
-    int start;
-    int visible;
+
+    if (!ui->proc || !snap || snap->count <= 0 || !state) return;
+    count_digits = clamp_int(digits_int(snap->count), 1, 9);
+    field_w = count_digits * 2 + 1;
+    rows_x = ui->lo.proc.width - field_w - 2;
+    if (rows_x < 2) return;
+    snprintf(rows_buf, sizeof(rows_buf), "%*d/%d", count_digits, state->selected + 1, snap->count);
+    plane_putn(ui->proc, 0, rows_x, ui->theme->dim, ui->theme->bg, rows_buf, field_w);
+}
+
+static void render_process_title(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
+{
     ProcTableLayout *pt = &ui->proc_table;
 
-    if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
-    build_proc_table_layout(ui);
-    draw_box_title(ui->proc, ui->theme, ui->theme->border_panel, " Process Tree ", ui->theme->white);
-
-    if (snap && snap->count > 0) {
+    if (!ui->proc) return;
+    if (snap && snap->count > 0 && state) {
         int rows_x;
-        snprintf(rows_buf, sizeof(rows_buf), "%d/%d", state->selected + 1, snap->count);
-        rows_x = ui->lo.proc.width - (int)strlen(rows_buf) - 2;
+        int count_digits = digits_int(snap->count);
+        int field_w = count_digits * 2 + 1;
+
+        rows_x = ui->lo.proc.width - field_w - 2;
         if (pt->controls_visible) {
             const char *collapse_label = " [-] all ";
             const char *expand_label = " [+] all ";
@@ -1623,8 +1749,13 @@ static void render_process_widget(Ui *ui, const LuloProcSnapshot *snap, const Lu
                 pt->controls_visible = 0;
             }
         }
-        plane_putn(ui->proc, 0, rows_x, ui->theme->dim, ui->theme->bg, rows_buf, (int)strlen(rows_buf));
+        render_process_count(ui, snap, state);
     }
+}
+
+static void render_process_columns(Ui *ui, const LuloProcState *state)
+{
+    ProcTableLayout *pt = &ui->proc_table;
 
     {
         int x = 1;
@@ -1672,97 +1803,150 @@ static void render_process_widget(Ui *ui, const LuloProcSnapshot *snap, const Lu
         plane_putn(ui->proc, 1, x, ui->theme->white, ui->theme->bg, buf, pt->cmd_w);
         set_proc_header_hit(pt, LULO_PROC_SORT_COMMAND, x, pt->cmd_w, 1);
     }
+}
 
-    start = state ? state->scroll : 0;
-    if (start < 0) start = 0;
-    visible = pt->body_rows;
-    for (int i = 0; i < visible; i++) {
-        int row_index = start + i;
-        int y = i + pt->body_y;
-        int x = 1;
-        int selected = state && row_index == state->selected;
-        Rgb row_bg = selected ? ui->theme->select_bg : ui->theme->bg;
-        char cpu_buf[16];
-        char mem_buf[16];
-        char time_buf[16];
-        char policy_buf[8];
-        char prio_buf[16];
-        char out[1024];
+static void render_process_row(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state, int row_slot)
+{
+    ProcTableLayout *pt = &ui->proc_table;
+    int start = state ? state->scroll : 0;
+    int row_index = start + row_slot;
+    int y = row_slot + pt->body_y;
+    int x = 1;
+    int selected = state && row_index == state->selected;
+    Rgb row_bg = selected ? ui->theme->select_bg : ui->theme->bg;
+    char cpu_buf[16];
+    char mem_buf[16];
+    char time_buf[16];
+    char policy_buf[8];
+    char prio_buf[16];
+    char out[1024];
 
-        if (row_bg.r != ui->theme->bg.r || row_bg.g != ui->theme->bg.g || row_bg.b != ui->theme->bg.b) {
-            plane_fill(ui->proc, y, 1, pt->inner_w, row_bg, row_bg);
-        }
-        if (!snap || row_index >= snap->count) continue;
+    plane_fill(ui->proc, y, 1, pt->inner_w, row_bg, row_bg);
+    if (!snap || row_index < 0 || row_index >= snap->count) return;
 
-        const LuloProcRow *row = &snap->rows[row_index];
-        lulo_format_proc_pct(cpu_buf, sizeof(cpu_buf), row->cpu_tenths);
-        lulo_format_proc_pct(mem_buf, sizeof(mem_buf), row->mem_tenths);
-        lulo_format_proc_time(time_buf, sizeof(time_buf), row->time_cs);
-        lulo_format_proc_policy(policy_buf, sizeof(policy_buf), row->policy);
-        lulo_format_proc_priority(prio_buf, sizeof(prio_buf), row->rt_priority, row->priority);
+    const LuloProcRow *row = &snap->rows[row_index];
+    lulo_format_proc_pct(cpu_buf, sizeof(cpu_buf), row->cpu_tenths);
+    lulo_format_proc_pct(mem_buf, sizeof(mem_buf), row->mem_tenths);
+    lulo_format_proc_time(time_buf, sizeof(time_buf), row->time_cs);
+    lulo_format_proc_policy(policy_buf, sizeof(policy_buf), row->policy);
+    lulo_format_proc_priority(prio_buf, sizeof(prio_buf), row->rt_priority, row->priority);
 
-        snprintf(out, sizeof(out), "%*d", pt->pid_w, row->pid);
-        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_pid_color(ui->theme, row),
-                   row_bg, out, pt->pid_w);
-        x += pt->pid_w + 1;
+    snprintf(out, sizeof(out), "%*d", pt->pid_w, row->pid);
+    plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_pid_color(ui->theme, row),
+               row_bg, out, pt->pid_w);
+    x += pt->pid_w + 1;
 
-        if (pt->show_user) {
-            snprintf(out, sizeof(out), "%-*.*s", pt->user_w, pt->user_w, row->user);
-            plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_user_color(ui->theme, row),
-                       row_bg, out, pt->user_w);
-            x += pt->user_w + 1;
-        }
+    if (pt->show_user) {
+        snprintf(out, sizeof(out), "%-*.*s", pt->user_w, pt->user_w, row->user);
+        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_user_color(ui->theme, row),
+                   row_bg, out, pt->user_w);
+        x += pt->user_w + 1;
+    }
 
-        snprintf(out, sizeof(out), "%-*s", pt->policy_w, policy_buf);
-        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_policy_color(ui->theme, row->policy),
-                   row_bg, out, pt->policy_w);
-        x += pt->policy_w + 1;
+    snprintf(out, sizeof(out), "%-*s", pt->policy_w, policy_buf);
+    plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_policy_color(ui->theme, row->policy),
+               row_bg, out, pt->policy_w);
+    x += pt->policy_w + 1;
 
-        snprintf(out, sizeof(out), "%*s", pt->prio_w, prio_buf);
-        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_prio_color(ui->theme, row),
-                   row_bg, out, pt->prio_w);
-        x += pt->prio_w + 1;
+    snprintf(out, sizeof(out), "%*s", pt->prio_w, prio_buf);
+    plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_prio_color(ui->theme, row),
+               row_bg, out, pt->prio_w);
+    x += pt->prio_w + 1;
 
-        snprintf(out, sizeof(out), "%*d", pt->nice_w, row->nice);
-        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_nice_color(ui->theme, row->nice),
-                   row_bg, out, pt->nice_w);
-        x += pt->nice_w + 1;
+    snprintf(out, sizeof(out), "%*d", pt->nice_w, row->nice);
+    plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_nice_color(ui->theme, row->nice),
+               row_bg, out, pt->nice_w);
+    x += pt->nice_w + 1;
 
-        snprintf(out, sizeof(out), "%*s", pt->cpu_w, cpu_buf);
-        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_cpu_color(ui->theme, row->cpu_tenths),
-                   row_bg, out, pt->cpu_w);
-        x += pt->cpu_w + 1;
+    snprintf(out, sizeof(out), "%*s", pt->cpu_w, cpu_buf);
+    plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_cpu_color(ui->theme, row->cpu_tenths),
+               row_bg, out, pt->cpu_w);
+    x += pt->cpu_w + 1;
 
-        if (pt->show_mem) {
-            snprintf(out, sizeof(out), "%*s", pt->mem_w, mem_buf);
-            plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_mem_color(ui->theme, row->mem_tenths),
-                       row_bg, out, pt->mem_w);
-            x += pt->mem_w + 1;
-        }
+    if (pt->show_mem) {
+        snprintf(out, sizeof(out), "%*s", pt->mem_w, mem_buf);
+        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_mem_color(ui->theme, row->mem_tenths),
+                   row_bg, out, pt->mem_w);
+        x += pt->mem_w + 1;
+    }
 
-        if (pt->show_time) {
-            snprintf(out, sizeof(out), "%-*s", pt->time_w, time_buf);
-            plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_time_color(ui->theme, row->time_cs),
-                       row_bg, out, pt->time_w);
-            x += pt->time_w + 1;
-        }
+    if (pt->show_time) {
+        snprintf(out, sizeof(out), "%-*s", pt->time_w, time_buf);
+        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_time_color(ui->theme, row->time_cs),
+                   row_bg, out, pt->time_w);
+        x += pt->time_w + 1;
+    }
 
-        if (row->label_prefix_len > 0 &&
-            row->label_prefix_len < (int)sizeof(row->label) &&
-            row->label_prefix_cols < pt->cmd_w) {
-            int cmd_only_w = pt->cmd_w - row->label_prefix_cols;
-            snprintf(out, sizeof(out), "%.*s", row->label_prefix_len, row->label);
-            plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : ui->theme->branch,
-                       row_bg, out, row->label_prefix_cols);
-            x += row->label_prefix_cols;
-            snprintf(out, sizeof(out), "%-*.*s", cmd_only_w, cmd_only_w, row->label + row->label_prefix_len);
-            plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_command_color(ui->theme, row),
-                       row_bg, out, cmd_only_w);
-        } else {
-            snprintf(out, sizeof(out), "%-*.*s", pt->cmd_w, pt->cmd_w, row->label);
-            plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_command_color(ui->theme, row),
-                       row_bg, out, pt->cmd_w);
-        }
+    if (row->label_prefix_len > 0 &&
+        row->label_prefix_len < (int)sizeof(row->label) &&
+        row->label_prefix_cols < pt->cmd_w) {
+        int cmd_only_w = pt->cmd_w - row->label_prefix_cols;
+        snprintf(out, sizeof(out), "%.*s", row->label_prefix_len, row->label);
+        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : ui->theme->branch,
+                   row_bg, out, row->label_prefix_cols);
+        x += row->label_prefix_cols;
+        snprintf(out, sizeof(out), "%-*.*s", cmd_only_w, cmd_only_w, row->label + row->label_prefix_len);
+        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_command_color(ui->theme, row),
+                   row_bg, out, cmd_only_w);
+    } else {
+        snprintf(out, sizeof(out), "%-*.*s", pt->cmd_w, pt->cmd_w, row->label);
+        plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_command_color(ui->theme, row),
+                   row_bg, out, pt->cmd_w);
+    }
+}
+
+static void render_process_rows(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state,
+                                int first_slot, int count)
+{
+    ProcTableLayout *pt = &ui->proc_table;
+    int end;
+
+    if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
+    if (first_slot < 0) first_slot = 0;
+    if (count < 0) count = 0;
+    end = first_slot + count;
+    if (end > pt->body_rows) end = pt->body_rows;
+    for (int i = first_slot; i < end; i++) render_process_row(ui, snap, state, i);
+}
+
+static void render_process_widget(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
+{
+    unsigned rows = 0;
+    unsigned cols = 0;
+
+    if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
+    build_proc_table_layout(ui);
+    ncplane_dim_yx(ui->proc, &rows, &cols);
+    plane_fill(ui->proc, 1, 1, ui->proc_table.inner_w, ui->theme->bg, ui->theme->bg);
+    render_process_title(ui, snap, state);
+    render_process_columns(ui, state);
+    render_process_rows(ui, snap, state, 0, ui->proc_table.body_rows);
+}
+
+static void render_process_body_only(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
+{
+    if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
+    build_proc_table_layout(ui);
+    render_process_count(ui, snap, state);
+    render_process_rows(ui, snap, state, 0, ui->proc_table.body_rows);
+}
+
+static void render_process_cursor_only(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state,
+                                       int prev_selected, int prev_scroll)
+{
+    int old_slot;
+    int new_slot;
+
+    if (!ui->proc || !snap || !state) return;
+    build_proc_table_layout(ui);
+    render_process_count(ui, snap, state);
+    old_slot = prev_selected - prev_scroll;
+    new_slot = state->selected - state->scroll;
+    if (old_slot >= 0 && old_slot < ui->proc_table.body_rows) {
+        render_process_row(ui, snap, state, old_slot);
+    }
+    if (new_slot >= 0 && new_slot < ui->proc_table.body_rows && new_slot != old_slot) {
+        render_process_row(ui, snap, state, new_slot);
     }
 }
 
@@ -2193,9 +2377,12 @@ static void render_disk_queue(struct ncplane *p, const Theme *theme, const LuloR
 static void render_disk_widget(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state)
 {
     DiskWidgetLayout layout;
+    unsigned rows = 0;
+    unsigned cols = 0;
 
     if (!ui->disk) return;
-    draw_box_title(ui->disk, ui->theme, ui->theme->border_panel, " Dizk ", ui->theme->white);
+    ncplane_dim_yx(ui->disk, &rows, &cols);
+    plane_clear_inner(ui->disk, ui->theme, (int)rows, (int)cols);
     build_disk_widget_layout(ui, &layout);
     render_disk_filesystems(ui->disk, ui->theme, &layout.fs, snap, state);
     if (layout.show_dev) render_disk_devices(ui->disk, ui->theme, &layout.dev, snap);
@@ -2229,25 +2416,25 @@ static void render_static(Ui *ui, AppPage page, AppState *app)
     render_footer(ui, page, app_status_current(app));
 }
 
-static void render_cpu_page(Ui *ui, const CpuInfo *ci, DashboardState *dash,
-                           const CpuStat *sa, const CpuStat *sb,
-                           const CpuFreq *freqs, int nfreq,
-                           const MemInfo *mi, const LoadInfo *li,
-                           const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state,
-                           const double *cpu_temps, int ncpu_temp,
-                           int append_sample)
+static void render_cpu_page(Ui *ui, const AppState *app, const CpuInfo *ci, DashboardState *dash,
+                            const CpuStat *sa, const CpuStat *sb,
+                            const CpuFreq *freqs, int nfreq,
+                            const MemInfo *mi, const LoadInfo *li,
+                            const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state,
+                            const double *cpu_temps, int ncpu_temp,
+                            int append_sample, int render_proc)
 {
-    render_header_widget(ui, dash);
+    render_header_widget(ui, dash, app);
     render_cpu_widget(ui, ci, dash, sa, sb, freqs, nfreq, cpu_temps, ncpu_temp, append_sample);
     render_memory_widget(ui, mi);
-    render_process_widget(ui, proc_snap, proc_state);
+    if (render_proc) render_process_widget(ui, proc_snap, proc_state);
     render_load_widget(ui, li, sb->ncpu);
 }
 
-static void render_disk_page(Ui *ui, const DashboardState *dash,
+static void render_disk_page(Ui *ui, const AppState *app, const DashboardState *dash,
                              const LuloDizkSnapshot *dizk_snap, const LuloDizkState *dizk_state)
 {
-    render_header_widget(ui, dash);
+    render_header_widget(ui, dash, app);
     render_disk_widget(ui, dizk_snap, dizk_state);
     render_disk_status(ui, dizk_snap, dizk_state);
 }
@@ -2263,17 +2450,17 @@ static void render_disk_only(Ui *ui, const LuloDizkSnapshot *dizk_snap, const Lu
     render_disk_status(ui, dizk_snap, dizk_state);
 }
 
-static void render_header_only(Ui *ui, const DashboardState *dash)
+static void render_header_only(Ui *ui, const DashboardState *dash, const AppState *app)
 {
-    render_header_widget(ui, dash);
+    render_header_widget(ui, dash, app);
 }
 
-static void render_header_cpu(Ui *ui, const CpuInfo *ci, DashboardState *dash,
+static void render_header_cpu(Ui *ui, const AppState *app, const CpuInfo *ci, DashboardState *dash,
                               const CpuStat *sa, const CpuStat *sb,
                               const CpuFreq *freqs, int nfreq,
                               const double *cpu_temps, int ncpu_temp)
 {
-    render_header_widget(ui, dash);
+    render_header_widget(ui, dash, app);
     render_cpu_widget(ui, ci, dash, sa, sb, freqs, nfreq, cpu_temps, ncpu_temp, 0);
 }
 
@@ -2296,6 +2483,12 @@ static InputAction decode_notcurses_input(uint32_t id)
     case 't':
     case 'T':
         return INPUT_TOGGLE_HEAT;
+    case 'p':
+    case 'P':
+        return INPUT_TOGGLE_PROC_CPU;
+    case 'r':
+    case 'R':
+        return INPUT_CYCLE_PROC_REFRESH;
     case '\t':
     case ']':
         return INPUT_TAB_NEXT;
@@ -2403,6 +2596,10 @@ static int handle_tab_click(Ui *ui, int global_y, int global_x, AppState *app, R
     return 0;
 }
 
+static void schedule_proc_selection_redraw(RenderFlags *render,
+                                           int prev_selected, int prev_scroll,
+                                           int new_selected, int new_scroll);
+
 static int handle_proc_click(Ui *ui, int global_y, int global_x,
                              const LuloProcSnapshot *snap, LuloProcState *proc_state,
                              RenderFlags *render)
@@ -2450,6 +2647,8 @@ static int handle_proc_click(Ui *ui, int global_y, int global_x,
         int row_index = proc_state->scroll + row_slot;
 
         if (row_index < 0 || row_index >= snap->count) return 0;
+        render->proc_prev_selected = proc_state->selected;
+        render->proc_prev_scroll = proc_state->scroll;
         proc_state->selected = row_index;
         proc_state->selected_pid = snap->rows[row_index].pid;
         proc_state->selected_is_thread = snap->rows[row_index].is_thread;
@@ -2459,7 +2658,8 @@ static int handle_proc_click(Ui *ui, int global_y, int global_x,
             }
         } else {
             lulo_proc_view_sync(proc_state, snap, ui->lo.proc_rows);
-            render->need_proc = 1;
+            schedule_proc_selection_redraw(render, render->proc_prev_selected, render->proc_prev_scroll,
+                                           proc_state->selected, proc_state->scroll);
         }
         render->need_render = 1;
         return 1;
@@ -2478,12 +2678,37 @@ static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
     return 0;
 }
 
+static void schedule_proc_selection_redraw(RenderFlags *render,
+                                           int prev_selected, int prev_scroll,
+                                           int new_selected, int new_scroll)
+{
+    if (!render) return;
+    if (render->need_proc || render->need_proc_refresh || render->need_proc_body_only) return;
+    if (new_scroll != prev_scroll || new_selected == prev_selected) {
+        render->need_proc_body_only = 1;
+        render->need_proc_cursor_only = 0;
+        return;
+    }
+    if (render->need_proc_cursor_only) {
+        render->need_proc_body_only = 1;
+        render->need_proc_cursor_only = 0;
+        return;
+    }
+    render->need_proc_cursor_only = 1;
+    render->proc_prev_selected = prev_selected;
+    render->proc_prev_scroll = prev_scroll;
+}
+
 static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
                                const LuloDizkSnapshot *dizk_snap, LuloDizkState *dizk_state,
                                DashboardState *dash, int *sample_ms, long long *deadline,
-                               int *exit_requested, int *need_resize, RenderFlags *render)
+                               int *exit_requested, int *need_resize, RenderFlags *render,
+                               int scroll_units)
 {
+    int prev_selected = proc_state ? proc_state->selected : 0;
+    int prev_scroll = proc_state ? proc_state->scroll : 0;
+
     switch (action) {
     case INPUT_QUIT:
         *exit_requested = 1;
@@ -2508,22 +2733,49 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         else render->need_header = 1;
         render->need_render = 1;
         break;
+    case INPUT_TOGGLE_PROC_CPU:
+        app->proc_cpu_mode = lulo_next_proc_cpu_mode(app->proc_cpu_mode);
+        app_status_set(app, "proc cpu %s", lulo_proc_cpu_mode_name(app->proc_cpu_mode));
+        render->need_header = 1;
+        render->need_footer = 1;
+        if (app->active_page == APP_PAGE_CPU) render->need_proc_refresh = 1;
+        render->need_render = 1;
+        break;
+    case INPUT_CYCLE_PROC_REFRESH:
+        app->proc_refresh_ms = next_proc_refresh_ms(app->proc_refresh_ms);
+        app_status_set(app, "proc refresh %dms",
+                       effective_proc_refresh_ms(*sample_ms, app->proc_refresh_ms));
+        render->need_header = 1;
+        render->need_footer = 1;
+        if (app->active_page == APP_PAGE_CPU) render->need_proc_refresh = 1;
+        render->need_render = 1;
+        break;
     case INPUT_SCROLL_UP:
         if (app->active_page == APP_PAGE_CPU) {
-            lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, -1);
-            render->need_proc = 1;
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, -delta);
+            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                           proc_state->selected, proc_state->scroll);
         } else {
-            lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), -1);
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), -delta);
             render->need_disk = 1;
         }
         render->need_render = 1;
         break;
     case INPUT_SCROLL_DOWN:
         if (app->active_page == APP_PAGE_CPU) {
-            lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, +1);
-            render->need_proc = 1;
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, +delta);
+            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                           proc_state->selected, proc_state->scroll);
         } else {
-            lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), +1);
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), +delta);
             render->need_disk = 1;
         }
         render->need_render = 1;
@@ -2531,7 +2783,8 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     case INPUT_PAGE_UP:
         if (app->active_page == APP_PAGE_CPU) {
             lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, -1);
-            render->need_proc = 1;
+            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                           proc_state->selected, proc_state->scroll);
         } else {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), -1);
             render->need_disk = 1;
@@ -2541,7 +2794,8 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     case INPUT_PAGE_DOWN:
         if (app->active_page == APP_PAGE_CPU) {
             lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, +1);
-            render->need_proc = 1;
+            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                           proc_state->selected, proc_state->scroll);
         } else {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), +1);
             render->need_disk = 1;
@@ -2551,7 +2805,8 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     case INPUT_HOME:
         if (app->active_page == APP_PAGE_CPU) {
             lulo_proc_view_home(proc_state, proc_snap, ui->lo.proc_rows);
-            render->need_proc = 1;
+            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                           proc_state->selected, proc_state->scroll);
         } else {
             lulo_dizk_view_home(dizk_state);
             render->need_disk = 1;
@@ -2561,7 +2816,8 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     case INPUT_END:
         if (app->active_page == APP_PAGE_CPU) {
             lulo_proc_view_end(proc_state, proc_snap, ui->lo.proc_rows);
-            render->need_proc = 1;
+            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                           proc_state->selected, proc_state->scroll);
         } else {
             lulo_dizk_view_end(dizk_state, dizk_snap, disk_visible_rows(ui));
             render->need_disk = 1;
@@ -2635,11 +2891,16 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
     if (render->need_tabs) render_tabs(ui, app->active_page);
     if (render->need_footer) render_footer(ui, app->active_page, app_status_current(app));
     if (app->active_page == APP_PAGE_CPU) {
-        if (render->need_cpu) render_header_cpu(ui, ci, dash, sa, sb, freqs, nfreq, cpu_temps, ncpu_temp);
-        else if (render->need_header) render_header_only(ui, dash);
+        if (render->need_cpu) render_header_cpu(ui, app, ci, dash, sa, sb, freqs, nfreq, cpu_temps, ncpu_temp);
+        else if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_proc) render_process_only(ui, proc_snap, proc_state);
+        else if (render->need_proc_body_only) render_process_body_only(ui, proc_snap, proc_state);
+        else if (render->need_proc_cursor_only) {
+            render_process_cursor_only(ui, proc_snap, proc_state,
+                                       render->proc_prev_selected, render->proc_prev_scroll);
+        }
     } else {
-        if (render->need_header) render_header_only(ui, dash);
+        if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_disk || render->need_load) render_disk_only(ui, dizk_snap, dizk_state);
     }
     notcurses_render(ui->nc);
@@ -2664,13 +2925,23 @@ int main(int argc, char *argv[])
     DashboardState dash;
     LuloProcState proc_state;
     LuloDizkState dizk_state;
-    AppState app = { .active_page = APP_PAGE_CPU };
+    LuloProcSnapshot proc_snap = {0};
+    AppState app = {
+        .active_page = APP_PAGE_CPU,
+        .proc_refresh_ms = 1000,
+        .proc_cpu_mode = LULO_PROC_CPU_PER_CORE,
+    };
     Ui ui;
     RawInput rawin;
     NcInputThread ncin;
     notcurses_options opts;
     DebugLog dlog;
     const char *env_input_backend;
+    unsigned long long proc_cpu_accum_delta = 0;
+    unsigned long long proc_last_total_delta = 0;
+    long long proc_due_ms = 0;
+    int proc_snapshot_valid = 0;
+    LuloProcCpuMode proc_snapshot_mode = LULO_PROC_CPU_PER_CORE;
 
     while ((opt = getopt(argc, argv, "ni:h")) != -1) {
         switch (opt) {
@@ -2770,12 +3041,12 @@ int main(int argc, char *argv[])
         CpuFreq freqs[LULO_MAX_CPUS] = {0};
         MemInfo mi = {0};
         LoadInfo li = {0};
-        LuloProcSnapshot proc_snap = {0};
         LuloDizkSnapshot dizk_snap = {0};
         double cpu_temps[64] = {0};
         int nfreq = 0;
         int ncpu_temp = 0;
         int full_redraw = 0;
+        int proc_refreshed = 0;
         unsigned long long total_delta;
 
         if (terminal_get_size(&term_rows, &term_cols) == 0 &&
@@ -2813,6 +3084,7 @@ int main(int argc, char *argv[])
         }
 
         total_delta = lulo_cpu_total_delta(&stat_a, &stat_b);
+        if (append_sample) proc_cpu_accum_delta += total_delta;
         if (append_sample && app.active_page != APP_PAGE_CPU) {
             for (int i = 0; i < stat_b.ncpu; i++) {
                 int heat_raw = lulo_cpu_heat_pct(&stat_a.cpu[i + 1], &stat_b.cpu[i + 1], HEAT_MODE_RAW);
@@ -2824,9 +3096,22 @@ int main(int argc, char *argv[])
         if (app.active_page == APP_PAGE_CPU) {
             lulo_gather_meminfo(&mi);
             lulo_gather_loadavg(&li);
-            if (lulo_proc_snapshot_gather(&proc_snap, &proc_state, total_delta, mi.total, stat_b.ncpu) < 0) {
-                fprintf(stderr, "failed to gather process snapshot\n");
-                break;
+            if (!proc_snapshot_valid || proc_snapshot_mode != app.proc_cpu_mode || mono_ms_now() >= proc_due_ms) {
+                unsigned long long proc_delta = proc_cpu_accum_delta > 0 ? proc_cpu_accum_delta :
+                                                (proc_last_total_delta > 0 ? proc_last_total_delta : total_delta);
+
+                lulo_proc_snapshot_free(&proc_snap);
+                if (lulo_proc_snapshot_gather(&proc_snap, &proc_state, proc_delta, mi.total, stat_b.ncpu,
+                                              app.proc_cpu_mode) < 0) {
+                    fprintf(stderr, "failed to gather process snapshot\n");
+                    break;
+                }
+                proc_snapshot_valid = 1;
+                proc_snapshot_mode = app.proc_cpu_mode;
+                proc_refreshed = 1;
+                proc_last_total_delta = proc_delta;
+                proc_cpu_accum_delta = 0;
+                proc_due_ms = mono_ms_now() + effective_proc_refresh_ms(sample_ms, app.proc_refresh_ms);
             }
             lulo_proc_view_sync(&proc_state, &proc_snap, ui.lo.proc_rows);
         } else {
@@ -2839,14 +3124,14 @@ int main(int argc, char *argv[])
 
         if (full_redraw) render_static(&ui, app.active_page, &app);
         if (app.active_page == APP_PAGE_CPU) {
-            render_cpu_page(&ui, &ci, &dash, &stat_a, &stat_b, freqs, nfreq, &mi, &li,
-                            &proc_snap, &proc_state, cpu_temps, ncpu_temp, append_sample);
+            render_cpu_page(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq, &mi, &li,
+                            &proc_snap, &proc_state, cpu_temps, ncpu_temp, append_sample,
+                            full_redraw || proc_refreshed);
         } else {
-            render_disk_page(&ui, &dash, &dizk_snap, &dizk_state);
+            render_disk_page(&ui, &app, &dash, &dizk_snap, &dizk_state);
         }
         debug_log_stage(&dlog, "before_render");
         if (notcurses_render(ui.nc) < 0) {
-            lulo_proc_snapshot_free(&proc_snap);
             lulo_dizk_snapshot_free(&dizk_snap);
             break;
         }
@@ -2922,8 +3207,11 @@ int main(int argc, char *argv[])
                         if (in.mouse_press && in.mouse_button == 1) {
                             handle_mouse_click(&ui, in.mouse_y, in.mouse_x, &app, &proc_snap, &proc_state, &render);
                         } else {
+                            int scroll_units = scroll_units_for_input(&app, in.action, in.mouse_wheel, in.key_repeat);
+
                             apply_input_action(&ui, in.action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
-                                               &dash, &sample_ms, &deadline, &exit_requested, &need_resize, &render);
+                                               &dash, &sample_ms, &deadline, &exit_requested, &need_resize, &render,
+                                               scroll_units);
                         }
                         if (need_resize || render.need_rebuild || exit_requested) break;
                     }
@@ -2976,19 +3264,33 @@ int main(int argc, char *argv[])
                         if (id == NCKEY_BUTTON1 && ni.evtype != NCTYPE_RELEASE) {
                             handle_mouse_click(&ui, ni.y + 1, ni.x + 1, &app, &proc_snap, &proc_state, &render);
                         } else {
+                            int scroll_units = scroll_units_for_input(&app, action,
+                                                                       id == NCKEY_SCROLL_UP || id == NCKEY_SCROLL_DOWN,
+                                                                       ni.evtype == NCTYPE_REPEAT);
+
                             apply_input_action(&ui, action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
-                                               &dash, &sample_ms, &deadline, &exit_requested, &need_resize, &render);
+                                               &dash, &sample_ms, &deadline, &exit_requested, &need_resize, &render,
+                                               scroll_units);
                         }
                         if (need_resize || render.need_rebuild || exit_requested) break;
                     }
                 }
 
                 if (render.need_proc_refresh && app.active_page == APP_PAGE_CPU) {
+                    unsigned long long proc_delta = proc_cpu_accum_delta > 0 ? proc_cpu_accum_delta :
+                                                    (proc_last_total_delta > 0 ? proc_last_total_delta : total_delta);
+
                     lulo_proc_snapshot_free(&proc_snap);
-                    if (lulo_proc_snapshot_gather(&proc_snap, &proc_state, total_delta, mi.total, stat_b.ncpu) < 0) {
+                    if (lulo_proc_snapshot_gather(&proc_snap, &proc_state, proc_delta, mi.total, stat_b.ncpu,
+                                                  app.proc_cpu_mode) < 0) {
                         exit_requested = 1;
                         break;
                     }
+                    proc_snapshot_valid = 1;
+                    proc_snapshot_mode = app.proc_cpu_mode;
+                    proc_last_total_delta = proc_delta;
+                    proc_cpu_accum_delta = 0;
+                    proc_due_ms = mono_ms_now() + effective_proc_refresh_ms(sample_ms, app.proc_refresh_ms);
                     lulo_proc_view_sync(&proc_state, &proc_snap, ui.lo.proc_rows);
                     render.need_proc = 1;
                 }
@@ -3015,7 +3317,6 @@ int main(int argc, char *argv[])
             }
         }
 
-        lulo_proc_snapshot_free(&proc_snap);
         lulo_dizk_snapshot_free(&dizk_snap);
         if (exit_requested) break;
         if (need_resize || need_rebuild) continue;
@@ -3031,6 +3332,7 @@ int main(int argc, char *argv[])
     } else {
         nc_input_stop(&ncin);
     }
+    lulo_proc_snapshot_free(&proc_snap);
     lulo_proc_state_cleanup(&proc_state);
     lulo_dizk_state_cleanup(&dizk_state);
     notcurses_stop(ui.nc);

@@ -358,11 +358,14 @@ static const HelpEntry *help_entries(AppPage page, int *count)
         {"PgUp/PgDn, Home/End", "jump the active pane"},
         {"f", "toggle list / preview focus"},
         {"space", "open the selected row or saved bundle"},
-        {"i", "edit the highlighted tunable inline"},
+        {"i", "edit a tunable inline or open a saved bundle file"},
+        {"n", "create a new snapshot or preset bundle file"},
+        {"m", "rename the selected snapshot or preset"},
+        {"d", "delete the selected snapshot or preset"},
         {"Enter", "stage the edited value"},
         {"Esc", "cancel inline edit"},
         {"a", "apply the staged value or selected bundle"},
-        {"s / S", "save snapshot or preset"},
+        {"s / S", "save snapshot or preset from Explore"},
         {"? / click", "close help"},
     };
 
@@ -3111,6 +3114,55 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 sched_status_set(app, "%s", err[0] ? err : "edit failed");
             }
             render->need_load = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            char new_path[320];
+            char new_id[96];
+            char *content = NULL;
+            char err[192];
+            int fatal = 0;
+            int rc;
+
+            if (tune_prepare_new_bundle(tune_snap, tune_state, new_path, sizeof(new_path),
+                                        new_id, sizeof(new_id),
+                                        &content, err, sizeof(err)) < 0) {
+                tune_status_set(app, "%s", err[0] ? err : "create failed");
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            rc = lulo_edit_write_file(new_path, content, err, sizeof(err));
+            free(content);
+            if (rc < 0) {
+                tune_status_set(app, "%s", err[0] ? err : "create failed");
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            rc = run_external_edit(ui, input_backend, rawin, dlog, new_path, &fatal, err, sizeof(err));
+            render->need_rebuild = 1;
+            render->need_render = 1;
+            if (fatal) {
+                fprintf(stderr, "%s\n", err[0] ? err : "failed to restore terminal after editing");
+                *exit_requested = 1;
+                break;
+            }
+            if (tune_state->view == LULO_TUNE_VIEW_SNAPSHOTS) {
+                snprintf(tune_state->selected_snapshot_id, sizeof(tune_state->selected_snapshot_id), "%s", new_id);
+                tune_state->snapshot_selected = -1;
+            } else if (tune_state->view == LULO_TUNE_VIEW_PRESETS) {
+                snprintf(tune_state->selected_preset_id, sizeof(tune_state->selected_preset_id), "%s", new_id);
+                tune_state->preset_selected = -1;
+            }
+            if (rc > 0) {
+                tune_status_set(app, "saved %s", path_basename_local(new_path));
+            } else if (rc == 0) {
+                tune_status_set(app, "created %s", path_basename_local(new_path));
+            } else {
+                tune_status_set(app, "%s", err[0] ? err : "edit failed");
+            }
+            render->need_tune_refresh_full = 1;
+            render->need_tune = 1;
+            render->need_load = 1;
         }
         break;
     case INPUT_DELETE_SELECTED:
@@ -3137,6 +3189,43 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             }
             render->need_load = 1;
             render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            char delete_path[320];
+            char err[192];
+
+            if (!active_tune_bundle_delete_path(tune_snap, tune_state, delete_path, sizeof(delete_path))) {
+                tune_status_set(app, "delete from Snapshots or Presets");
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            if (lulo_edit_delete_file(delete_path, err, sizeof(err)) < 0) {
+                tune_status_set(app, "%s", err[0] ? err : "delete failed");
+            } else {
+                if (tune_state->view == LULO_TUNE_VIEW_SNAPSHOTS) {
+                    tune_state->selected_snapshot_id[0] = '\0';
+                    tune_state->snapshot_selected = -1;
+                } else if (tune_state->view == LULO_TUNE_VIEW_PRESETS) {
+                    tune_state->selected_preset_id[0] = '\0';
+                    tune_state->preset_selected = -1;
+                }
+                tune_status_set(app, "deleted %s", path_basename_local(delete_path));
+                render->need_tune_refresh_full = 1;
+                render->need_tune = 1;
+            }
+            render->need_load = 1;
+            render->need_render = 1;
+        }
+        break;
+    case INPUT_RENAME_SELECTED:
+        if (app->active_page == APP_PAGE_TUNE) {
+            if (start_tune_bundle_rename(app, tune_snap, tune_state)) {
+                render->need_tune = 1;
+                render->need_render = 1;
+            } else {
+                render->need_tune = 1;
+                render->need_render = 1;
+            }
         }
         break;
     case INPUT_SAVE_SNAPSHOT:
@@ -3167,12 +3256,44 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_EDIT_SELECTED:
         if (app->active_page == APP_PAGE_TUNE) {
-            if (start_tune_edit(app, tune_snap, tune_state)) {
-                render->need_tune = 1;
-                render->need_render = 1;
+            if (tune_state->view == LULO_TUNE_VIEW_EXPLORE) {
+                if (start_tune_edit(app, tune_snap, tune_state)) {
+                    render->need_tune = 1;
+                    render->need_render = 1;
+                } else {
+                    render->need_tune = 1;
+                    render->need_render = 1;
+                }
             } else {
-                render->need_tune = 1;
+                char edit_path[320];
+                char err[192];
+                int fatal = 0;
+                int rc;
+
+                if (!active_tune_bundle_edit_path(tune_snap, tune_state, edit_path, sizeof(edit_path))) {
+                    tune_status_set(app, "edit from Snapshots or Presets");
+                    render->need_load = 1;
+                    render->need_render = 1;
+                    break;
+                }
+                rc = run_external_edit(ui, input_backend, rawin, dlog, edit_path, &fatal, err, sizeof(err));
+                render->need_rebuild = 1;
                 render->need_render = 1;
+                if (fatal) {
+                    fprintf(stderr, "%s\n", err[0] ? err : "failed to restore terminal after editing");
+                    *exit_requested = 1;
+                    break;
+                }
+                if (rc > 0) {
+                    tune_status_set(app, "saved %s", path_basename_local(edit_path));
+                } else if (rc == 0) {
+                    tune_status_set(app, "edit cancelled");
+                } else {
+                    tune_status_set(app, "%s", err[0] ? err : "edit failed");
+                }
+                render->need_tune_refresh_full = 1;
+                render->need_tune = 1;
+                render->need_load = 1;
             }
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             const char *edit_path = active_cgroups_edit_path(cgroups_snap, cgroups_state);
@@ -3883,6 +4004,12 @@ int main(int argc, char *argv[])
                                 continue;
                             }
                         }
+                        if (app.tune_rename_active && !in.mouse_press && !in.mouse_release && !in.mouse_wheel) {
+                            if (handle_tune_bundle_rename_input(&app, &in, &render)) {
+                                if (need_resize || render.need_rebuild || exit_requested) break;
+                                continue;
+                            }
+                        }
                         if (in.mouse_wheel &&
                             !handle_mouse_wheel_target(&ui, &app, &sched_state, &cgroups_state, &tune_state, &systemd_state, &render,
                                                        in.mouse_y, in.mouse_x)) {
@@ -3964,6 +4091,15 @@ int main(int argc, char *argv[])
                             id != NCKEY_SCROLL_UP &&
                             id != NCKEY_SCROLL_DOWN) {
                             if (handle_tune_edit_input(&app, &in, &tune_state, &render)) {
+                                if (need_resize || render.need_rebuild || exit_requested) break;
+                                continue;
+                            }
+                        }
+                        if (app.tune_rename_active &&
+                            id != NCKEY_BUTTON1 &&
+                            id != NCKEY_SCROLL_UP &&
+                            id != NCKEY_SCROLL_DOWN) {
+                            if (handle_tune_bundle_rename_input(&app, &in, &render)) {
                                 if (need_resize || render.need_rebuild || exit_requested) break;
                                 continue;
                             }

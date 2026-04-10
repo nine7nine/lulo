@@ -142,6 +142,10 @@ typedef struct {
     char tune_edit_value[192];
     int tune_edit_len;
     char tune_edit_prompt[320];
+    int tune_rename_active;
+    char tune_rename_path[320];
+    char tune_rename_value[192];
+    int tune_rename_len;
 } AppState;
 
 typedef struct {
@@ -188,6 +192,7 @@ typedef enum {
     INPUT_RELOAD_PAGE,
     INPUT_NEW_ITEM,
     INPUT_DELETE_SELECTED,
+    INPUT_RENAME_SELECTED,
     INPUT_RESIZE,
 } InputAction;
 
@@ -337,10 +342,20 @@ void tune_edit_prompt_format(const AppState *app, char *buf, size_t len);
 int tune_list_rows_visible(const Ui *ui, const LuloTuneState *state);
 int tune_preview_rows_visible(const Ui *ui, const LuloTuneState *state);
 const LuloTuneRow *active_tune_explore_row(const LuloTuneSnapshot *snap, const LuloTuneState *state);
+int active_tune_bundle_edit_path(const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                                 char *path, size_t path_len);
+int active_tune_bundle_delete_path(const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                                   char *path, size_t path_len);
+int tune_prepare_new_bundle(const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                            char *path, size_t path_len, char *id_out, size_t id_len,
+                            char **content_out, char *err, size_t errlen);
 int start_tune_edit(AppState *app, const LuloTuneSnapshot *snap, const LuloTuneState *state);
+int start_tune_bundle_rename(AppState *app, const LuloTuneSnapshot *snap, const LuloTuneState *state);
 int active_tune_row_is_staged(const LuloTuneSnapshot *snap, const LuloTuneState *state);
 int handle_tune_edit_input(AppState *app, const DecodedInput *in,
                            LuloTuneState *tune_state, RenderFlags *render);
+int handle_tune_bundle_rename_input(AppState *app, const DecodedInput *in,
+                                    RenderFlags *render);
 void render_tune_widget(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
                         const AppState *app);
 void render_tune_status(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,

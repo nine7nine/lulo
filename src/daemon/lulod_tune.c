@@ -410,14 +410,13 @@ static int load_bundle_meta_dir(LuloTuneBundleMeta **items, int *count, int pres
         if (!fp) continue;
         while (fgets(line, sizeof(line), fp)) {
             trim_right(line);
-            if (!strncmp(line, "id=", 3)) copy_capped(id, sizeof(id), line + 3);
-            else if (!strncmp(line, "name=", 5)) copy_capped(name, sizeof(name), line + 5);
+            if (!strncmp(line, "name=", 5)) copy_capped(name, sizeof(name), line + 5);
             else if (!strncmp(line, "created=", 8)) copy_capped(created, sizeof(created), line + 8);
             else if (!strncmp(line, "count=", 6)) item_count = atoi(line + 6);
-            if (id[0] && name[0] && created[0] && item_count > 0) break;
+            if (name[0] && created[0] && item_count > 0) break;
         }
         fclose(fp);
-        if (!id[0]) snprintf(id, sizeof(id), "%.*s", (int)(nlen - 6), ent->d_name);
+        snprintf(id, sizeof(id), "%.*s", (int)(nlen - 6), ent->d_name);
         if (!name[0]) snprintf(name, sizeof(name), "%s", id);
         if (append_bundle_meta(items, count, id, name, created, item_count) < 0) {
             closedir(dir);

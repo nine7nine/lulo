@@ -232,6 +232,9 @@ static InputAction decode_key_byte(unsigned char ch)
     case 'd':
     case 'D':
         return INPUT_DELETE_SELECTED;
+    case 'm':
+    case 'M':
+        return INPUT_RENAME_SELECTED;
     case 'f':
     case 'F':
         return INPUT_TOGGLE_FOCUS;
@@ -523,6 +526,9 @@ InputAction decode_notcurses_input(uint32_t id)
     case 'd':
     case 'D':
         return INPUT_DELETE_SELECTED;
+    case 'm':
+    case 'M':
+        return INPUT_RENAME_SELECTED;
     case 'f':
         return INPUT_TOGGLE_FOCUS;
     case 'k':

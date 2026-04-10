@@ -1,9 +1,16 @@
 #define _GNU_SOURCE
 
 #include "lulo_app.h"
+#include "lulo_edit.h"
 
+#include <ctype.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 
 typedef struct {
     int tabs_y;
@@ -13,6 +20,382 @@ typedef struct {
     LuloRect preview;
     int show_info;
 } TuneWidgetLayout;
+
+static int tune_append_text(char **buf, size_t *len, size_t *cap, const char *text)
+{
+    size_t add;
+    char *next;
+
+    if (!buf || !len || !cap || !text) return -1;
+    add = strlen(text);
+    if (*len + add + 1 > *cap) {
+        size_t want = *cap ? *cap : 256;
+
+        while (want < *len + add + 1) want *= 2;
+        next = realloc(*buf, want);
+        if (!next) return -1;
+        *buf = next;
+        *cap = want;
+    }
+    memcpy(*buf + *len, text, add);
+    *len += add;
+    (*buf)[*len] = '\0';
+    return 0;
+}
+
+static int tune_append_textf(char **buf, size_t *len, size_t *cap, const char *fmt, ...)
+{
+    char tmp[1024];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    return tune_append_text(buf, len, cap, tmp);
+}
+
+static void tune_trim_right(char *buf)
+{
+    size_t len;
+
+    if (!buf) return;
+    len = strlen(buf);
+    while (len > 0 && isspace((unsigned char)buf[len - 1])) buf[--len] = '\0';
+}
+
+static void tune_sanitize_name(char *buf)
+{
+    char *src;
+    char *dst;
+
+    if (!buf) return;
+    for (src = buf; *src && isspace((unsigned char)*src); ++src) {}
+    if (src != buf) memmove(buf, src, strlen(src) + 1);
+    for (dst = buf; *dst; ++dst) {
+        if (*dst == '\n' || *dst == '\r' || *dst == '\t') *dst = ' ';
+    }
+    tune_trim_right(buf);
+}
+
+static int tune_join_path2(char *buf, size_t len, const char *a, const char *b, const char *suffix)
+{
+    size_t alen;
+    size_t blen;
+    size_t slen;
+
+    if (!buf || len == 0 || !a || !b) return -1;
+    alen = strlen(a);
+    blen = strlen(b);
+    slen = suffix ? strlen(suffix) : 0;
+    if (alen + 1 + blen + slen + 1 > len) return -1;
+    memcpy(buf, a, alen);
+    buf[alen] = '/';
+    memcpy(buf + alen + 1, b, blen);
+    if (slen > 0) memcpy(buf + alen + 1 + blen, suffix, slen);
+    buf[alen + 1 + blen + slen] = '\0';
+    return 0;
+}
+
+static int tune_data_root(char *buf, size_t len)
+{
+    const char *xdg = getenv("XDG_DATA_HOME");
+    const char *home = getenv("HOME");
+
+    if (!buf || len == 0) return -1;
+    if (xdg && *xdg) {
+        return tune_join_path2(buf, len, xdg, "lulod", "/tunables");
+    }
+    if (home && *home) {
+        char base[320];
+
+        if (tune_join_path2(base, sizeof(base), home, ".local", "/share") < 0) return -1;
+        return tune_join_path2(buf, len, base, "lulod", "/tunables");
+    }
+    return -1;
+}
+
+static int tune_bundle_dir(char *buf, size_t len, int preset)
+{
+    char root[320];
+
+    if (tune_data_root(root, sizeof(root)) < 0) return -1;
+    return tune_join_path2(buf, len, root, preset ? "presets" : "snapshots", NULL);
+}
+
+static int tune_ensure_parent_dirs(const char *path)
+{
+    char tmp[320];
+    size_t len;
+
+    if (!path || !*path) return -1;
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    len = strlen(tmp);
+    if (len == 0 || len >= sizeof(tmp)) return -1;
+    for (size_t i = 1; i < len; i++) {
+        if (tmp[i] != '/') continue;
+        tmp[i] = '\0';
+        if (mkdir(tmp, 0755) < 0 && errno != EEXIST) return -1;
+        tmp[i] = '/';
+    }
+    if (mkdir(tmp, 0755) < 0 && errno != EEXIST) return -1;
+    return 0;
+}
+
+static int tune_bundle_path_from_id(char *buf, size_t len, int preset, const char *id)
+{
+    char dir[320];
+
+    if (!id || !*id) return -1;
+    if (tune_bundle_dir(dir, sizeof(dir), preset) < 0) return -1;
+    return tune_join_path2(buf, len, dir, id, ".ltune");
+}
+
+static int tune_read_file_all(const char *path, char **out, char *err, size_t errlen)
+{
+    FILE *fp;
+    char *line = NULL;
+    size_t line_cap = 0;
+    char *buf = NULL;
+    size_t len = 0;
+    size_t cap = 0;
+    int rc = -1;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (out) *out = NULL;
+    if (!path || !*path || !out) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid bundle path");
+        errno = EINVAL;
+        return -1;
+    }
+    fp = fopen(path, "r");
+    if (!fp) {
+        if (err && errlen > 0) snprintf(err, errlen, "open %s: %s", path, strerror(errno));
+        return -1;
+    }
+    while (getline(&line, &line_cap, fp) >= 0) {
+        if (tune_append_text(&buf, &len, &cap, line) < 0) goto out;
+    }
+    if (!buf && tune_append_text(&buf, &len, &cap, "") < 0) goto out;
+    *out = buf;
+    buf = NULL;
+    rc = 0;
+
+out:
+    if (fp) fclose(fp);
+    free(line);
+    free(buf);
+    if (rc < 0 && err && errlen > 0 && !err[0]) snprintf(err, errlen, "failed to read %s", path);
+    return rc;
+}
+
+static int tune_next_bundle_path(int preset, char *path, size_t path_len, char *id_out, size_t id_len)
+{
+    time_t now;
+    struct tm tm;
+    char stem[32];
+
+    if (!path || path_len == 0 || !id_out || id_len == 0) return -1;
+    now = time(NULL);
+    localtime_r(&now, &tm);
+    strftime(stem, sizeof(stem), "%Y%m%d-%H%M%S", &tm);
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        char id[96];
+        struct stat st;
+
+        if (attempt == 0) snprintf(id, sizeof(id), "%s", stem);
+        else snprintf(id, sizeof(id), "%s-%d", stem, attempt);
+        if (tune_bundle_path_from_id(path, path_len, preset, id) < 0) return -1;
+        if (stat(path, &st) < 0) {
+            if (errno != ENOENT) return -1;
+            snprintf(id_out, id_len, "%s", id);
+            return 0;
+        }
+    }
+    errno = EEXIST;
+    return -1;
+}
+
+static void tune_extract_bundle_name(const char *content, char *name, size_t name_len)
+{
+    const char *cursor = content;
+
+    if (!name || name_len == 0) return;
+    name[0] = '\0';
+    while (cursor && *cursor) {
+        const char *line_end = strchr(cursor, '\n');
+        size_t line_len = line_end ? (size_t)(line_end - cursor) : strlen(cursor);
+
+        if (line_len == 0) break;
+        if (line_len > 5 && !strncmp(cursor, "name=", 5)) {
+            size_t copy = line_len - 5;
+
+            if (copy >= name_len) copy = name_len - 1;
+            memcpy(name, cursor + 5, copy);
+            name[copy] = '\0';
+            tune_trim_right(name);
+            return;
+        }
+        cursor = line_end ? line_end + 1 : NULL;
+    }
+}
+
+static int tune_build_bundle_template(int preset, const char *id,
+                                      const char *name, const char *created,
+                                      const char *body, int body_count,
+                                      char **content_out, char *err, size_t errlen)
+{
+    char *content = NULL;
+    size_t len = 0;
+    size_t cap = 0;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (!content_out || !id || !created) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid tune bundle template");
+        return -1;
+    }
+    if (tune_append_textf(&content, &len, &cap, "type=%s\n", preset ? "preset" : "snapshot") < 0 ||
+        tune_append_textf(&content, &len, &cap, "id=%s\n", id) < 0 ||
+        tune_append_textf(&content, &len, &cap, "name=%s\n", name && *name ? name : id) < 0 ||
+        tune_append_textf(&content, &len, &cap, "created=%s\n", created) < 0 ||
+        tune_append_textf(&content, &len, &cap, "count=%d\n\n", body_count) < 0) {
+        goto fail;
+    }
+    if (body && *body) {
+        if (tune_append_text(&content, &len, &cap, body) < 0) goto fail;
+        if (content[len - 1] != '\n' && tune_append_text(&content, &len, &cap, "\n") < 0) goto fail;
+    } else {
+        if (tune_append_text(&content, &len, &cap,
+                             "# source<TAB>writable<TAB>path<TAB>name<TAB>group<TAB>value\n") < 0) goto fail;
+    }
+    *content_out = content;
+    return 0;
+
+fail:
+    free(content);
+    if (err && errlen > 0) snprintf(err, errlen, "failed to prepare bundle content");
+    return -1;
+}
+
+static int tune_build_bundle_copy_content(const char *src_path, int preset,
+                                          const char *new_id, const char *created,
+                                          char **content_out, char *err, size_t errlen)
+{
+    char *content = NULL;
+    char *body = NULL;
+    size_t body_len = 0;
+    size_t body_cap = 0;
+    char name[128];
+    FILE *fp = NULL;
+    char *line = NULL;
+    size_t line_cap = 0;
+    int in_body = 0;
+    int body_count = 0;
+    int rc = -1;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (!src_path || !content_out) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid source bundle");
+        return -1;
+    }
+    if (tune_read_file_all(src_path, &content, err, errlen) < 0) return -1;
+    tune_extract_bundle_name(content, name, sizeof(name));
+    if (!name[0]) snprintf(name, sizeof(name), "%s-%s", preset ? "preset" : "snapshot", new_id);
+    else strncat(name, " copy", sizeof(name) - strlen(name) - 1);
+    fp = fopen(src_path, "r");
+    if (!fp) {
+        if (err && errlen > 0) snprintf(err, errlen, "open %s: %s", src_path, strerror(errno));
+        goto out;
+    }
+    while (getline(&line, &line_cap, fp) >= 0) {
+        char trimmed[1024];
+
+        snprintf(trimmed, sizeof(trimmed), "%s", line);
+        tune_trim_right(trimmed);
+        if (!in_body) {
+            if (!trimmed[0]) in_body = 1;
+            continue;
+        }
+        if (tune_append_text(&body, &body_len, &body_cap, line) < 0) goto out;
+        if (trimmed[0] && trimmed[0] != '#') body_count++;
+    }
+    if (tune_build_bundle_template(preset, new_id, name, created, body, body_count,
+                                   content_out, err, errlen) < 0) {
+        goto out;
+    }
+    rc = 0;
+
+out:
+    if (fp) fclose(fp);
+    free(line);
+    free(content);
+    free(body);
+    return rc;
+}
+
+static int tune_bundle_set_name(const char *path, const char *name, char *err, size_t errlen)
+{
+    FILE *fp;
+    char *line = NULL;
+    size_t line_cap = 0;
+    char *content = NULL;
+    size_t len = 0;
+    size_t cap = 0;
+    int saw_header_end = 0;
+    int replaced = 0;
+    int rc = -1;
+    char clean_name[192];
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (!path || !*path || !name) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid bundle rename");
+        return -1;
+    }
+    snprintf(clean_name, sizeof(clean_name), "%s", name);
+    tune_sanitize_name(clean_name);
+    if (!clean_name[0]) {
+        if (err && errlen > 0) snprintf(err, errlen, "bundle name cannot be empty");
+        return -1;
+    }
+    fp = fopen(path, "r");
+    if (!fp) {
+        if (err && errlen > 0) snprintf(err, errlen, "open bundle: %s", strerror(errno));
+        return -1;
+    }
+    while (getline(&line, &line_cap, fp) >= 0) {
+        char trimmed[1024];
+
+        snprintf(trimmed, sizeof(trimmed), "%s", line);
+        tune_trim_right(trimmed);
+        if (!saw_header_end) {
+            if (!strncmp(trimmed, "name=", 5)) {
+                if (tune_append_textf(&content, &len, &cap, "name=%s\n", clean_name) < 0) goto out;
+                replaced = 1;
+                continue;
+            }
+            if (!trimmed[0]) {
+                if (!replaced && tune_append_textf(&content, &len, &cap, "name=%s\n", clean_name) < 0) goto out;
+                saw_header_end = 1;
+            }
+        }
+        if (tune_append_text(&content, &len, &cap, line) < 0) goto out;
+    }
+    if (!replaced) {
+        if (!saw_header_end) {
+            if (tune_append_textf(&content, &len, &cap, "name=%s\n", clean_name) < 0) goto out;
+        } else if (len == 0) {
+            if (tune_append_textf(&content, &len, &cap, "name=%s\n", clean_name) < 0) goto out;
+        }
+    }
+    if (lulo_edit_write_file(path, content ? content : "", err, errlen) < 0) goto out;
+    rc = 0;
+
+out:
+    if (fp) fclose(fp);
+    free(line);
+    free(content);
+    if (rc < 0 && err && errlen > 0 && !err[0]) snprintf(err, errlen, "rename failed");
+    return rc;
+}
 
 static void plane_clear_inner_local(struct ncplane *p, const Theme *theme, int rows, int cols)
 {
@@ -265,17 +648,176 @@ static const LuloTuneBundleMeta *selected_tune_bundle(const LuloTuneSnapshot *sn
 {
     if (!snap || !state) return NULL;
     if (preset) {
-        if (!tune_preset_selection_active(state) || snap->preset_count <= 0) return NULL;
         if (state->preset_selected >= 0 && state->preset_selected < snap->preset_count) {
             return &snap->presets[state->preset_selected];
         }
+        if (state->preset_cursor >= 0 && state->preset_cursor < snap->preset_count) {
+            return &snap->presets[state->preset_cursor];
+        }
     } else {
-        if (!tune_snapshot_selection_active(state) || snap->snapshot_count <= 0) return NULL;
         if (state->snapshot_selected >= 0 && state->snapshot_selected < snap->snapshot_count) {
             return &snap->snapshots[state->snapshot_selected];
         }
+        if (state->snapshot_cursor >= 0 && state->snapshot_cursor < snap->snapshot_count) {
+            return &snap->snapshots[state->snapshot_cursor];
+        }
     }
     return NULL;
+}
+
+int active_tune_bundle_edit_path(const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                                 char *path, size_t path_len)
+{
+    const LuloTuneBundleMeta *bundle;
+    int preset;
+
+    if (!snap || !state || !path || path_len == 0) return 0;
+    if (state->view == LULO_TUNE_VIEW_SNAPSHOTS) preset = 0;
+    else if (state->view == LULO_TUNE_VIEW_PRESETS) preset = 1;
+    else return 0;
+    bundle = selected_tune_bundle(snap, state, preset);
+    if (!bundle) return 0;
+    return tune_bundle_path_from_id(path, path_len, preset, bundle->id) == 0;
+}
+
+int active_tune_bundle_delete_path(const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                                   char *path, size_t path_len)
+{
+    return active_tune_bundle_edit_path(snap, state, path, path_len);
+}
+
+int tune_prepare_new_bundle(const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                            char *path, size_t path_len, char *id_out, size_t id_len,
+                            char **content_out, char *err, size_t errlen)
+{
+    char created[32];
+    time_t now;
+    struct tm tm;
+    int preset;
+    char src_path[320];
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (content_out) *content_out = NULL;
+    if (!snap || !state || !path || path_len == 0 || !id_out || id_len == 0 || !content_out) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid tune bundle request");
+        errno = EINVAL;
+        return -1;
+    }
+    if (state->view == LULO_TUNE_VIEW_SNAPSHOTS) preset = 0;
+    else if (state->view == LULO_TUNE_VIEW_PRESETS) preset = 1;
+    else {
+        if (err && errlen > 0) snprintf(err, errlen, "create bundles from Snapshots or Presets");
+        errno = EINVAL;
+        return -1;
+    }
+    if (tune_bundle_dir(src_path, sizeof(src_path), preset) < 0 ||
+        tune_ensure_parent_dirs(src_path) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "failed to prepare bundle directory");
+        return -1;
+    }
+
+    if (tune_next_bundle_path(preset, path, path_len, id_out, id_len) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "failed to allocate new bundle path");
+        return -1;
+    }
+    now = time(NULL);
+    localtime_r(&now, &tm);
+    strftime(created, sizeof(created), "%Y-%m-%d %H:%M:%S", &tm);
+    if (active_tune_bundle_edit_path(snap, state, src_path, sizeof(src_path))) {
+        return tune_build_bundle_copy_content(src_path, preset, id_out, created, content_out, err, errlen);
+    }
+    return tune_build_bundle_template(preset, id_out,
+                                      preset ? "preset-new" : "snapshot-new",
+                                      created, NULL, 0, content_out, err, errlen);
+}
+
+int start_tune_bundle_rename(AppState *app, const LuloTuneSnapshot *snap, const LuloTuneState *state)
+{
+    const LuloTuneBundleMeta *bundle = NULL;
+    int preset = 0;
+
+    if (!app || !snap || !state) return 0;
+    if (state->view == LULO_TUNE_VIEW_SNAPSHOTS) {
+        preset = 0;
+        bundle = selected_tune_bundle(snap, state, 0);
+    } else if (state->view == LULO_TUNE_VIEW_PRESETS) {
+        preset = 1;
+        bundle = selected_tune_bundle(snap, state, 1);
+    } else {
+        tune_status_set(app, "rename from Snapshots or Presets");
+        return 0;
+    }
+    if (!bundle) {
+        tune_status_set(app, "no saved config selected");
+        return 0;
+    }
+    if (tune_bundle_path_from_id(app->tune_rename_path, sizeof(app->tune_rename_path), preset, bundle->id) < 0) {
+        tune_status_set(app, "failed to resolve bundle path");
+        return 0;
+    }
+    app->tune_rename_active = 1;
+    snprintf(app->tune_rename_value, sizeof(app->tune_rename_value), "%s", bundle->name);
+    app->tune_rename_len = (int)strlen(app->tune_rename_value);
+    return 1;
+}
+
+int handle_tune_bundle_rename_input(AppState *app, const DecodedInput *in,
+                                    RenderFlags *render)
+{
+    char err[192];
+
+    if (!app || !in || !render || !app->tune_rename_active) return 0;
+
+    if (in->cancel) {
+        app->tune_rename_active = 0;
+        app->tune_rename_path[0] = '\0';
+        app->tune_rename_value[0] = '\0';
+        app->tune_rename_len = 0;
+        tune_status_set(app, "rename cancelled");
+        render->need_tune = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    if (in->submit) {
+        if (tune_bundle_set_name(app->tune_rename_path, app->tune_rename_value, err, sizeof(err)) < 0) {
+            tune_status_set(app, "%s", err[0] ? err : "rename failed");
+            render->need_tune = 1;
+            render->need_render = 1;
+            return 1;
+        }
+        app->tune_rename_active = 0;
+        app->tune_rename_path[0] = '\0';
+        app->tune_rename_value[0] = '\0';
+        app->tune_rename_len = 0;
+        tune_status_set(app, "renamed saved config");
+        render->need_tune_refresh_full = 1;
+        render->need_tune = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    if (in->backspace) {
+        if (app->tune_rename_len > 0) {
+            app->tune_rename_value[--app->tune_rename_len] = '\0';
+            render->need_tune = 1;
+            render->need_render = 1;
+        }
+        return 1;
+    }
+    if (in->text_len > 0) {
+        int avail = (int)sizeof(app->tune_rename_value) - 1 - app->tune_rename_len;
+
+        if (avail > 0) {
+            int take = in->text_len < avail ? in->text_len : avail;
+
+            memcpy(app->tune_rename_value + app->tune_rename_len, in->text, (size_t)take);
+            app->tune_rename_len += take;
+            app->tune_rename_value[app->tune_rename_len] = '\0';
+            render->need_tune = 1;
+            render->need_render = 1;
+        }
+        return 1;
+    }
+    return 1;
 }
 
 static Rgb tune_source_color(const Theme *theme, LuloTuneSource source)
@@ -593,6 +1135,12 @@ void render_tune_status(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneStat
         tune_edit_prompt_format(app, prompt, sizeof(prompt));
         snprintf(buf, sizeof(buf), "editing  %s  Enter stage  Esc cancel",
                  prompt[0] ? prompt : "value");
+        plane_putn(ui->load, 0, 0, ui->theme->yellow, ui->theme->bg, buf, ui->lo.load.width - 2);
+        return;
+    }
+    if (app && app->tune_rename_active) {
+        snprintf(buf, sizeof(buf), "renaming  %s  Enter save  Esc cancel",
+                 app->tune_rename_value[0] ? app->tune_rename_value : "(empty)");
         plane_putn(ui->load, 0, 0, ui->theme->yellow, ui->theme->bg, buf, ui->lo.load.width - 2);
         return;
     }

@@ -26,6 +26,8 @@
 #include "lulo_model.h"
 #include "lulo_dizk.h"
 #include "lulo_proc.h"
+#include "lulo_systemd.h"
+#include "lulo_systemd_backend.h"
 
 typedef struct {
     unsigned r;
@@ -59,6 +61,7 @@ typedef struct {
 typedef enum {
     APP_PAGE_CPU = 0,
     APP_PAGE_DIZK,
+    APP_PAGE_SYSTEMD,
     APP_PAGE_COUNT
 } AppPage;
 
@@ -109,6 +112,7 @@ typedef struct {
     struct ncplane *mem;
     struct ncplane *proc;
     struct ncplane *disk;
+    struct ncplane *systemd;
     struct ncplane *load;
     struct ncplane *footer;
     TopLayout lo;
@@ -151,6 +155,7 @@ typedef enum {
     INPUT_TOGGLE_HEAT,
     INPUT_TOGGLE_PROC_CPU,
     INPUT_CYCLE_PROC_REFRESH,
+    INPUT_TOGGLE_FOCUS,
     INPUT_SCROLL_UP,
     INPUT_SCROLL_DOWN,
     INPUT_PAGE_UP,
@@ -159,6 +164,8 @@ typedef enum {
     INPUT_END,
     INPUT_TAB_NEXT,
     INPUT_TAB_PREV,
+    INPUT_VIEW_NEXT,
+    INPUT_VIEW_PREV,
     INPUT_TOGGLE_BRANCH,
     INPUT_COLLAPSE_ALL,
     INPUT_EXPAND_ALL,
@@ -193,9 +200,11 @@ typedef struct {
     int need_cpu;
     int need_proc;
     int need_disk;
+    int need_systemd;
     int need_rebuild;
     int need_proc_refresh;
     int need_disk_refresh;
+    int need_systemd_refresh;
     int need_proc_cursor_only;
     int need_proc_body_only;
     int proc_prev_selected;
@@ -466,8 +475,10 @@ static InputBackend auto_input_backend(void)
 static const char *app_page_name(AppPage page)
 {
     switch (page) {
+    case APP_PAGE_SYSTEMD:
+        return "SYSTEMD";
     case APP_PAGE_DIZK:
-        return "Dizk";
+        return "DISK";
     case APP_PAGE_CPU:
     default:
         return "CPU";
@@ -477,6 +488,8 @@ static const char *app_page_name(AppPage page)
 static const char *footer_hint(AppPage page)
 {
     switch (page) {
+    case APP_PAGE_SYSTEMD:
+        return "q / ESC exit   tab or <- -> page   ,/. view   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
     case APP_PAGE_DIZK:
         return "q / ESC exit   tab or <- -> switch   j/k or arrows scroll filesystems   PgUp/PgDn jump";
     case APP_PAGE_CPU:
@@ -844,8 +857,6 @@ static InputAction decode_key_byte(unsigned char ch)
     switch (ch) {
     case 'q':
     case 'Q':
-    case '\r':
-    case '\n':
     case 0x1b:
         return INPUT_QUIT;
     case '+':
@@ -863,11 +874,22 @@ static InputAction decode_key_byte(unsigned char ch)
     case 'r':
     case 'R':
         return INPUT_CYCLE_PROC_REFRESH;
+    case 'f':
+    case 'F':
+        return INPUT_TOGGLE_FOCUS;
     case '\t':
     case ']':
         return INPUT_TAB_NEXT;
     case '[':
         return INPUT_TAB_PREV;
+    case '.':
+    case '>':
+        return INPUT_VIEW_NEXT;
+    case ',':
+    case '<':
+        return INPUT_VIEW_PREV;
+    case '\r':
+    case '\n':
     case ' ':
         return INPUT_TOGGLE_BRANCH;
     case 'c':
@@ -1281,6 +1303,7 @@ static void ui_destroy_planes(Ui *ui)
 {
     destroy_plane(&ui->footer);
     destroy_plane(&ui->load);
+    destroy_plane(&ui->systemd);
     destroy_plane(&ui->disk);
     destroy_plane(&ui->proc);
     destroy_plane(&ui->mem);
@@ -1317,10 +1340,16 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
         if (lo->show_proc && lo->proc.height > 0) {
             ui->proc = create_plane(ui->std, lo->proc.row, lo->proc.col, lo->proc.height, lo->proc.width, "proc");
         }
-    } else {
+    } else if (page == APP_PAGE_DIZK) {
         int disk_height = lo->top.height - 3;
         if (disk_height > 0) {
             ui->disk = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1, disk_height, lo->top.width - 2, "disk");
+        }
+    } else {
+        int systemd_height = lo->top.height - 3;
+        if (systemd_height > 0) {
+            ui->systemd = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1,
+                                       systemd_height, lo->top.width - 2, "systemd");
         }
     }
 
@@ -1333,11 +1362,16 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
     if (page == APP_PAGE_DIZK && !ui->disk) {
         return -1;
     }
+    if (page == APP_PAGE_SYSTEMD && !ui->systemd) {
+        return -1;
+    }
     if (page == APP_PAGE_CPU) {
         if (ui->mem) draw_box_title(ui->mem, ui->theme, ui->theme->border_panel, " Memory ", ui->theme->white);
         if (ui->proc) draw_box_title(ui->proc, ui->theme, ui->theme->border_panel, " Process Tree ", ui->theme->white);
     } else if (ui->disk) {
-        draw_box_title(ui->disk, ui->theme, ui->theme->border_panel, " Dizk ", ui->theme->white);
+        draw_box_title(ui->disk, ui->theme, ui->theme->border_panel, " Disk ", ui->theme->white);
+    } else if (ui->systemd) {
+        draw_box_title(ui->systemd, ui->theme, ui->theme->border_panel, " Systemd ", ui->theme->white);
     }
     return 0;
 }
@@ -2409,6 +2443,512 @@ static void render_disk_status(Ui *ui, const LuloDizkSnapshot *snap, const LuloD
     plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
 }
 
+typedef struct {
+    int tabs_y;
+    int tabs_x;
+    LuloRect list;
+    LuloRect info;
+    LuloRect preview;
+    int show_info;
+} SystemdWidgetLayout;
+
+static int systemd_service_selection_active(const LuloSystemdState *state)
+{
+    return state && state->selected >= 0 && state->selected_unit[0];
+}
+
+static int systemd_service_cursor_active(const LuloSystemdState *state)
+{
+    return state && state->cursor >= 0;
+}
+
+static int systemd_config_selection_active(const LuloSystemdState *state)
+{
+    return state && state->config_selected >= 0 && state->selected_config[0];
+}
+
+static int systemd_config_cursor_active(const LuloSystemdState *state)
+{
+    return state && state->config_cursor >= 0;
+}
+
+static int systemd_preview_open(const LuloSystemdState *state)
+{
+    if (!state) return 0;
+    return state->view == LULO_SYSTEMD_VIEW_CONFIG ?
+           systemd_config_selection_active(state) :
+           systemd_service_selection_active(state);
+}
+
+static void build_systemd_widget_layout(const Ui *ui, const LuloSystemdState *state, SystemdWidgetLayout *layout)
+{
+    unsigned rows = 0;
+    unsigned cols = 0;
+    int inner_w;
+    int content_h;
+    int info_h;
+    int preview_open;
+
+    memset(layout, 0, sizeof(*layout));
+    if (!ui->systemd) return;
+    ncplane_dim_yx(ui->systemd, &rows, &cols);
+    if (rows < 8 || cols < 28) return;
+    layout->tabs_y = 1;
+    layout->tabs_x = 2;
+    inner_w = (int)cols - 2;
+    content_h = (int)rows - 4;
+    if (inner_w < 20 || content_h < 4) return;
+
+    preview_open = systemd_preview_open(state);
+    info_h = state && state->view == LULO_SYSTEMD_VIEW_CONFIG ? 4 : 5;
+    layout->show_info = content_h >= info_h + 4;
+
+    if (!preview_open) {
+        layout->list.row = 2;
+        layout->list.col = 1;
+        layout->list.width = inner_w;
+        layout->list.height = content_h;
+        layout->show_info = 0;
+        return;
+    }
+
+    if (inner_w >= 104) {
+        int list_w = clamp_int(inner_w * 11 / 20, 42, inner_w - 34);
+        int right_w = inner_w - list_w - 1;
+
+        layout->list.row = 2;
+        layout->list.col = 1;
+        layout->list.width = list_w;
+        layout->list.height = content_h;
+
+        layout->info.row = 2;
+        layout->info.col = list_w + 2;
+        layout->info.width = right_w;
+        layout->info.height = layout->show_info ? info_h : 0;
+
+        layout->preview.col = list_w + 2;
+        layout->preview.width = right_w;
+        if (layout->show_info) {
+            layout->preview.row = 2 + info_h + 1;
+            layout->preview.height = content_h - info_h - 1;
+        } else {
+            layout->preview.row = 2;
+            layout->preview.height = content_h;
+        }
+        return;
+    }
+
+    {
+        int list_h = clamp_int(content_h / 3 + 1, 7, content_h - 4);
+
+        layout->list.row = 2;
+        layout->list.col = 1;
+        layout->list.width = inner_w;
+        layout->list.height = list_h;
+
+        layout->info.row = 2 + list_h + 1;
+        layout->info.col = 1;
+        layout->info.width = inner_w;
+        layout->info.height = layout->show_info ? info_h : 0;
+
+        layout->preview.col = 1;
+        layout->preview.width = inner_w;
+        if (layout->show_info) {
+            layout->preview.row = layout->info.row + info_h + 1;
+            layout->preview.height = content_h - list_h - info_h - 2;
+        } else {
+            layout->preview.row = 2 + list_h + 1;
+            layout->preview.height = content_h - list_h - 1;
+        }
+    }
+}
+
+static int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state)
+{
+    SystemdWidgetLayout layout;
+
+    if (!ui->systemd || !state) return 1;
+    build_systemd_widget_layout(ui, state, &layout);
+    return clamp_int(rect_inner_rows(&layout.list) - 1, 1, 4096);
+}
+
+static int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state)
+{
+    SystemdWidgetLayout layout;
+
+    if (!ui->systemd || !state) return 1;
+    build_systemd_widget_layout(ui, state, &layout);
+    return clamp_int(rect_inner_rows(&layout.preview), 1, 4096);
+}
+
+static const LuloSystemdServiceRow *selected_systemd_service(const LuloSystemdSnapshot *snap,
+                                                             const LuloSystemdState *state)
+{
+    if (!snap || !state || snap->count <= 0 || !systemd_service_selection_active(state)) return NULL;
+    if (state->selected >= 0 && state->selected < snap->count) return &snap->rows[state->selected];
+    return NULL;
+}
+
+static const LuloSystemdConfigRow *selected_systemd_config(const LuloSystemdSnapshot *snap,
+                                                           const LuloSystemdState *state)
+{
+    if (!snap || !state || snap->config_count <= 0 || !systemd_config_selection_active(state)) return NULL;
+    if (state->config_selected >= 0 && state->config_selected < snap->config_count) {
+        return &snap->configs[state->config_selected];
+    }
+    return NULL;
+}
+
+static Rgb systemd_active_color(const Theme *theme, const LuloSystemdServiceRow *row)
+{
+    if (!strcmp(row->active, "failed")) return theme->red;
+    if (!strcmp(row->active, "active") && !strcmp(row->sub, "running")) return theme->green;
+    if (!strcmp(row->active, "active")) return theme->cyan;
+    if (!strcmp(row->active, "activating")) return theme->orange;
+    if (!strcmp(row->active, "deactivating")) return theme->yellow;
+    if (!strcmp(row->active, "inactive")) return theme->dim;
+    return theme->white;
+}
+
+static Rgb systemd_file_state_color(const Theme *theme, const char *state)
+{
+    if (!strcmp(state, "enabled")) return theme->green;
+    if (!strcmp(state, "disabled")) return theme->dim;
+    if (!strcmp(state, "static")) return theme->cyan;
+    if (!strcmp(state, "generated")) return theme->blue;
+    if (!strcmp(state, "transient")) return theme->orange;
+    if (!strcmp(state, "alias")) return theme->dim;
+    return theme->white;
+}
+
+static void render_systemd_view_tabs(struct ncplane *p, const Theme *theme, const SystemdWidgetLayout *layout,
+                                     const LuloSystemdState *state)
+{
+    unsigned cols = 0;
+    int x = layout->tabs_x;
+
+    ncplane_dim_yx(p, NULL, &cols);
+    plane_fill(p, layout->tabs_y, 1, (int)cols - 2, theme->bg, theme->bg);
+    for (int i = 0; i < LULO_SYSTEMD_VIEW_COUNT; i++) {
+        char label[24];
+        int active = state && state->view == (LuloSystemdView)i;
+        int width;
+        Rgb fg = active ? theme->bg : theme->white;
+        Rgb bg = active ? theme->border_header : theme->bg;
+
+        snprintf(label, sizeof(label), " %s ", lulo_systemd_view_name((LuloSystemdView)i));
+        width = (int)strlen(label);
+        plane_putn(p, layout->tabs_y, x, fg, bg, label, width);
+        x += width + 1;
+    }
+}
+
+static void render_systemd_services_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                                         const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
+{
+    char meta[48];
+    int visible_rows;
+    int start;
+    int scope_w = 3;
+    int state_w = rect->width >= 56 ? 12 : 10;
+    int file_w = rect->width >= 72 ? 10 : 8;
+    int unit_w;
+
+    if (!rect_valid(rect)) return;
+    draw_inner_box(p, theme, rect, theme->border_panel,
+                   state && state->view == LULO_SYSTEMD_VIEW_DEPS ? " Services / Deps " : " Services ",
+                   theme->white);
+    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
+    start = state ? clamp_int(state->list_scroll, 0, snap && snap->count > visible_rows ? snap->count - visible_rows : 0) : 0;
+    if (snap && snap->count > 0) {
+        snprintf(meta, sizeof(meta), "%d-%d/%d",
+                 start + 1, clamp_int(start + visible_rows, 1, snap->count), snap->count);
+        draw_inner_meta(p, theme, rect, meta, state && !state->focus_preview ? theme->green : theme->cyan);
+    }
+    if (!snap || snap->count <= 0) {
+        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no services", rect->width - 4);
+        return;
+    }
+
+    unit_w = rect_inner_cols(rect) - scope_w - state_w - file_w - 3;
+    if (unit_w < 12) unit_w = 12;
+    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "scp", scope_w);
+    plane_putn(p, rect->row + 1, rect->col + 1 + scope_w + 1, theme->dim, theme->bg, "state", state_w);
+    plane_putn(p, rect->row + 1, rect->col + 1 + scope_w + 1 + state_w + 1, theme->dim, theme->bg, "file", file_w);
+    plane_putn(p, rect->row + 1, rect->col + 1 + scope_w + 1 + state_w + 1 + file_w + 1,
+               theme->dim, theme->bg, "unit", unit_w);
+
+    for (int i = 0; i < visible_rows; i++) {
+        int idx = start + i;
+        int y = rect->row + 2 + i;
+        int x = rect->col + 1;
+        int selected = state && idx == state->cursor;
+        Rgb row_bg = selected ? theme->select_bg : theme->bg;
+        const LuloSystemdServiceRow *row;
+        char statebuf[64];
+
+        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
+        if (idx >= snap->count) continue;
+        row = &snap->rows[idx];
+        snprintf(statebuf, sizeof(statebuf), "%s/%s", row->active, row->sub);
+        plane_putn(p, y, x, selected ? theme->select_fg : (row->user_scope ? theme->orange : theme->cyan),
+                   row_bg, row->user_scope ? "usr" : "sys", scope_w);
+        x += scope_w + 1;
+        plane_putn(p, y, x, selected ? theme->select_fg : systemd_active_color(theme, row), row_bg, statebuf, state_w);
+        x += state_w + 1;
+        plane_putn(p, y, x, selected ? theme->select_fg : systemd_file_state_color(theme, row->file_state),
+                   row_bg, row->file_state, file_w);
+        x += file_w + 1;
+        plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, row->unit, unit_w);
+    }
+}
+
+static void render_systemd_config_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                                       const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
+{
+    char meta[48];
+    int visible_rows;
+    int start;
+
+    if (!rect_valid(rect)) return;
+    draw_inner_box(p, theme, rect, theme->border_panel, " Config Files ", theme->white);
+    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
+    start = state ? clamp_int(state->config_list_scroll, 0,
+                              snap && snap->config_count > visible_rows ? snap->config_count - visible_rows : 0) : 0;
+    if (snap && snap->config_count > 0) {
+        snprintf(meta, sizeof(meta), "%d-%d/%d",
+                 start + 1, clamp_int(start + visible_rows, 1, snap->config_count), snap->config_count);
+        draw_inner_meta(p, theme, rect, meta, state && !state->focus_preview ? theme->green : theme->cyan);
+    }
+    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "path", rect_inner_cols(rect));
+    if (!snap || snap->config_count <= 0) {
+        plane_putn(p, rect->row + 2, rect->col + 2, theme->white, theme->bg, "no configs", rect->width - 4);
+        return;
+    }
+
+    for (int i = 0; i < visible_rows; i++) {
+        int idx = start + i;
+        int y = rect->row + 2 + i;
+        int selected = state && idx == state->config_cursor;
+        Rgb row_bg = selected ? theme->select_bg : theme->bg;
+
+        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
+        if (idx >= snap->config_count) continue;
+        plane_putn(p, y, rect->col + 1,
+                   selected ? theme->select_fg :
+                   (strstr(snap->configs[idx].path, ".pacnew") ? theme->orange : theme->cyan),
+                   row_bg, snap->configs[idx].name, rect_inner_cols(rect));
+    }
+}
+
+static void render_systemd_info(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                                const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
+{
+    char buf[512];
+
+    if (!rect_valid(rect)) return;
+    draw_inner_box(p, theme, rect, theme->border_panel, " Details ", theme->white);
+
+    if (state && state->view == LULO_SYSTEMD_VIEW_CONFIG) {
+        const LuloSystemdConfigRow *row = selected_systemd_config(snap, state);
+
+        if (!row) {
+            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no config selected", rect->width - 4);
+            return;
+        }
+        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, row->name, rect->width - 4);
+        plane_putn(p, rect->row + 2, rect->col + 2, theme->dim, theme->bg, row->path, rect->width - 4);
+        snprintf(buf, sizeof(buf), "lines %d%s", snap ? snap->config_line_count : 0,
+                 strstr(row->path, ".pacnew") ? "  pacnew" : "");
+        plane_putn(p, rect->row + 3, rect->col + 2,
+                   strstr(row->path, ".pacnew") ? theme->orange : theme->cyan, theme->bg,
+                   buf, rect->width - 4);
+        return;
+    }
+
+    {
+        const LuloSystemdServiceRow *row = selected_systemd_service(snap, state);
+
+        if (!row) {
+            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no service selected", rect->width - 4);
+            return;
+        }
+        snprintf(buf, sizeof(buf), "%s  (%s)", row->unit, row->user_scope ? "user" : "system");
+        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, buf, rect->width - 4);
+        snprintf(buf, sizeof(buf), "load %-10s active %-10s sub %-10s", row->load, row->active, row->sub);
+        plane_putn(p, rect->row + 2, rect->col + 2, systemd_active_color(theme, row), theme->bg, buf, rect->width - 4);
+        snprintf(buf, sizeof(buf), "file %-10s preset %-10s", row->file_state, row->preset);
+        plane_putn(p, rect->row + 3, rect->col + 2, systemd_file_state_color(theme, row->file_state), theme->bg,
+                   buf, rect->width - 4);
+        snprintf(buf, sizeof(buf), "%s", row->description[0] ? row->description : "(no description)");
+        plane_putn(p, rect->row + 4, rect->col + 2, theme->dim, theme->bg, buf, rect->width - 4);
+    }
+}
+
+static Rgb systemd_preview_line_color(const Theme *theme, LuloSystemdView view, const char *line)
+{
+    const char *trim = line;
+
+    while (trim && *trim == ' ') trim++;
+    if (!line || !*line) return theme->dim;
+    if (line[0] == '#') return theme->dim;
+    if (line[0] == '[') return theme->cyan;
+    if (view == LULO_SYSTEMD_VIEW_DEPS) {
+        if (strstr(trim, ".target")) return theme->cyan;
+        if (strstr(trim, ".service")) return theme->green;
+        if (strstr(trim, ".socket")) return theme->orange;
+        if (strstr(trim, ".timer")) return theme->yellow;
+        return theme->white;
+    }
+    if (view == LULO_SYSTEMD_VIEW_CONFIG) {
+        if (strchr(line, '=')) return theme->green;
+        return theme->white;
+    }
+    if (!strncmp(line, "Exec", 4) || !strncmp(line, "WantedBy", 8) || !strncmp(line, "Alias", 5)) return theme->green;
+    if (strstr(line, "failed") || strstr(line, "No files")) return theme->red;
+    return theme->white;
+}
+
+static void render_systemd_preview(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                                   const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
+{
+    char meta[48];
+    char title[96];
+    const char *const *lines = NULL;
+    int line_count = 0;
+    int start;
+    int visible_rows;
+
+    if (!rect_valid(rect) || !state) return;
+
+    switch (state->view) {
+    case LULO_SYSTEMD_VIEW_SERVICES:
+        snprintf(title, sizeof(title), " Unit File ");
+        lines = (const char *const *)snap->file_lines;
+        line_count = snap->file_line_count;
+        break;
+    case LULO_SYSTEMD_VIEW_DEPS:
+        snprintf(title, sizeof(title), " Reverse Deps ");
+        lines = (const char *const *)snap->dep_lines;
+        line_count = snap->dep_line_count;
+        break;
+    case LULO_SYSTEMD_VIEW_CONFIG:
+    default:
+        snprintf(title, sizeof(title), " Config Preview ");
+        lines = (const char *const *)snap->config_lines;
+        line_count = snap->config_line_count;
+        break;
+    }
+
+    draw_inner_box(p, theme, rect, theme->border_panel, title, theme->white);
+    visible_rows = rect_inner_rows(rect);
+    start = state->view == LULO_SYSTEMD_VIEW_CONFIG ? state->config_file_scroll : state->file_scroll;
+    start = clamp_int(start, 0, line_count > visible_rows ? line_count - visible_rows : 0);
+    if (line_count > 0) {
+        snprintf(meta, sizeof(meta), "%d-%d/%d",
+                 start + 1, clamp_int(start + visible_rows, 1, line_count), line_count);
+        draw_inner_meta(p, theme, rect, meta, state->focus_preview ? theme->green : theme->cyan);
+    }
+    if (!lines || line_count <= 0) {
+        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no preview", rect->width - 4);
+        return;
+    }
+
+    for (int i = 0; i < visible_rows; i++) {
+        int idx = start + i;
+        int y = rect->row + 1 + i;
+        const char *line;
+
+        if (idx >= line_count) break;
+        line = lines[idx];
+        if (!line) line = "";
+        plane_putn(p, y, rect->col + 1, systemd_preview_line_color(theme, state->view, line),
+                   theme->bg, line, rect_inner_cols(rect));
+    }
+}
+
+static void render_systemd_widget(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
+{
+    SystemdWidgetLayout layout;
+    unsigned rows = 0;
+    unsigned cols = 0;
+
+    if (!ui->systemd || !state) return;
+    ncplane_dim_yx(ui->systemd, &rows, &cols);
+    plane_clear_inner(ui->systemd, ui->theme, (int)rows, (int)cols);
+    build_systemd_widget_layout(ui, state, &layout);
+    render_systemd_view_tabs(ui->systemd, ui->theme, &layout, state);
+    if (state->view == LULO_SYSTEMD_VIEW_CONFIG) render_systemd_config_list(ui->systemd, ui->theme, &layout.list, snap, state);
+    else render_systemd_services_list(ui->systemd, ui->theme, &layout.list, snap, state);
+    if (layout.show_info) render_systemd_info(ui->systemd, ui->theme, &layout.info, snap, state);
+    render_systemd_preview(ui->systemd, ui->theme, &layout.preview, snap, state);
+}
+
+static void render_systemd_status(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state,
+                                  const LuloSystemdBackendStatus *backend_status)
+{
+    char buf[512];
+
+    if (!ui->load || !state) return;
+    plane_reset(ui->load, ui->theme);
+    if (backend_status && !backend_status->have_snapshot && backend_status->busy) {
+        snprintf(buf, sizeof(buf), "view %s  loading systemd cache...",
+                 lulo_systemd_view_name(state->view));
+        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
+        return;
+    }
+    if (backend_status && backend_status->error[0]) {
+        plane_putn(ui->load, 0, 0, ui->theme->red, ui->theme->bg,
+                   backend_status->error, ui->lo.load.width - 2);
+        return;
+    }
+    if (state->view == LULO_SYSTEMD_VIEW_CONFIG) {
+        const LuloSystemdConfigRow *row = selected_systemd_config(snap, state);
+
+        snprintf(buf, sizeof(buf), "view %s  configs %d  focus %s  cursor %d/%d  open %s",
+                 lulo_systemd_view_name(state->view),
+                 snap ? snap->config_count : 0,
+                 state->focus_preview ? "preview" : "list",
+                 snap && snap->config_count > 0 && systemd_config_cursor_active(state) ? state->config_cursor + 1 : 0,
+                 snap ? snap->config_count : 0,
+                 row ? row->name : "none");
+        if (backend_status && backend_status->loading_active) {
+            strncat(buf, "  loading", sizeof(buf) - strlen(buf) - 1);
+        } else if (backend_status && backend_status->loading_full) {
+            strncat(buf, "  refreshing", sizeof(buf) - strlen(buf) - 1);
+        }
+        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
+        return;
+    }
+
+    {
+        const LuloSystemdServiceRow *row = selected_systemd_service(snap, state);
+
+        snprintf(buf, sizeof(buf), "view %s  services %d  focus %s  cursor %d/%d  open %s%.160s%s",
+                 lulo_systemd_view_name(state->view),
+                 snap ? snap->count : 0,
+                 state->focus_preview ? "preview" : "list",
+                 snap && snap->count > 0 && systemd_service_cursor_active(state) ? state->cursor + 1 : 0,
+                 snap ? snap->count : 0,
+                 row ? (row->user_scope ? "usr " : "sys ") : "",
+                 row ? row->unit : "none",
+                 row && row->description[0] ? "  " : "");
+        if (backend_status && backend_status->loading_active) {
+            strncat(buf, "  loading", sizeof(buf) - strlen(buf) - 1);
+        } else if (backend_status && backend_status->loading_full) {
+            strncat(buf, "  refreshing", sizeof(buf) - strlen(buf) - 1);
+        }
+        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
+        if (row && row->description[0]) {
+            int used = (int)strlen(buf);
+            if (used + 2 < ui->lo.load.width - 2) {
+                plane_putn(ui->load, 0, used, ui->theme->dim, ui->theme->bg,
+                           row->description, ui->lo.load.width - used - 2);
+            }
+        }
+    }
+}
+
 static void render_static(Ui *ui, AppPage page, AppState *app)
 {
     render_top_frame(ui);
@@ -2439,6 +2979,15 @@ static void render_disk_page(Ui *ui, const AppState *app, const DashboardState *
     render_disk_status(ui, dizk_snap, dizk_state);
 }
 
+static void render_systemd_page(Ui *ui, const AppState *app, const DashboardState *dash,
+                                const LuloSystemdSnapshot *systemd_snap, const LuloSystemdState *systemd_state,
+                                const LuloSystemdBackendStatus *systemd_backend_status)
+{
+    render_header_widget(ui, dash, app);
+    render_systemd_widget(ui, systemd_snap, systemd_state);
+    render_systemd_status(ui, systemd_snap, systemd_state, systemd_backend_status);
+}
+
 static void render_process_only(Ui *ui, const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state)
 {
     render_process_widget(ui, proc_snap, proc_state);
@@ -2448,6 +2997,50 @@ static void render_disk_only(Ui *ui, const LuloDizkSnapshot *dizk_snap, const Lu
 {
     render_disk_widget(ui, dizk_snap, dizk_state);
     render_disk_status(ui, dizk_snap, dizk_state);
+}
+
+static void render_systemd_only(Ui *ui, const LuloSystemdSnapshot *systemd_snap,
+                                const LuloSystemdState *systemd_state,
+                                const LuloSystemdBackendStatus *systemd_backend_status)
+{
+    render_systemd_widget(ui, systemd_snap, systemd_state);
+    render_systemd_status(ui, systemd_snap, systemd_state, systemd_backend_status);
+}
+
+static int systemd_backend_status_changed(const LuloSystemdBackendStatus *a,
+                                          const LuloSystemdBackendStatus *b)
+{
+    if (!a || !b) return 1;
+    return a->busy != b->busy ||
+           a->have_snapshot != b->have_snapshot ||
+           a->loading_full != b->loading_full ||
+           a->loading_active != b->loading_active ||
+           a->generation != b->generation ||
+           strcmp(a->error, b->error) != 0;
+}
+
+static int poll_systemd_backend(Ui *ui, AppState *app, LuloSystemdBackend *backend,
+                                LuloSystemdSnapshot *snap, LuloSystemdState *state,
+                                LuloSystemdBackendStatus *status, unsigned *generation,
+                                RenderFlags *render)
+{
+    LuloSystemdBackendStatus prev_status = *status;
+    int changed = lulo_systemd_backend_consume(backend, snap, generation, status);
+
+    if (changed < 0) return -1;
+    if (changed > 0) {
+        lulo_systemd_view_sync(state, snap,
+                               systemd_list_rows_visible(ui, state),
+                               systemd_preview_rows_visible(ui, state));
+        if (app->active_page == APP_PAGE_SYSTEMD) {
+            render->need_systemd = 1;
+            render->need_render = 1;
+        }
+    } else if (app->active_page == APP_PAGE_SYSTEMD && systemd_backend_status_changed(&prev_status, status)) {
+        render->need_systemd = 1;
+        render->need_render = 1;
+    }
+    return changed;
 }
 
 static void render_header_only(Ui *ui, const DashboardState *dash, const AppState *app)
@@ -2470,9 +3063,6 @@ static InputAction decode_notcurses_input(uint32_t id)
     case 'q':
     case 'Q':
     case NCKEY_ESC:
-    case NCKEY_ENTER:
-    case '\r':
-    case '\n':
         return INPUT_QUIT;
     case '+':
     case '=':
@@ -2489,11 +3079,23 @@ static InputAction decode_notcurses_input(uint32_t id)
     case 'r':
     case 'R':
         return INPUT_CYCLE_PROC_REFRESH;
+    case 'f':
+    case 'F':
+        return INPUT_TOGGLE_FOCUS;
     case '\t':
     case ']':
         return INPUT_TAB_NEXT;
     case '[':
         return INPUT_TAB_PREV;
+    case '.':
+    case '>':
+        return INPUT_VIEW_NEXT;
+    case ',':
+    case '<':
+        return INPUT_VIEW_PREV;
+    case NCKEY_ENTER:
+    case '\r':
+    case '\n':
     case ' ':
         return INPUT_TOGGLE_BRANCH;
     case 'c':
@@ -2587,6 +3189,7 @@ static int handle_tab_click(Ui *ui, int global_y, int global_x, AppState *app, R
         if (global_x >= ui->tab_hits[i].x && global_x < ui->tab_hits[i].x + ui->tab_hits[i].width) {
             if (app->active_page != (AppPage)i) {
                 app->active_page = (AppPage)i;
+                if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
                 render->need_rebuild = 1;
                 render->need_render = 1;
             }
@@ -2666,13 +3269,113 @@ static int handle_proc_click(Ui *ui, int global_y, int global_x,
     }
 }
 
+static int point_in_rect_global(const LuloRect *origin, const LuloRect *rect, int y, int x)
+{
+    int top = origin->row + 1 + rect->row;
+    int left = origin->col + 1 + rect->col;
+
+    return y >= top && y < top + rect->height && x >= left && x < left + rect->width;
+}
+
+static LuloSystemdView systemd_view_from_point(Ui *ui, const SystemdWidgetLayout *layout,
+                                               int global_y, int global_x)
+{
+    int row = ui->lo.top.row + 1 + layout->tabs_y;
+    int x = ui->lo.top.col + 1 + layout->tabs_x;
+
+    if (global_y != row) return LULO_SYSTEMD_VIEW_COUNT;
+    for (int i = 0; i < LULO_SYSTEMD_VIEW_COUNT; i++) {
+        char label[24];
+        int width;
+
+        snprintf(label, sizeof(label), " %s ", lulo_systemd_view_name((LuloSystemdView)i));
+        width = (int)strlen(label);
+        if (global_x >= x && global_x < x + width) return (LuloSystemdView)i;
+        x += width + 1;
+    }
+    return LULO_SYSTEMD_VIEW_COUNT;
+}
+
+static int handle_systemd_click(Ui *ui, int global_y, int global_x,
+                                const LuloSystemdSnapshot *snap, LuloSystemdState *state,
+                                RenderFlags *render)
+{
+    SystemdWidgetLayout layout;
+    LuloSystemdView hit_view;
+    int local_y;
+
+    if (!ui->systemd || !state || !snap) return 0;
+    build_systemd_widget_layout(ui, state, &layout);
+    hit_view = systemd_view_from_point(ui, &layout, global_y, global_x);
+    if (hit_view != LULO_SYSTEMD_VIEW_COUNT) {
+        if (state->view != hit_view) {
+            state->view = hit_view;
+            state->focus_preview = 0;
+            render->need_systemd_refresh = 1;
+        } else {
+            render->need_systemd = 1;
+        }
+        render->need_render = 1;
+        return 1;
+    }
+    if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
+        int list_rows = systemd_list_rows_visible(ui, state);
+        int preview_rows = systemd_preview_rows_visible(ui, state);
+
+        state->focus_preview = 0;
+        local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
+        if (local_y >= 2) {
+            if (state->view == LULO_SYSTEMD_VIEW_CONFIG) {
+                int row_index = state->config_list_scroll + (local_y - 2);
+
+                if (row_index >= 0 && row_index < snap->config_count) {
+                    lulo_systemd_set_cursor(state, snap, list_rows, preview_rows, row_index);
+                    if (lulo_systemd_open_current(state, snap, list_rows, preview_rows)) render->need_systemd_refresh = 1;
+                    else render->need_systemd = 1;
+                }
+            } else {
+                int row_index = state->list_scroll + (local_y - 2);
+
+                if (row_index >= 0 && row_index < snap->count) {
+                    lulo_systemd_set_cursor(state, snap, list_rows, preview_rows, row_index);
+                    if (lulo_systemd_open_current(state, snap, list_rows, preview_rows)) render->need_systemd_refresh = 1;
+                    else render->need_systemd = 1;
+                }
+            }
+        } else {
+            render->need_systemd = 1;
+        }
+        render->need_render = 1;
+        return 1;
+    }
+    if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
+        if (!state->focus_preview) {
+            state->focus_preview = 1;
+            render->need_systemd = 1;
+            render->need_render = 1;
+        }
+        return 1;
+    }
+    if (layout.show_info && point_in_rect_global(&ui->lo.top, &layout.info, global_y, global_x)) {
+        render->need_systemd = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
                               const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
+                              const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                               RenderFlags *render)
 {
     if (handle_tab_click(ui, global_y, global_x, app, render)) return 1;
     if (app->active_page == APP_PAGE_CPU &&
         handle_proc_click(ui, global_y, global_x, proc_snap, proc_state, render)) {
+        return 1;
+    }
+    if (app->active_page == APP_PAGE_SYSTEMD &&
+        handle_systemd_click(ui, global_y, global_x, systemd_snap, systemd_state, render)) {
         return 1;
     }
     return 0;
@@ -2699,15 +3402,48 @@ static void schedule_proc_selection_redraw(RenderFlags *render,
     render->proc_prev_scroll = prev_scroll;
 }
 
+static void update_systemd_render_flags(RenderFlags *render, const LuloSystemdState *state,
+                                        int prev_cursor, int prev_selected,
+                                        int prev_list_scroll, int prev_file_scroll,
+                                        int prev_config_cursor, int prev_config_selected,
+                                        int prev_config_list_scroll, int prev_config_file_scroll,
+                                        int prev_focus)
+{
+    if (!render || !state) return;
+    if (state->view == LULO_SYSTEMD_VIEW_CONFIG) {
+        if (state->config_selected != prev_config_selected) render->need_systemd_refresh = 1;
+        else if (state->config_cursor != prev_config_cursor ||
+                 state->config_list_scroll != prev_config_list_scroll ||
+                 state->config_file_scroll != prev_config_file_scroll ||
+                 state->focus_preview != prev_focus) render->need_systemd = 1;
+    } else {
+        if (state->selected != prev_selected) render->need_systemd_refresh = 1;
+        else if (state->cursor != prev_cursor ||
+                 state->list_scroll != prev_list_scroll ||
+                 state->file_scroll != prev_file_scroll ||
+                 state->focus_preview != prev_focus) render->need_systemd = 1;
+    }
+}
+
 static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
                                const LuloDizkSnapshot *dizk_snap, LuloDizkState *dizk_state,
+                               const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                                DashboardState *dash, int *sample_ms, long long *deadline,
                                int *exit_requested, int *need_resize, RenderFlags *render,
                                int scroll_units)
 {
     int prev_selected = proc_state ? proc_state->selected : 0;
     int prev_scroll = proc_state ? proc_state->scroll : 0;
+    int prev_systemd_cursor = systemd_state ? systemd_state->cursor : -1;
+    int prev_systemd_selected = systemd_state ? systemd_state->selected : 0;
+    int prev_systemd_config_cursor = systemd_state ? systemd_state->config_cursor : -1;
+    int prev_systemd_config_selected = systemd_state ? systemd_state->config_selected : 0;
+    int prev_systemd_list_scroll = systemd_state ? systemd_state->list_scroll : 0;
+    int prev_systemd_file_scroll = systemd_state ? systemd_state->file_scroll : 0;
+    int prev_systemd_config_list_scroll = systemd_state ? systemd_state->config_list_scroll : 0;
+    int prev_systemd_config_file_scroll = systemd_state ? systemd_state->config_file_scroll : 0;
+    int prev_systemd_focus = systemd_state ? systemd_state->focus_preview : 0;
 
     switch (action) {
     case INPUT_QUIT:
@@ -2750,6 +3486,15 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         if (app->active_page == APP_PAGE_CPU) render->need_proc_refresh = 1;
         render->need_render = 1;
         break;
+    case INPUT_TOGGLE_FOCUS:
+        if (app->active_page == APP_PAGE_SYSTEMD) {
+            lulo_systemd_toggle_focus(systemd_state, systemd_snap,
+                                      systemd_list_rows_visible(ui, systemd_state),
+                                      systemd_preview_rows_visible(ui, systemd_state));
+            render->need_systemd = 1;
+            render->need_render = 1;
+        }
+        break;
     case INPUT_SCROLL_UP:
         if (app->active_page == APP_PAGE_CPU) {
             int delta = scroll_units > 0 ? scroll_units : 1;
@@ -2757,11 +3502,23 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, -delta);
             schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
                                            proc_state->selected, proc_state->scroll);
-        } else {
+        } else if (app->active_page == APP_PAGE_DIZK) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
             lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), -delta);
             render->need_disk = 1;
+        } else {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_systemd_view_move(systemd_state, systemd_snap,
+                                   systemd_list_rows_visible(ui, systemd_state),
+                                   systemd_preview_rows_visible(ui, systemd_state), -delta);
+            update_systemd_render_flags(render, systemd_state,
+                                        prev_systemd_cursor, prev_systemd_selected,
+                                        prev_systemd_list_scroll, prev_systemd_file_scroll,
+                                        prev_systemd_config_cursor, prev_systemd_config_selected,
+                                        prev_systemd_config_list_scroll, prev_systemd_config_file_scroll,
+                                        prev_systemd_focus);
         }
         render->need_render = 1;
         break;
@@ -2772,11 +3529,23 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, +delta);
             schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
                                            proc_state->selected, proc_state->scroll);
-        } else {
+        } else if (app->active_page == APP_PAGE_DIZK) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
             lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), +delta);
             render->need_disk = 1;
+        } else {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_systemd_view_move(systemd_state, systemd_snap,
+                                   systemd_list_rows_visible(ui, systemd_state),
+                                   systemd_preview_rows_visible(ui, systemd_state), +delta);
+            update_systemd_render_flags(render, systemd_state,
+                                        prev_systemd_cursor, prev_systemd_selected,
+                                        prev_systemd_list_scroll, prev_systemd_file_scroll,
+                                        prev_systemd_config_cursor, prev_systemd_config_selected,
+                                        prev_systemd_config_list_scroll, prev_systemd_config_file_scroll,
+                                        prev_systemd_focus);
         }
         render->need_render = 1;
         break;
@@ -2785,9 +3554,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, -1);
             schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
                                            proc_state->selected, proc_state->scroll);
-        } else {
+        } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), -1);
             render->need_disk = 1;
+        } else {
+            lulo_systemd_view_page(systemd_state, systemd_snap,
+                                   systemd_list_rows_visible(ui, systemd_state),
+                                   systemd_preview_rows_visible(ui, systemd_state), -1);
+            update_systemd_render_flags(render, systemd_state,
+                                        prev_systemd_cursor, prev_systemd_selected,
+                                        prev_systemd_list_scroll, prev_systemd_file_scroll,
+                                        prev_systemd_config_cursor, prev_systemd_config_selected,
+                                        prev_systemd_config_list_scroll, prev_systemd_config_file_scroll,
+                                        prev_systemd_focus);
         }
         render->need_render = 1;
         break;
@@ -2796,9 +3575,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, +1);
             schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
                                            proc_state->selected, proc_state->scroll);
-        } else {
+        } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), +1);
             render->need_disk = 1;
+        } else {
+            lulo_systemd_view_page(systemd_state, systemd_snap,
+                                   systemd_list_rows_visible(ui, systemd_state),
+                                   systemd_preview_rows_visible(ui, systemd_state), +1);
+            update_systemd_render_flags(render, systemd_state,
+                                        prev_systemd_cursor, prev_systemd_selected,
+                                        prev_systemd_list_scroll, prev_systemd_file_scroll,
+                                        prev_systemd_config_cursor, prev_systemd_config_selected,
+                                        prev_systemd_config_list_scroll, prev_systemd_config_file_scroll,
+                                        prev_systemd_focus);
         }
         render->need_render = 1;
         break;
@@ -2807,9 +3596,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_view_home(proc_state, proc_snap, ui->lo.proc_rows);
             schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
                                            proc_state->selected, proc_state->scroll);
-        } else {
+        } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_home(dizk_state);
             render->need_disk = 1;
+        } else {
+            lulo_systemd_view_home(systemd_state, systemd_snap,
+                                   systemd_list_rows_visible(ui, systemd_state),
+                                   systemd_preview_rows_visible(ui, systemd_state));
+            update_systemd_render_flags(render, systemd_state,
+                                        prev_systemd_cursor, prev_systemd_selected,
+                                        prev_systemd_list_scroll, prev_systemd_file_scroll,
+                                        prev_systemd_config_cursor, prev_systemd_config_selected,
+                                        prev_systemd_config_list_scroll, prev_systemd_config_file_scroll,
+                                        prev_systemd_focus);
         }
         render->need_render = 1;
         break;
@@ -2818,26 +3617,58 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_view_end(proc_state, proc_snap, ui->lo.proc_rows);
             schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
                                            proc_state->selected, proc_state->scroll);
-        } else {
+        } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_end(dizk_state, dizk_snap, disk_visible_rows(ui));
             render->need_disk = 1;
+        } else {
+            lulo_systemd_view_end(systemd_state, systemd_snap,
+                                  systemd_list_rows_visible(ui, systemd_state),
+                                  systemd_preview_rows_visible(ui, systemd_state));
+            update_systemd_render_flags(render, systemd_state,
+                                        prev_systemd_cursor, prev_systemd_selected,
+                                        prev_systemd_list_scroll, prev_systemd_file_scroll,
+                                        prev_systemd_config_cursor, prev_systemd_config_selected,
+                                        prev_systemd_config_list_scroll, prev_systemd_config_file_scroll,
+                                        prev_systemd_focus);
         }
         render->need_render = 1;
         break;
     case INPUT_TAB_NEXT:
         app->active_page = (AppPage)((app->active_page + 1) % APP_PAGE_COUNT);
+        if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
         render->need_rebuild = 1;
         render->need_render = 1;
         break;
     case INPUT_TAB_PREV:
         app->active_page = (AppPage)((app->active_page + APP_PAGE_COUNT - 1) % APP_PAGE_COUNT);
+        if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
         render->need_rebuild = 1;
         render->need_render = 1;
+        break;
+    case INPUT_VIEW_NEXT:
+        if (app->active_page == APP_PAGE_SYSTEMD) {
+            lulo_systemd_next_view(systemd_state);
+            render->need_systemd_refresh = 1;
+            render->need_render = 1;
+        }
+        break;
+    case INPUT_VIEW_PREV:
+        if (app->active_page == APP_PAGE_SYSTEMD) {
+            lulo_systemd_prev_view(systemd_state);
+            render->need_systemd_refresh = 1;
+            render->need_render = 1;
+        }
         break;
     case INPUT_TOGGLE_BRANCH:
         if (app->active_page == APP_PAGE_CPU &&
             lulo_proc_toggle_row(proc_state, proc_snap, proc_state->selected) > 0) {
             render->need_proc_refresh = 1;
+            render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_SYSTEMD &&
+                   lulo_systemd_open_current(systemd_state, systemd_snap,
+                                             systemd_list_rows_visible(ui, systemd_state),
+                                             systemd_preview_rows_visible(ui, systemd_state))) {
+            render->need_systemd_refresh = 1;
             render->need_render = 1;
         }
         break;
@@ -2885,6 +3716,8 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
                            const double *cpu_temps, int ncpu_temp,
                            const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state,
                            const LuloDizkSnapshot *dizk_snap, const LuloDizkState *dizk_state,
+                           const LuloSystemdSnapshot *systemd_snap, const LuloSystemdState *systemd_state,
+                           const LuloSystemdBackendStatus *systemd_backend_status,
                            const RenderFlags *render)
 {
     if (!render->need_render) return;
@@ -2899,9 +3732,14 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
             render_process_cursor_only(ui, proc_snap, proc_state,
                                        render->proc_prev_selected, render->proc_prev_scroll);
         }
-    } else {
+    } else if (app->active_page == APP_PAGE_DIZK) {
         if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_disk || render->need_load) render_disk_only(ui, dizk_snap, dizk_state);
+    } else {
+        if (render->need_header) render_header_only(ui, dash, app);
+        if (render->need_systemd || render->need_load) {
+            render_systemd_only(ui, systemd_snap, systemd_state, systemd_backend_status);
+        }
     }
     notcurses_render(ui->nc);
 }
@@ -2925,7 +3763,11 @@ int main(int argc, char *argv[])
     DashboardState dash;
     LuloProcState proc_state;
     LuloDizkState dizk_state;
+    LuloSystemdState systemd_state;
+    LuloSystemdBackend systemd_backend;
     LuloProcSnapshot proc_snap = {0};
+    LuloSystemdSnapshot systemd_snap = {0};
+    LuloSystemdBackendStatus systemd_backend_status = {0};
     AppState app = {
         .active_page = APP_PAGE_CPU,
         .proc_refresh_ms = 1000,
@@ -2940,7 +3782,10 @@ int main(int argc, char *argv[])
     unsigned long long proc_cpu_accum_delta = 0;
     unsigned long long proc_last_total_delta = 0;
     long long proc_due_ms = 0;
+    long long systemd_due_ms = 0;
     int proc_snapshot_valid = 0;
+    int systemd_snapshot_valid = 0;
+    unsigned systemd_generation = 0;
     LuloProcCpuMode proc_snapshot_mode = LULO_PROC_CPU_PER_CORE;
 
     while ((opt = getopt(argc, argv, "ni:h")) != -1) {
@@ -3000,8 +3845,25 @@ int main(int argc, char *argv[])
     lulo_dashboard_init(&dash, &ci, sample_ms);
     lulo_proc_state_init(&proc_state);
     lulo_dizk_state_init(&dizk_state);
+    lulo_systemd_state_init(&systemd_state);
+    if (lulo_systemd_backend_start(&systemd_backend) < 0) {
+        fprintf(stderr, "failed to start systemd backend\n");
+        lulo_dizk_state_cleanup(&dizk_state);
+        lulo_proc_state_cleanup(&proc_state);
+        lulo_systemd_state_cleanup(&systemd_state);
+        notcurses_stop(ui.nc);
+        debug_log_close(&dlog);
+        return 1;
+    }
+    lulo_systemd_backend_request_full(&systemd_backend, &systemd_state);
+    lulo_systemd_backend_status(&systemd_backend, &systemd_backend_status);
+    systemd_due_ms = mono_ms_now() + 5000;
     if (lulo_read_cpu_stat(&stat_a) < 0) {
         fprintf(stderr, "failed to read /proc/stat\n");
+        lulo_dizk_state_cleanup(&dizk_state);
+        lulo_proc_state_cleanup(&proc_state);
+        lulo_systemd_state_cleanup(&systemd_state);
+        lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
         debug_log_close(&dlog);
         return 1;
@@ -3010,6 +3872,9 @@ int main(int argc, char *argv[])
     if (lulo_read_cpu_stat(&stat_b) < 0) {
         fprintf(stderr, "failed to read /proc/stat\n");
         lulo_proc_state_cleanup(&proc_state);
+        lulo_dizk_state_cleanup(&dizk_state);
+        lulo_systemd_state_cleanup(&systemd_state);
+        lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
         debug_log_close(&dlog);
         return 1;
@@ -3019,6 +3884,8 @@ int main(int argc, char *argv[])
             fprintf(stderr, "failed to switch terminal to raw input mode\n");
             lulo_proc_state_cleanup(&proc_state);
             lulo_dizk_state_cleanup(&dizk_state);
+            lulo_systemd_state_cleanup(&systemd_state);
+            lulo_systemd_backend_stop(&systemd_backend);
             notcurses_stop(ui.nc);
             debug_log_close(&dlog);
             return 1;
@@ -3028,6 +3895,8 @@ int main(int argc, char *argv[])
         fprintf(stderr, "failed to start Notcurses input thread\n");
         lulo_proc_state_cleanup(&proc_state);
         lulo_dizk_state_cleanup(&dizk_state);
+        lulo_systemd_state_cleanup(&systemd_state);
+        lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
         debug_log_close(&dlog);
         return 1;
@@ -3049,6 +3918,12 @@ int main(int argc, char *argv[])
         int proc_refreshed = 0;
         unsigned long long total_delta;
 
+        if (poll_systemd_backend(&ui, &app, &systemd_backend, &systemd_snap, &systemd_state,
+                                 &systemd_backend_status, &systemd_generation, &(RenderFlags){0}) < 0) {
+            fprintf(stderr, "failed to consume systemd backend snapshot\n");
+            break;
+        }
+        systemd_snapshot_valid = systemd_backend_status.have_snapshot;
         if (terminal_get_size(&term_rows, &term_cols) == 0 &&
             (term_rows != last_h || term_cols != last_w)) {
             need_resize = 1;
@@ -3114,12 +3989,22 @@ int main(int argc, char *argv[])
                 proc_due_ms = mono_ms_now() + effective_proc_refresh_ms(sample_ms, app.proc_refresh_ms);
             }
             lulo_proc_view_sync(&proc_state, &proc_snap, ui.lo.proc_rows);
-        } else {
+        } else if (app.active_page == APP_PAGE_DIZK) {
             if (lulo_dizk_snapshot_gather(&dizk_snap, &dizk_state, ui.lo.top.width - 8) < 0) {
                 fprintf(stderr, "failed to gather dizk snapshot\n");
                 break;
             }
             lulo_dizk_view_sync(&dizk_state, &dizk_snap, disk_visible_rows(&ui));
+        } else {
+            if ((!systemd_snapshot_valid || mono_ms_now() >= systemd_due_ms) &&
+                !systemd_backend_status.busy) {
+                lulo_systemd_backend_request_full(&systemd_backend, &systemd_state);
+                lulo_systemd_backend_status(&systemd_backend, &systemd_backend_status);
+                systemd_due_ms = mono_ms_now() + 5000;
+            }
+            lulo_systemd_view_sync(&systemd_state, &systemd_snap,
+                                   systemd_list_rows_visible(&ui, &systemd_state),
+                                   systemd_preview_rows_visible(&ui, &systemd_state));
         }
 
         if (full_redraw) render_static(&ui, app.active_page, &app);
@@ -3127,12 +4012,15 @@ int main(int argc, char *argv[])
             render_cpu_page(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq, &mi, &li,
                             &proc_snap, &proc_state, cpu_temps, ncpu_temp, append_sample,
                             full_redraw || proc_refreshed);
-        } else {
+        } else if (app.active_page == APP_PAGE_DIZK) {
             render_disk_page(&ui, &app, &dash, &dizk_snap, &dizk_state);
+        } else {
+            render_systemd_page(&ui, &app, &dash, &systemd_snap, &systemd_state, &systemd_backend_status);
         }
         debug_log_stage(&dlog, "before_render");
         if (notcurses_render(ui.nc) < 0) {
             lulo_dizk_snapshot_free(&dizk_snap);
+            lulo_systemd_snapshot_free(&systemd_snap);
             break;
         }
         debug_log_stage(&dlog, "after_render");
@@ -3205,13 +4093,14 @@ int main(int argc, char *argv[])
                     while (raw_input_decode_one(&rawin, &in)) {
                         debug_log_action(&dlog, "dispatch", &in);
                         if (in.mouse_press && in.mouse_button == 1) {
-                            handle_mouse_click(&ui, in.mouse_y, in.mouse_x, &app, &proc_snap, &proc_state, &render);
+                            handle_mouse_click(&ui, in.mouse_y, in.mouse_x, &app, &proc_snap, &proc_state,
+                                               &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, in.action, in.mouse_wheel, in.key_repeat);
 
                             apply_input_action(&ui, in.action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
-                                               &dash, &sample_ms, &deadline, &exit_requested, &need_resize, &render,
-                                               scroll_units);
+                                               &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
+                                               &exit_requested, &need_resize, &render, scroll_units);
                         }
                         if (need_resize || render.need_rebuild || exit_requested) break;
                     }
@@ -3262,38 +4151,28 @@ int main(int argc, char *argv[])
                         action = decode_notcurses_input(id);
                         debug_log_nc_event(&dlog, "dispatch-nc", id, &ni);
                         if (id == NCKEY_BUTTON1 && ni.evtype != NCTYPE_RELEASE) {
-                            handle_mouse_click(&ui, ni.y + 1, ni.x + 1, &app, &proc_snap, &proc_state, &render);
+                            handle_mouse_click(&ui, ni.y + 1, ni.x + 1, &app, &proc_snap, &proc_state,
+                                               &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, action,
                                                                        id == NCKEY_SCROLL_UP || id == NCKEY_SCROLL_DOWN,
                                                                        ni.evtype == NCTYPE_REPEAT);
 
                             apply_input_action(&ui, action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
-                                               &dash, &sample_ms, &deadline, &exit_requested, &need_resize, &render,
-                                               scroll_units);
+                                               &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
+                                               &exit_requested, &need_resize, &render, scroll_units);
                         }
                         if (need_resize || render.need_rebuild || exit_requested) break;
                     }
                 }
 
-                if (render.need_proc_refresh && app.active_page == APP_PAGE_CPU) {
-                    unsigned long long proc_delta = proc_cpu_accum_delta > 0 ? proc_cpu_accum_delta :
-                                                    (proc_last_total_delta > 0 ? proc_last_total_delta : total_delta);
-
-                    lulo_proc_snapshot_free(&proc_snap);
-                    if (lulo_proc_snapshot_gather(&proc_snap, &proc_state, proc_delta, mi.total, stat_b.ncpu,
-                                                  app.proc_cpu_mode) < 0) {
-                        exit_requested = 1;
-                        break;
-                    }
-                    proc_snapshot_valid = 1;
-                    proc_snapshot_mode = app.proc_cpu_mode;
-                    proc_last_total_delta = proc_delta;
-                    proc_cpu_accum_delta = 0;
-                    proc_due_ms = mono_ms_now() + effective_proc_refresh_ms(sample_ms, app.proc_refresh_ms);
-                    lulo_proc_view_sync(&proc_state, &proc_snap, ui.lo.proc_rows);
-                    render.need_proc = 1;
+                if (poll_systemd_backend(&ui, &app, &systemd_backend, &systemd_snap, &systemd_state,
+                                         &systemd_backend_status, &systemd_generation, &render) < 0) {
+                    exit_requested = 1;
+                    break;
                 }
+                systemd_snapshot_valid = systemd_backend_status.have_snapshot;
+
                 if (render.need_disk_refresh && app.active_page == APP_PAGE_DIZK) {
                     lulo_dizk_snapshot_free(&dizk_snap);
                     if (lulo_dizk_snapshot_gather(&dizk_snap, &dizk_state, ui.lo.top.width - 8) < 0) {
@@ -3303,6 +4182,30 @@ int main(int argc, char *argv[])
                     lulo_dizk_view_sync(&dizk_state, &dizk_snap, disk_visible_rows(&ui));
                     render.need_disk = 1;
                 }
+                if (render.need_systemd_refresh && app.active_page == APP_PAGE_SYSTEMD) {
+                    if (systemd_snapshot_valid) lulo_systemd_snapshot_mark_loading(&systemd_snap, &systemd_state);
+                    if (!systemd_snapshot_valid) {
+                        lulo_systemd_backend_request_full(&systemd_backend, &systemd_state);
+                        systemd_due_ms = mono_ms_now() + 5000;
+                    } else {
+                        lulo_systemd_backend_request_active(&systemd_backend, &systemd_state);
+                    }
+                    lulo_systemd_backend_status(&systemd_backend, &systemd_backend_status);
+                    render.need_systemd = 1;
+                }
+                if (render.need_proc_refresh && app.active_page == APP_PAGE_CPU) {
+                    proc_snapshot_valid = 0;
+                    proc_due_ms = 0;
+                    render.need_proc_refresh = 0;
+                    if (!need_resize && !exit_requested) {
+                        render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
+                                       cpu_temps, ncpu_temp, &proc_snap, &proc_state,
+                                       &dizk_snap, &dizk_state, &systemd_snap, &systemd_state,
+                                       &systemd_backend_status, &render);
+                    }
+                    resample = 1;
+                    continue;
+                }
                 if (render.need_rebuild) {
                     need_rebuild = 1;
                     resample = 1;
@@ -3311,7 +4214,9 @@ int main(int argc, char *argv[])
 
                 if (!need_resize && !exit_requested) {
                     render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
-                                   cpu_temps, ncpu_temp, &proc_snap, &proc_state, &dizk_snap, &dizk_state, &render);
+                                   cpu_temps, ncpu_temp, &proc_snap, &proc_state,
+                                   &dizk_snap, &dizk_state, &systemd_snap, &systemd_state,
+                                   &systemd_backend_status, &render);
                 }
                 if (ms_until_deadline(deadline) == 0) resample = 1;
             }
@@ -3333,8 +4238,11 @@ int main(int argc, char *argv[])
         nc_input_stop(&ncin);
     }
     lulo_proc_snapshot_free(&proc_snap);
+    lulo_systemd_snapshot_free(&systemd_snap);
+    lulo_systemd_backend_stop(&systemd_backend);
     lulo_proc_state_cleanup(&proc_state);
     lulo_dizk_state_cleanup(&dizk_state);
+    lulo_systemd_state_cleanup(&systemd_state);
     notcurses_stop(ui.nc);
     debug_log_close(&dlog);
     return exit_requested ? 0 : 1;

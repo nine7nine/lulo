@@ -237,6 +237,8 @@ static int terminal_get_size(int *rows, int *cols)
 static const char *app_page_name(AppPage page)
 {
     switch (page) {
+    case APP_PAGE_SCHED:
+        return "SCHED";
     case APP_PAGE_TUNE:
         return "TUNE";
     case APP_PAGE_SYSTEMD:
@@ -252,15 +254,17 @@ static const char *app_page_name(AppPage page)
 static const char *footer_hint(AppPage page)
 {
     switch (page) {
+    case APP_PAGE_SCHED:
+        return "q exit   tab or <- -> page   click view   space open   R reload config   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
     case APP_PAGE_TUNE:
-        return "q / ESC exit   tab or <- -> page   click view   space open   i edit   Enter stage   a apply   s snapshot   S preset   f focus list/preview   j/k or arrows scroll";
+        return "q exit   tab or <- -> page   click view   space open   i edit   Enter stage   Esc cancel   a apply   s snapshot   S preset   f focus list/preview   j/k or arrows scroll";
     case APP_PAGE_SYSTEMD:
-        return "q / ESC exit   tab or <- -> page   click view   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
+        return "q exit   tab or <- -> page   click view   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
     case APP_PAGE_DIZK:
-        return "q / ESC exit   tab or <- -> switch   j/k or arrows scroll filesystems   PgUp/PgDn jump";
+        return "q exit   tab or <- -> switch   j/k or arrows scroll filesystems   PgUp/PgDn jump";
     case APP_PAGE_CPU:
     default:
-        return "q / ESC exit   tab or <- -> switch   +/- sample   p proc cpu   r proc ms   space fold   c/e all   x/X term/kill";
+        return "q exit   tab or <- -> switch   +/- sample   p proc cpu   r proc ms   space fold   c/e all   x/X term/kill";
     }
 }
 
@@ -279,6 +283,15 @@ static int next_proc_refresh_ms(int current)
 static int effective_proc_refresh_ms(int sample_ms, int proc_refresh_ms)
 {
     return proc_refresh_ms > sample_ms ? proc_refresh_ms : sample_ms;
+}
+
+static int effective_sched_refresh_ms(const LuloSchedSnapshot *snap)
+{
+    int interval = snap && snap->watcher_interval_ms > 0 ? snap->watcher_interval_ms : 1000;
+
+    if (interval < 250) interval = 250;
+    if (interval > 5000) interval = 5000;
+    return interval;
 }
 
 static void app_status_set(AppState *app, const char *fmt, ...)
@@ -614,6 +627,7 @@ static void ui_destroy_planes(Ui *ui)
     destroy_plane(&ui->load);
     destroy_plane(&ui->tune);
     destroy_plane(&ui->systemd);
+    destroy_plane(&ui->sched);
     destroy_plane(&ui->disk);
     destroy_plane(&ui->proc);
     destroy_plane(&ui->mem);
@@ -661,6 +675,12 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
             ui->tune = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1,
                                     tune_height, lo->top.width - 2, "tune");
         }
+    } else if (page == APP_PAGE_SCHED) {
+        int sched_height = lo->top.height - 3;
+        if (sched_height > 0) {
+            ui->sched = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1,
+                                     sched_height, lo->top.width - 2, "sched");
+        }
     } else {
         int systemd_height = lo->top.height - 3;
         if (systemd_height > 0) {
@@ -681,6 +701,9 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
     if (page == APP_PAGE_TUNE && !ui->tune) {
         return -1;
     }
+    if (page == APP_PAGE_SCHED && !ui->sched) {
+        return -1;
+    }
     if (page == APP_PAGE_SYSTEMD && !ui->systemd) {
         return -1;
     }
@@ -689,6 +712,8 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
         if (ui->proc) draw_box_title(ui->proc, ui->theme, ui->theme->border_panel, " Process Tree ", ui->theme->white);
     } else if (ui->disk) {
         draw_box_title(ui->disk, ui->theme, ui->theme->border_panel, " Disk ", ui->theme->white);
+    } else if (ui->sched) {
+        draw_box_title(ui->sched, ui->theme, ui->theme->border_panel, " Scheduler ", ui->theme->white);
     } else if (ui->tune) {
         draw_box_title(ui->tune, ui->theme, ui->theme->border_panel, " Tunables ", ui->theme->white);
     } else if (ui->systemd) {
@@ -1360,6 +1385,15 @@ static void render_disk_page(Ui *ui, const AppState *app, const DashboardState *
     render_disk_status(ui, dizk_snap, dizk_state);
 }
 
+static void render_sched_page(Ui *ui, const AppState *app, const DashboardState *dash,
+                              const LuloSchedSnapshot *sched_snap, const LuloSchedState *sched_state,
+                              const LuloSchedBackendStatus *sched_backend_status)
+{
+    render_header_widget(ui, dash, app);
+    render_sched_widget(ui, sched_snap, sched_state);
+    render_sched_status(ui, sched_snap, sched_state, sched_backend_status);
+}
+
 static void render_systemd_page(Ui *ui, const AppState *app, const DashboardState *dash,
                                 const LuloSystemdSnapshot *systemd_snap, const LuloSystemdState *systemd_state,
                                 const LuloSystemdBackendStatus *systemd_backend_status)
@@ -1387,6 +1421,14 @@ static void render_disk_only(Ui *ui, const LuloDizkSnapshot *dizk_snap, const Lu
 {
     render_disk_widget(ui, dizk_snap, dizk_state);
     render_disk_status(ui, dizk_snap, dizk_state);
+}
+
+static void render_sched_only(Ui *ui, const LuloSchedSnapshot *sched_snap,
+                              const LuloSchedState *sched_state,
+                              const LuloSchedBackendStatus *sched_backend_status)
+{
+    render_sched_widget(ui, sched_snap, sched_state);
+    render_sched_status(ui, sched_snap, sched_state, sched_backend_status);
 }
 
 static void render_systemd_only(Ui *ui, const LuloSystemdSnapshot *systemd_snap,
@@ -1488,6 +1530,43 @@ static int poll_tune_backend(Ui *ui, AppState *app, LuloTuneBackend *backend,
     return changed;
 }
 
+static int sched_backend_status_changed(const LuloSchedBackendStatus *a,
+                                        const LuloSchedBackendStatus *b)
+{
+    if (!a || !b) return 0;
+    return a->busy != b->busy ||
+           a->have_snapshot != b->have_snapshot ||
+           a->loading_full != b->loading_full ||
+           a->loading_active != b->loading_active ||
+           a->reloading != b->reloading ||
+           a->generation != b->generation ||
+           strcmp(a->error, b->error) != 0;
+}
+
+static int poll_sched_backend(Ui *ui, AppState *app, LuloSchedBackend *backend,
+                              LuloSchedSnapshot *snap, LuloSchedState *state,
+                              LuloSchedBackendStatus *status, unsigned *generation,
+                              RenderFlags *render)
+{
+    LuloSchedBackendStatus prev_status = *status;
+    int changed = lulo_sched_backend_consume(backend, snap, generation, status);
+
+    if (changed < 0) return -1;
+    if (changed > 0) {
+        lulo_sched_view_sync(state, snap,
+                             sched_list_rows_visible(ui, state),
+                             sched_preview_rows_visible(ui, state));
+        if (app->active_page == APP_PAGE_SCHED) {
+            render->need_sched = 1;
+            render->need_render = 1;
+        }
+    } else if (app->active_page == APP_PAGE_SCHED && sched_backend_status_changed(&prev_status, status)) {
+        render->need_sched = 1;
+        render->need_render = 1;
+    }
+    return changed;
+}
+
 static void render_header_only(Ui *ui, const DashboardState *dash, const AppState *app)
 {
     render_header_widget(ui, dash, app);
@@ -1549,7 +1628,8 @@ static int handle_tab_click(Ui *ui, int global_y, int global_x, AppState *app, R
         if (global_x >= ui->tab_hits[i].x && global_x < ui->tab_hits[i].x + ui->tab_hits[i].width) {
             if (app->active_page != (AppPage)i) {
                 app->active_page = (AppPage)i;
-                if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
+                if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
+                else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
                 else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
                 render->need_rebuild = 1;
                 render->need_render = 1;
@@ -1644,10 +1724,14 @@ static int handle_proc_click(Ui *ui, int global_y, int global_x,
 }
 
 static int point_on_inner_tabs(Ui *ui, AppPage page,
+                               const LuloSchedState *sched_state,
                                const LuloTuneState *tune_state,
                                const LuloSystemdState *systemd_state,
                                int global_y, int global_x)
 {
+    if (page == APP_PAGE_SCHED && ui->sched && sched_state) {
+        return point_on_sched_view_tabs(ui, sched_state, global_y, global_x);
+    }
     if (page == APP_PAGE_TUNE && ui->tune && tune_state) {
         return point_on_tune_view_tabs(ui, tune_state, global_y, global_x);
     }
@@ -1658,6 +1742,7 @@ static int point_on_inner_tabs(Ui *ui, AppPage page,
 }
 
 static int handle_mouse_wheel_target(Ui *ui, AppState *app,
+                                     LuloSchedState *sched_state,
                                      LuloTuneState *tune_state,
                                      LuloSystemdState *systemd_state,
                                      RenderFlags *render,
@@ -1665,7 +1750,7 @@ static int handle_mouse_wheel_target(Ui *ui, AppState *app,
 {
     if (!ui || !app) return 0;
     if (point_on_page_tabs(ui, global_y, global_x)) return 0;
-    if (point_on_inner_tabs(ui, app->active_page, tune_state, systemd_state, global_y, global_x)) return 0;
+    if (point_on_inner_tabs(ui, app->active_page, sched_state, tune_state, systemd_state, global_y, global_x)) return 0;
     switch (app->active_page) {
     case APP_PAGE_CPU:
         return global_y >= ui->lo.proc.row + 2 &&
@@ -1678,6 +1763,8 @@ static int handle_mouse_wheel_target(Ui *ui, AppState *app,
                global_y < ui->lo.top.row + ui->lo.top.height - 2 &&
                global_x >= ui->lo.top.col + 1 &&
                global_x < ui->lo.top.col + ui->lo.top.width - 1;
+    case APP_PAGE_SCHED:
+        return handle_sched_wheel_target(ui, sched_state, render, global_y, global_x);
     case APP_PAGE_SYSTEMD:
         return handle_systemd_wheel_target(ui, systemd_state, render, global_y, global_x);
     case APP_PAGE_TUNE:
@@ -1689,6 +1776,7 @@ static int handle_mouse_wheel_target(Ui *ui, AppState *app,
 
 static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
                               const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
+                              const LuloSchedSnapshot *sched_snap, LuloSchedState *sched_state,
                               const LuloTuneSnapshot *tune_snap, LuloTuneState *tune_state,
                               const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                               RenderFlags *render)
@@ -1696,6 +1784,10 @@ static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
     if (handle_tab_click(ui, global_y, global_x, app, render)) return 1;
     if (app->active_page == APP_PAGE_CPU &&
         handle_proc_click(ui, global_y, global_x, proc_snap, proc_state, render)) {
+        return 1;
+    }
+    if (app->active_page == APP_PAGE_SCHED &&
+        handle_sched_click(ui, global_y, global_x, sched_snap, sched_state, render)) {
         return 1;
     }
     if (app->active_page == APP_PAGE_TUNE &&
@@ -1728,6 +1820,47 @@ static void schedule_proc_selection_redraw(RenderFlags *render,
     render->need_proc_cursor_only = 1;
     render->proc_prev_selected = prev_selected;
     render->proc_prev_scroll = prev_scroll;
+}
+
+static void update_sched_render_flags(RenderFlags *render, const LuloSchedState *state,
+                                      int prev_view,
+                                      int prev_profile_cursor, int prev_profile_selected,
+                                      int prev_profile_list_scroll, int prev_profile_detail_scroll,
+                                      int prev_rule_cursor, int prev_rule_selected,
+                                      int prev_rule_list_scroll, int prev_rule_detail_scroll,
+                                      int prev_live_cursor, int prev_live_selected,
+                                      int prev_live_list_scroll, int prev_live_detail_scroll,
+                                      int prev_focus)
+{
+    if (!render || !state) return;
+    if ((int)state->view != prev_view) {
+        render->need_sched_refresh = 1;
+        return;
+    }
+    switch (state->view) {
+    case LULO_SCHED_VIEW_RULES:
+        if (state->rule_selected != prev_rule_selected) render->need_sched_refresh = 1;
+        else if (state->rule_cursor != prev_rule_cursor ||
+                 state->rule_list_scroll != prev_rule_list_scroll ||
+                 state->rule_detail_scroll != prev_rule_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_sched = 1;
+        break;
+    case LULO_SCHED_VIEW_LIVE:
+        if (state->live_selected != prev_live_selected) render->need_sched_refresh = 1;
+        else if (state->live_cursor != prev_live_cursor ||
+                 state->live_list_scroll != prev_live_list_scroll ||
+                 state->live_detail_scroll != prev_live_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_sched = 1;
+        break;
+    case LULO_SCHED_VIEW_PROFILES:
+    default:
+        if (state->profile_selected != prev_profile_selected) render->need_sched_refresh = 1;
+        else if (state->profile_cursor != prev_profile_cursor ||
+                 state->profile_list_scroll != prev_profile_list_scroll ||
+                 state->profile_detail_scroll != prev_profile_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_sched = 1;
+        break;
+    }
 }
 
 static void update_systemd_render_flags(RenderFlags *render, const LuloSystemdState *state,
@@ -1801,6 +1934,7 @@ static void update_tune_render_flags(RenderFlags *render, const LuloTuneState *s
 static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
                                const LuloDizkSnapshot *dizk_snap, LuloDizkState *dizk_state,
+                               const LuloSchedSnapshot *sched_snap, LuloSchedState *sched_state,
                                const LuloTuneSnapshot *tune_snap, LuloTuneState *tune_state,
                                const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                                DashboardState *dash, int *sample_ms, long long *deadline,
@@ -1809,6 +1943,20 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
 {
     int prev_selected = proc_state ? proc_state->selected : 0;
     int prev_scroll = proc_state ? proc_state->scroll : 0;
+    int prev_sched_view = sched_state ? (int)sched_state->view : 0;
+    int prev_sched_profile_cursor = sched_state ? sched_state->profile_cursor : -1;
+    int prev_sched_profile_selected = sched_state ? sched_state->profile_selected : -1;
+    int prev_sched_profile_list_scroll = sched_state ? sched_state->profile_list_scroll : 0;
+    int prev_sched_profile_detail_scroll = sched_state ? sched_state->profile_detail_scroll : 0;
+    int prev_sched_rule_cursor = sched_state ? sched_state->rule_cursor : -1;
+    int prev_sched_rule_selected = sched_state ? sched_state->rule_selected : -1;
+    int prev_sched_rule_list_scroll = sched_state ? sched_state->rule_list_scroll : 0;
+    int prev_sched_rule_detail_scroll = sched_state ? sched_state->rule_detail_scroll : 0;
+    int prev_sched_live_cursor = sched_state ? sched_state->live_cursor : -1;
+    int prev_sched_live_selected = sched_state ? sched_state->live_selected : -1;
+    int prev_sched_live_list_scroll = sched_state ? sched_state->live_list_scroll : 0;
+    int prev_sched_live_detail_scroll = sched_state ? sched_state->live_detail_scroll : 0;
+    int prev_sched_focus = sched_state ? sched_state->focus_preview : 0;
     int prev_systemd_cursor = systemd_state ? systemd_state->cursor : -1;
     int prev_systemd_selected = systemd_state ? systemd_state->selected : 0;
     int prev_systemd_config_cursor = systemd_state ? systemd_state->config_cursor : -1;
@@ -1872,7 +2020,13 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         render->need_render = 1;
         break;
     case INPUT_TOGGLE_FOCUS:
-        if (app->active_page == APP_PAGE_SYSTEMD) {
+        if (app->active_page == APP_PAGE_SCHED) {
+            lulo_sched_toggle_focus(sched_state, sched_snap,
+                                    sched_list_rows_visible(ui, sched_state),
+                                    sched_preview_rows_visible(ui, sched_state));
+            render->need_sched = 1;
+            render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_SYSTEMD) {
             lulo_systemd_toggle_focus(systemd_state, systemd_snap,
                                       systemd_list_rows_visible(ui, systemd_state),
                                       systemd_preview_rows_visible(ui, systemd_state));
@@ -1898,6 +2052,21 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
 
             lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), -delta);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_SCHED) {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_sched_view_move(sched_state, sched_snap,
+                                 sched_list_rows_visible(ui, sched_state),
+                                 sched_preview_rows_visible(ui, sched_state), -delta);
+            update_sched_render_flags(render, sched_state,
+                                      prev_sched_view,
+                                      prev_sched_profile_cursor, prev_sched_profile_selected,
+                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
+                                      prev_sched_rule_cursor, prev_sched_rule_selected,
+                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
+                                      prev_sched_live_cursor, prev_sched_live_selected,
+                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
+                                      prev_sched_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -1940,6 +2109,21 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
 
             lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), +delta);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_SCHED) {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_sched_view_move(sched_state, sched_snap,
+                                 sched_list_rows_visible(ui, sched_state),
+                                 sched_preview_rows_visible(ui, sched_state), +delta);
+            update_sched_render_flags(render, sched_state,
+                                      prev_sched_view,
+                                      prev_sched_profile_cursor, prev_sched_profile_selected,
+                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
+                                      prev_sched_rule_cursor, prev_sched_rule_selected,
+                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
+                                      prev_sched_live_cursor, prev_sched_live_selected,
+                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
+                                      prev_sched_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -1978,6 +2162,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), -1);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_SCHED) {
+            lulo_sched_view_page(sched_state, sched_snap,
+                                 sched_list_rows_visible(ui, sched_state),
+                                 sched_preview_rows_visible(ui, sched_state), -1);
+            update_sched_render_flags(render, sched_state,
+                                      prev_sched_view,
+                                      prev_sched_profile_cursor, prev_sched_profile_selected,
+                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
+                                      prev_sched_rule_cursor, prev_sched_rule_selected,
+                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
+                                      prev_sched_live_cursor, prev_sched_live_selected,
+                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
+                                      prev_sched_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_page(tune_state, tune_snap,
                                 tune_list_rows_visible(ui, tune_state),
@@ -2012,6 +2209,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), +1);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_SCHED) {
+            lulo_sched_view_page(sched_state, sched_snap,
+                                 sched_list_rows_visible(ui, sched_state),
+                                 sched_preview_rows_visible(ui, sched_state), +1);
+            update_sched_render_flags(render, sched_state,
+                                      prev_sched_view,
+                                      prev_sched_profile_cursor, prev_sched_profile_selected,
+                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
+                                      prev_sched_rule_cursor, prev_sched_rule_selected,
+                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
+                                      prev_sched_live_cursor, prev_sched_live_selected,
+                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
+                                      prev_sched_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_page(tune_state, tune_snap,
                                 tune_list_rows_visible(ui, tune_state),
@@ -2046,6 +2256,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_home(dizk_state);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_SCHED) {
+            lulo_sched_view_home(sched_state, sched_snap,
+                                 sched_list_rows_visible(ui, sched_state),
+                                 sched_preview_rows_visible(ui, sched_state));
+            update_sched_render_flags(render, sched_state,
+                                      prev_sched_view,
+                                      prev_sched_profile_cursor, prev_sched_profile_selected,
+                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
+                                      prev_sched_rule_cursor, prev_sched_rule_selected,
+                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
+                                      prev_sched_live_cursor, prev_sched_live_selected,
+                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
+                                      prev_sched_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_home(tune_state, tune_snap,
                                 tune_list_rows_visible(ui, tune_state),
@@ -2080,6 +2303,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_end(dizk_state, dizk_snap, disk_visible_rows(ui));
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_SCHED) {
+            lulo_sched_view_end(sched_state, sched_snap,
+                                sched_list_rows_visible(ui, sched_state),
+                                sched_preview_rows_visible(ui, sched_state));
+            update_sched_render_flags(render, sched_state,
+                                      prev_sched_view,
+                                      prev_sched_profile_cursor, prev_sched_profile_selected,
+                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
+                                      prev_sched_rule_cursor, prev_sched_rule_selected,
+                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
+                                      prev_sched_live_cursor, prev_sched_live_selected,
+                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
+                                      prev_sched_focus);
         } else if (app->active_page == APP_PAGE_TUNE) {
             lulo_tune_view_end(tune_state, tune_snap,
                                tune_list_rows_visible(ui, tune_state),
@@ -2108,14 +2344,16 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_TAB_NEXT:
         app->active_page = (AppPage)((app->active_page + 1) % APP_PAGE_COUNT);
-        if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
+        if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
+        else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
         else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
         render->need_rebuild = 1;
         render->need_render = 1;
         break;
     case INPUT_TAB_PREV:
         app->active_page = (AppPage)((app->active_page + APP_PAGE_COUNT - 1) % APP_PAGE_COUNT);
-        if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
+        if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
+        else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
         else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
         render->need_rebuild = 1;
         render->need_render = 1;
@@ -2147,6 +2385,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_toggle_row(proc_state, proc_snap, proc_state->selected) > 0) {
             render->need_proc_refresh = 1;
             render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_SCHED &&
+                   lulo_sched_open_current(sched_state, sched_snap,
+                                           sched_list_rows_visible(ui, sched_state),
+                                           sched_preview_rows_visible(ui, sched_state))) {
+            render->need_sched_refresh = 1;
+            render->need_render = 1;
         } else if (app->active_page == APP_PAGE_TUNE) {
             int rc = lulo_tune_open_current(tune_state, tune_snap,
                                             tune_list_rows_visible(ui, tune_state),
@@ -2159,6 +2403,13 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                              systemd_list_rows_visible(ui, systemd_state),
                                              systemd_preview_rows_visible(ui, systemd_state))) {
             render->need_systemd_refresh = 1;
+            render->need_render = 1;
+        }
+        break;
+    case INPUT_RELOAD_PAGE:
+        if (app->active_page == APP_PAGE_SCHED) {
+            render->need_sched_reload = 1;
+            render->need_sched = 1;
             render->need_render = 1;
         }
         break;
@@ -2266,6 +2517,8 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
                            const double *cpu_temps, int ncpu_temp,
                            const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state,
                            const LuloDizkSnapshot *dizk_snap, const LuloDizkState *dizk_state,
+                           const LuloSchedSnapshot *sched_snap, const LuloSchedState *sched_state,
+                           const LuloSchedBackendStatus *sched_backend_status,
                            const LuloTuneSnapshot *tune_snap, const LuloTuneState *tune_state,
                            const LuloTuneBackendStatus *tune_backend_status,
                            const LuloSystemdSnapshot *systemd_snap, const LuloSystemdState *systemd_state,
@@ -2287,6 +2540,9 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
     } else if (app->active_page == APP_PAGE_DIZK) {
         if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_disk || render->need_load) render_disk_only(ui, dizk_snap, dizk_state);
+    } else if (app->active_page == APP_PAGE_SCHED) {
+        if (render->need_header) render_header_only(ui, dash, app);
+        if (render->need_sched || render->need_load) render_sched_only(ui, sched_snap, sched_state, sched_backend_status);
     } else if (app->active_page == APP_PAGE_TUNE) {
         if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_tune || render->need_load) render_tune_only(ui, tune_snap, tune_state, app, tune_backend_status);
@@ -2318,11 +2574,15 @@ int main(int argc, char *argv[])
     DashboardState dash;
     LuloProcState proc_state;
     LuloDizkState dizk_state;
+    LuloSchedState sched_state;
+    LuloSchedBackend sched_backend;
     LuloTuneState tune_state;
     LuloTuneBackend tune_backend;
     LuloSystemdState systemd_state;
     LuloSystemdBackend systemd_backend;
     LuloProcSnapshot proc_snap = {0};
+    LuloSchedSnapshot sched_snap = {0};
+    LuloSchedBackendStatus sched_backend_status = {0};
     LuloTuneSnapshot tune_snap = {0};
     LuloTuneBackendStatus tune_backend_status = {0};
     LuloSystemdSnapshot systemd_snap = {0};
@@ -2340,11 +2600,14 @@ int main(int argc, char *argv[])
     unsigned long long proc_cpu_accum_delta = 0;
     unsigned long long proc_last_total_delta = 0;
     long long proc_due_ms = 0;
+    long long sched_due_ms = 0;
     long long tune_due_ms = 0;
     long long systemd_due_ms = 0;
     int proc_snapshot_valid = 0;
+    int sched_snapshot_valid = 0;
     int tune_snapshot_valid = 0;
     int systemd_snapshot_valid = 0;
+    unsigned sched_generation = 0;
     unsigned tune_generation = 0;
     unsigned systemd_generation = 0;
     LuloProcCpuMode proc_snapshot_mode = LULO_PROC_CPU_PER_CORE;
@@ -2406,12 +2669,26 @@ int main(int argc, char *argv[])
     lulo_dashboard_init(&dash, &ci, sample_ms);
     lulo_proc_state_init(&proc_state);
     lulo_dizk_state_init(&dizk_state);
+    lulo_sched_state_init(&sched_state);
     lulo_tune_state_init(&tune_state);
     lulo_systemd_state_init(&systemd_state);
-    if (lulo_tune_backend_start(&tune_backend) < 0) {
-        fprintf(stderr, "failed to start tune backend\n");
+    if (lulo_sched_backend_start(&sched_backend) < 0) {
+        fprintf(stderr, "failed to start sched backend\n");
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_tune_state_cleanup(&tune_state);
+        lulo_sched_state_cleanup(&sched_state);
+        lulo_dizk_state_cleanup(&dizk_state);
+        lulo_proc_state_cleanup(&proc_state);
+        notcurses_stop(ui.nc);
+        debug_log_close(&dlog);
+        return 1;
+    }
+    if (lulo_tune_backend_start(&tune_backend) < 0) {
+        fprintf(stderr, "failed to start tune backend\n");
+        lulo_sched_backend_stop(&sched_backend);
+        lulo_systemd_state_cleanup(&systemd_state);
+        lulo_tune_state_cleanup(&tune_state);
+        lulo_sched_state_cleanup(&sched_state);
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_proc_state_cleanup(&proc_state);
         notcurses_stop(ui.nc);
@@ -2421,14 +2698,19 @@ int main(int argc, char *argv[])
     if (lulo_systemd_backend_start(&systemd_backend) < 0) {
         fprintf(stderr, "failed to start systemd backend\n");
         lulo_tune_backend_stop(&tune_backend);
+        lulo_sched_backend_stop(&sched_backend);
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_proc_state_cleanup(&proc_state);
+        lulo_sched_state_cleanup(&sched_state);
         lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
         notcurses_stop(ui.nc);
         debug_log_close(&dlog);
         return 1;
     }
+    lulo_sched_backend_request_full(&sched_backend, &sched_state);
+    lulo_sched_backend_status(&sched_backend, &sched_backend_status);
+    sched_due_ms = mono_ms_now() + effective_sched_refresh_ms(&sched_snap);
     lulo_tune_backend_request_full(&tune_backend, &tune_state);
     lulo_tune_backend_status(&tune_backend, &tune_backend_status);
     tune_due_ms = mono_ms_now() + 5000;
@@ -2437,9 +2719,11 @@ int main(int argc, char *argv[])
     systemd_due_ms = mono_ms_now() + 5000;
     if (lulo_read_cpu_stat(&stat_a) < 0) {
         fprintf(stderr, "failed to read /proc/stat\n");
+        lulo_sched_backend_stop(&sched_backend);
         lulo_tune_backend_stop(&tune_backend);
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_proc_state_cleanup(&proc_state);
+        lulo_sched_state_cleanup(&sched_state);
         lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_systemd_backend_stop(&systemd_backend);
@@ -2452,8 +2736,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "failed to read /proc/stat\n");
         lulo_proc_state_cleanup(&proc_state);
         lulo_dizk_state_cleanup(&dizk_state);
+        lulo_sched_state_cleanup(&sched_state);
         lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
+        lulo_sched_backend_stop(&sched_backend);
         lulo_tune_backend_stop(&tune_backend);
         lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
@@ -2465,8 +2751,10 @@ int main(int argc, char *argv[])
             fprintf(stderr, "failed to switch terminal to raw input mode\n");
             lulo_proc_state_cleanup(&proc_state);
             lulo_dizk_state_cleanup(&dizk_state);
+            lulo_sched_state_cleanup(&sched_state);
             lulo_tune_state_cleanup(&tune_state);
             lulo_systemd_state_cleanup(&systemd_state);
+            lulo_sched_backend_stop(&sched_backend);
             lulo_tune_backend_stop(&tune_backend);
             lulo_systemd_backend_stop(&systemd_backend);
             notcurses_stop(ui.nc);
@@ -2492,6 +2780,12 @@ int main(int argc, char *argv[])
         int proc_refreshed = 0;
         unsigned long long total_delta;
 
+        if (poll_sched_backend(&ui, &app, &sched_backend, &sched_snap, &sched_state,
+                               &sched_backend_status, &sched_generation, &(RenderFlags){0}) < 0) {
+            fprintf(stderr, "failed to consume sched backend snapshot\n");
+            break;
+        }
+        sched_snapshot_valid = sched_backend_status.have_snapshot;
         if (poll_tune_backend(&ui, &app, &tune_backend, &tune_snap, &tune_state,
                               &tune_backend_status, &tune_generation, &(RenderFlags){0}) < 0) {
             fprintf(stderr, "failed to consume tune backend snapshot\n");
@@ -2574,6 +2868,16 @@ int main(int argc, char *argv[])
                 break;
             }
             lulo_dizk_view_sync(&dizk_state, &dizk_snap, disk_visible_rows(&ui));
+        } else if (app.active_page == APP_PAGE_SCHED) {
+            if ((!sched_snapshot_valid || mono_ms_now() >= sched_due_ms) &&
+                !sched_backend_status.busy) {
+                lulo_sched_backend_request_full(&sched_backend, &sched_state);
+                lulo_sched_backend_status(&sched_backend, &sched_backend_status);
+                sched_due_ms = mono_ms_now() + effective_sched_refresh_ms(&sched_snap);
+            }
+            lulo_sched_view_sync(&sched_state, &sched_snap,
+                                 sched_list_rows_visible(&ui, &sched_state),
+                                 sched_preview_rows_visible(&ui, &sched_state));
         } else if (app.active_page == APP_PAGE_TUNE) {
             if ((!tune_snapshot_valid || mono_ms_now() >= tune_due_ms) &&
                 !tune_backend_status.busy) {
@@ -2603,6 +2907,8 @@ int main(int argc, char *argv[])
                             full_redraw || proc_refreshed);
         } else if (app.active_page == APP_PAGE_DIZK) {
             render_disk_page(&ui, &app, &dash, &dizk_snap, &dizk_state);
+        } else if (app.active_page == APP_PAGE_SCHED) {
+            render_sched_page(&ui, &app, &dash, &sched_snap, &sched_state, &sched_backend_status);
         } else if (app.active_page == APP_PAGE_TUNE) {
             render_tune_page(&ui, &app, &dash, &tune_snap, &tune_state, &tune_backend_status);
         } else {
@@ -2690,17 +2996,19 @@ int main(int argc, char *argv[])
                             }
                         }
                         if (in.mouse_wheel &&
-                            !handle_mouse_wheel_target(&ui, &app, &tune_state, &systemd_state, &render,
+                            !handle_mouse_wheel_target(&ui, &app, &sched_state, &tune_state, &systemd_state, &render,
                                                        in.mouse_y, in.mouse_x)) {
                             continue;
                         }
                         if (in.mouse_press && in.mouse_button == 1) {
                             handle_mouse_click(&ui, in.mouse_y, in.mouse_x, &app, &proc_snap, &proc_state,
+                                               &sched_snap, &sched_state,
                                                &tune_snap, &tune_state, &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, in.action, in.mouse_wheel, in.key_repeat);
 
                             apply_input_action(&ui, in.action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
+                                               &sched_snap, &sched_state,
                                                &tune_snap, &tune_state,
                                                &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
                                                &exit_requested, &need_resize, &render, scroll_units);
@@ -2763,12 +3071,13 @@ int main(int argc, char *argv[])
                             }
                         }
                         if ((id == NCKEY_SCROLL_UP || id == NCKEY_SCROLL_DOWN) &&
-                            !handle_mouse_wheel_target(&ui, &app, &tune_state, &systemd_state, &render,
+                            !handle_mouse_wheel_target(&ui, &app, &sched_state, &tune_state, &systemd_state, &render,
                                                        ni.y + 1, ni.x + 1)) {
                             continue;
                         }
                         if (id == NCKEY_BUTTON1 && ni.evtype != NCTYPE_RELEASE) {
                             handle_mouse_click(&ui, ni.y + 1, ni.x + 1, &app, &proc_snap, &proc_state,
+                                               &sched_snap, &sched_state,
                                                &tune_snap, &tune_state, &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, action,
@@ -2776,6 +3085,7 @@ int main(int argc, char *argv[])
                                                                        ni.evtype == NCTYPE_REPEAT);
 
                             apply_input_action(&ui, action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
+                                               &sched_snap, &sched_state,
                                                &tune_snap, &tune_state,
                                                &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
                                                &exit_requested, &need_resize, &render, scroll_units);
@@ -2796,6 +3106,12 @@ int main(int argc, char *argv[])
                     }
                 }
 
+                if (poll_sched_backend(&ui, &app, &sched_backend, &sched_snap, &sched_state,
+                                       &sched_backend_status, &sched_generation, &render) < 0) {
+                    exit_requested = 1;
+                    break;
+                }
+                sched_snapshot_valid = sched_backend_status.have_snapshot;
                 if (poll_tune_backend(&ui, &app, &tune_backend, &tune_snap, &tune_state,
                                       &tune_backend_status, &tune_generation, &render) < 0) {
                     exit_requested = 1;
@@ -2817,6 +3133,19 @@ int main(int argc, char *argv[])
                     }
                     lulo_dizk_view_sync(&dizk_state, &dizk_snap, disk_visible_rows(&ui));
                     render.need_disk = 1;
+                }
+                if (render.need_sched_reload && app.active_page == APP_PAGE_SCHED) {
+                    if (sched_snapshot_valid) lulo_sched_snapshot_mark_loading(&sched_snap, &sched_state);
+                    lulo_sched_backend_request_reload(&sched_backend, &sched_state);
+                    lulo_sched_backend_status(&sched_backend, &sched_backend_status);
+                    sched_due_ms = mono_ms_now() + effective_sched_refresh_ms(&sched_snap);
+                    render.need_sched = 1;
+                } else if (render.need_sched_refresh && app.active_page == APP_PAGE_SCHED) {
+                    if (lulo_sched_snapshot_refresh_active(&sched_snap, &sched_state) < 0) {
+                        exit_requested = 1;
+                        break;
+                    }
+                    render.need_sched = 1;
                 }
                 if (render.need_tune_refresh_full && app.active_page == APP_PAGE_TUNE) {
                     if (tune_snapshot_valid) lulo_tune_snapshot_mark_loading(&tune_snap, &tune_state);
@@ -2867,7 +3196,8 @@ int main(int argc, char *argv[])
                     if (!need_resize && !exit_requested) {
                         render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
                                        cpu_temps, ncpu_temp, &proc_snap, &proc_state,
-                                       &dizk_snap, &dizk_state, &tune_snap, &tune_state,
+                                       &dizk_snap, &dizk_state, &sched_snap, &sched_state,
+                                       &sched_backend_status, &tune_snap, &tune_state,
                                        &tune_backend_status, &systemd_snap, &systemd_state,
                                        &systemd_backend_status, &render);
                     }
@@ -2883,7 +3213,8 @@ int main(int argc, char *argv[])
                 if (!need_resize && !exit_requested) {
                     render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
                                    cpu_temps, ncpu_temp, &proc_snap, &proc_state,
-                                   &dizk_snap, &dizk_state, &tune_snap, &tune_state,
+                                   &dizk_snap, &dizk_state, &sched_snap, &sched_state,
+                                   &sched_backend_status, &tune_snap, &tune_state,
                                    &tune_backend_status, &systemd_snap, &systemd_state,
                                    &systemd_backend_status, &render);
                 }
@@ -2905,12 +3236,15 @@ int main(int argc, char *argv[])
         raw_input_disable(&rawin);
     }
     lulo_proc_snapshot_free(&proc_snap);
+    lulo_sched_snapshot_free(&sched_snap);
     lulo_tune_snapshot_free(&tune_snap);
     lulo_systemd_snapshot_free(&systemd_snap);
+    lulo_sched_backend_stop(&sched_backend);
     lulo_tune_backend_stop(&tune_backend);
     lulo_systemd_backend_stop(&systemd_backend);
     lulo_proc_state_cleanup(&proc_state);
     lulo_dizk_state_cleanup(&dizk_state);
+    lulo_sched_state_cleanup(&sched_state);
     lulo_tune_state_cleanup(&tune_state);
     lulo_systemd_state_cleanup(&systemd_state);
     notcurses_stop(ui.nc);

@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lulo_sched.h"
 #include "lulo_systemd.h"
 #include "lulo_tune.h"
 
@@ -15,6 +16,9 @@ enum {
     LULOD_REQ_TUNE_SAVE_SNAPSHOT = 5,
     LULOD_REQ_TUNE_SAVE_PRESET = 6,
     LULOD_REQ_TUNE_APPLY_SELECTED = 7,
+    LULOD_REQ_SCHED_FULL = 8,
+    LULOD_REQ_SCHED_ACTIVE = 9,
+    LULOD_REQ_SCHED_RELOAD = 10,
 };
 
 int lulod_socket_path(char *buf, size_t len);
@@ -33,5 +37,11 @@ int lulod_recv_tune_state(int fd, LuloTuneState *state);
 int lulod_recv_tune_request(int fd, uint32_t *type, LuloTuneState *state);
 int lulod_send_tune_response(int fd, int status, const char *err, const LuloTuneSnapshot *snap);
 int lulod_recv_tune_response(int fd, LuloTuneSnapshot *snap, char *err, size_t errlen);
+
+int lulod_send_sched_request(int fd, uint32_t type, const LuloSchedState *state);
+int lulod_recv_sched_state(int fd, LuloSchedState *state);
+int lulod_recv_sched_request(int fd, uint32_t *type, LuloSchedState *state);
+int lulod_send_sched_response(int fd, int status, const char *err, const LuloSchedSnapshot *snap);
+int lulod_recv_sched_response(int fd, LuloSchedSnapshot *snap, char *err, size_t errlen);
 
 #endif

@@ -623,6 +623,8 @@ static void fill_fs_rows(LuloDizkSnapshot *snap, const FsEntry *entries, int cou
         fmt_size(row->used, sizeof(row->used), entries[i].used);
         fmt_size(row->avail, sizeof(row->avail), entries[i].avail);
         fmt_size(row->total, sizeof(row->total), entries[i].total);
+        row->used_bytes = entries[i].used;
+        row->total_bytes = entries[i].total;
         row->pct = entries[i].pct;
     }
 }

@@ -14,6 +14,8 @@ typedef struct {
     char used[16];
     char avail[16];
     char total[16];
+    unsigned long long used_bytes;
+    unsigned long long total_bytes;
     int pct;
 } LuloDizkFsRow;
 

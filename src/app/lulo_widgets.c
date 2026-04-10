@@ -109,6 +109,41 @@ static void plane_clear_inner(struct ncplane *p, const Theme *theme, int rows, i
     }
 }
 
+static void format_bytes_local(unsigned long long bytes, char *buf, size_t len)
+{
+    const char *units[] = { "B", "KiB", "MiB", "GiB", "TiB", "PiB" };
+    double value = (double)bytes;
+    size_t unit = 0;
+
+    while (value >= 1024.0 && unit + 1 < sizeof(units) / sizeof(units[0])) {
+        value /= 1024.0;
+        unit++;
+    }
+    if (unit == 0) snprintf(buf, len, "%.0f %s", value, units[unit]);
+    else if (value >= 100.0) snprintf(buf, len, "%.0f %s", value, units[unit]);
+    else snprintf(buf, len, "%.1f %s", value, units[unit]);
+}
+
+static Rgb disk_fs_color(const Theme *theme, int idx)
+{
+    static const int palette[] = { 0, 1, 2, 4, 5, 3 };
+    int slot = palette[idx % (int)(sizeof(palette) / sizeof(palette[0]))];
+
+    return theme->mem_fill[slot];
+}
+
+static Rgb disk_total_fill(const Theme *theme)
+{
+    if (theme->mono) return theme->mem_fill[3];
+    return (Rgb){ 112, 82, 184 };
+}
+
+static Rgb disk_total_text(const Theme *theme)
+{
+    if (theme->mono) return theme->white;
+    return (Rgb){ 212, 188, 255 };
+}
+
 static void build_disk_widget_layout(const Ui *ui, DiskWidgetLayout *layout)
 {
     unsigned rows = 0;
@@ -219,24 +254,27 @@ int disk_visible_rows(const Ui *ui)
 
     if (!ui->disk) return 1;
     build_disk_widget_layout(ui, &layout);
-    return clamp_int(rect_inner_rows(&layout.fs), 1, 1024);
+    return clamp_int(rect_inner_rows(&layout.fs) - 1, 1, 1024);
 }
 
 static void render_disk_filesystems(struct ncplane *p, const Theme *theme, const LuloRect *rect,
                                     const LuloDizkSnapshot *snap, const LuloDizkState *state)
 {
     char rows_buf[48];
+    int total_row = 1;
     int visible_rows;
     int start;
     int dev_w;
     int mount_w;
     int value_w;
     int bar_w;
+    int pct_x;
+    int value_x;
 
     if (!rect_valid(rect)) return;
     draw_inner_box(p, theme, rect, theme->border_panel, " Filesystems ", theme->white);
 
-    visible_rows = rect_inner_rows(rect);
+    visible_rows = clamp_int(rect_inner_rows(rect) - total_row, 0, 1024);
     start = state ? clamp_int(state->scroll, 0, snap && snap->fs_count > visible_rows ? snap->fs_count - visible_rows : 0) : 0;
     if (snap && snap->fs_count > 0) {
         snprintf(rows_buf, sizeof(rows_buf), "%d-%d/%d",
@@ -261,29 +299,66 @@ static void render_disk_filesystems(struct ncplane *p, const Theme *theme, const
         bar_w = rect_inner_cols(rect) - dev_w - mount_w - value_w - 8;
     }
     if (bar_w < 8) bar_w = 8;
+    pct_x = rect->col + rect->width - value_w - 6;
+    value_x = rect->col + rect->width - value_w - 1;
+
+    if (snap && snap->fs_count > 0) {
+        unsigned long long total_used = 0;
+        unsigned long long total_size = 0;
+        int y = rect->row + 1;
+        int x = rect->col + 1;
+        int pct = 0;
+        char pctbuf[8];
+        char used_buf[20];
+        char total_buf[20];
+        char value[40];
+        int value_len;
+        Rgb total_fill = disk_total_fill(theme);
+        Rgb total_text = disk_total_text(theme);
+
+        for (int i = 0; i < snap->fs_count; i++) {
+            total_used += snap->filesystems[i].used_bytes;
+            total_size += snap->filesystems[i].total_bytes;
+        }
+        pct = total_size > 0 ? clamp_int((int)((total_used * 100ULL) / total_size), 0, 100) : 0;
+
+        plane_putn(p, y, x, total_text, theme->bg, "total", dev_w);
+        x += dev_w + 1;
+        plane_putn(p, y, x, total_text, theme->bg, "all mounts", mount_w);
+        x += mount_w + 1;
+        render_inline_meter(p, theme, y, x, bar_w, pct, total_fill);
+        snprintf(pctbuf, sizeof(pctbuf), "%3d%%", pct);
+        plane_putn(p, y, pct_x, total_text, theme->bg, pctbuf, 4);
+        format_bytes_local(total_used, used_buf, sizeof(used_buf));
+        format_bytes_local(total_size, total_buf, sizeof(total_buf));
+        snprintf(value, sizeof(value), "%s/%s", used_buf, total_buf);
+        value_len = (int)strlen(value);
+        plane_putn(p, y, value_x + value_w - value_len, total_text, theme->bg, value, value_len);
+    }
 
     for (int i = 0; i < visible_rows; i++) {
         int idx = start + i;
-        int y = rect->row + 1 + i;
+        int y = rect->row + 1 + total_row + i;
         int x = rect->col + 1;
         char pctbuf[8];
-        char value[32];
+        char value[40];
+        int value_len;
+        Rgb color;
 
         if (idx >= snap->fs_count) break;
-        plane_putn(p, y, x, theme->cyan, theme->bg, snap->filesystems[idx].device, dev_w);
+        color = disk_fs_color(theme, idx);
+        plane_putn(p, y, x, color, theme->bg, snap->filesystems[idx].device, dev_w);
         x += dev_w + 1;
         plane_putn(p, y, x, theme->white, theme->bg, snap->filesystems[idx].mount, mount_w);
         x += mount_w + 1;
-        render_inline_meter(p, theme, y, x, bar_w, snap->filesystems[idx].pct,
-                            disk_usage_fill(theme, snap->filesystems[idx].pct));
-        x += bar_w + 1;
+        render_inline_meter(p, theme, y, x, bar_w, snap->filesystems[idx].pct, color);
         snprintf(pctbuf, sizeof(pctbuf), "%3d%%", snap->filesystems[idx].pct);
-        plane_putn(p, y, x, disk_usage_text(theme, snap->filesystems[idx].pct), theme->bg, pctbuf, 4);
-        x += 5;
+        plane_putn(p, y, pct_x, color, theme->bg, pctbuf, 4);
         if (value_w >= 14) snprintf(value, sizeof(value), "%s/%s",
                                     snap->filesystems[idx].used, snap->filesystems[idx].total);
         else snprintf(value, sizeof(value), "%s", snap->filesystems[idx].used);
-        plane_putn(p, y, x, theme->white, theme->bg, value, value_w);
+        value_len = (int)strlen(value);
+        plane_putn(p, y, value_x + value_w - value_len, color, theme->bg, value, value_len);
     }
 }
 

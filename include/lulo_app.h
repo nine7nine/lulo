@@ -11,6 +11,8 @@
 #include "lulo_dizk.h"
 #include "lulo_model.h"
 #include "lulo_proc.h"
+#include "lulo_sched.h"
+#include "lulo_sched_backend.h"
 #include "lulo_systemd.h"
 #include "lulo_systemd_backend.h"
 #include "lulo_tune.h"
@@ -48,6 +50,7 @@ typedef struct {
 typedef enum {
     APP_PAGE_CPU = 0,
     APP_PAGE_DIZK,
+    APP_PAGE_SCHED,
     APP_PAGE_SYSTEMD,
     APP_PAGE_TUNE,
     APP_PAGE_COUNT
@@ -100,6 +103,7 @@ typedef struct {
     struct ncplane *mem;
     struct ncplane *proc;
     struct ncplane *disk;
+    struct ncplane *sched;
     struct ncplane *systemd;
     struct ncplane *tune;
     struct ncplane *load;
@@ -170,6 +174,7 @@ typedef enum {
     INPUT_SAVE_PRESET,
     INPUT_EDIT_SELECTED,
     INPUT_APPLY_SELECTED,
+    INPUT_RELOAD_PAGE,
     INPUT_RESIZE,
 } InputAction;
 
@@ -204,11 +209,14 @@ typedef struct {
     int need_cpu;
     int need_proc;
     int need_disk;
+    int need_sched;
     int need_systemd;
     int need_tune;
     int need_rebuild;
     int need_proc_refresh;
     int need_disk_refresh;
+    int need_sched_refresh;
+    int need_sched_reload;
     int need_systemd_refresh;
     int need_tune_refresh;
     int need_tune_refresh_full;
@@ -261,6 +269,17 @@ void render_inline_meter(struct ncplane *p, const Theme *theme, int y, int x, in
 int disk_visible_rows(const Ui *ui);
 void render_disk_widget(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state);
 void render_disk_status(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state);
+int sched_list_rows_visible(const Ui *ui, const LuloSchedState *state);
+int sched_preview_rows_visible(const Ui *ui, const LuloSchedState *state);
+void render_sched_widget(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedState *state);
+void render_sched_status(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedState *state,
+                         const LuloSchedBackendStatus *backend_status);
+int point_on_sched_view_tabs(Ui *ui, const LuloSchedState *state, int global_y, int global_x);
+int handle_sched_wheel_target(Ui *ui, LuloSchedState *state,
+                              RenderFlags *render, int global_y, int global_x);
+int handle_sched_click(Ui *ui, int global_y, int global_x,
+                       const LuloSchedSnapshot *snap, LuloSchedState *state,
+                       RenderFlags *render);
 int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state);
 int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state);
 void render_systemd_widget(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state);

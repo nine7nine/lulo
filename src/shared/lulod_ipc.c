@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_MAGIC 0x4c554c4fU
-#define LULOD_VERSION 4U
+#define LULOD_VERSION 7U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -251,6 +251,79 @@ static int deserialize_tune_state(int fd, LuloTuneState *state)
     return 0;
 }
 
+static int serialize_sched_state(int fd, const LuloSchedState *state)
+{
+    int32_t value = 0;
+
+    if (!state) {
+        LuloSchedState empty = {0};
+        return serialize_sched_state(fd, &empty);
+    }
+    value = (int32_t)state->view;
+    if (write_i32(fd, value) < 0) return -1;
+    if (write_i32(fd, state->focus_preview) < 0) return -1;
+    if (write_i32(fd, state->profile_cursor) < 0) return -1;
+    if (write_i32(fd, state->profile_selected) < 0) return -1;
+    if (write_i32(fd, state->profile_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->profile_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->rule_cursor) < 0) return -1;
+    if (write_i32(fd, state->rule_selected) < 0) return -1;
+    if (write_i32(fd, state->rule_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->rule_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->live_cursor) < 0) return -1;
+    if (write_i32(fd, state->live_selected) < 0) return -1;
+    if (write_i32(fd, state->live_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->live_detail_scroll) < 0) return -1;
+    if (write_string(fd, state->selected_profile) < 0) return -1;
+    if (write_string(fd, state->selected_rule) < 0) return -1;
+    if (write_i32(fd, state->selected_live_pid) < 0) return -1;
+    if (write_all(fd, &state->selected_live_start_time, sizeof(state->selected_live_start_time)) < 0) return -1;
+    return 0;
+}
+
+static int deserialize_sched_state(int fd, LuloSchedState *state)
+{
+    int32_t value = 0;
+
+    if (!state) return -1;
+    memset(state, 0, sizeof(*state));
+    state->selected_live_pid = -1;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->view = (LuloSchedView)value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->focus_preview = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->profile_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->profile_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->profile_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->profile_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->rule_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->live_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->live_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->live_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->live_detail_scroll = value;
+    if (read_string_fixed(fd, state->selected_profile, sizeof(state->selected_profile)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_rule, sizeof(state->selected_rule)) < 0) return -1;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->selected_live_pid = value;
+    if (read_all(fd, &state->selected_live_start_time, sizeof(state->selected_live_start_time)) < 0) return -1;
+    return 0;
+}
+
 static int serialize_snapshot(int fd, const LuloSystemdSnapshot *snap)
 {
     uint32_t count = 0;
@@ -337,6 +410,84 @@ static int serialize_tune_snapshot(int fd, const LuloTuneSnapshot *snap)
         if (write_string(fd, snap->presets[i].name) < 0) return -1;
         if (write_string(fd, snap->presets[i].created) < 0) return -1;
         if (write_i32(fd, snap->presets[i].item_count) < 0) return -1;
+    }
+
+    if (write_string(fd, snap->detail_title) < 0) return -1;
+    if (write_string(fd, snap->detail_status) < 0) return -1;
+    count = (uint32_t)snap->detail_line_count;
+    if (write_u32(fd, count) < 0) return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (write_string(fd, snap->detail_lines[i]) < 0) return -1;
+    }
+    return 0;
+}
+
+static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
+{
+    uint32_t count = 0;
+
+    if (!snap) return -1;
+    if (write_string(fd, snap->config_root) < 0) return -1;
+    if (write_i32(fd, snap->watcher_interval_ms) < 0) return -1;
+    if (write_i32(fd, snap->scan_generation) < 0) return -1;
+    if (write_i32(fd, snap->focus_enabled) < 0) return -1;
+    if (write_i32(fd, snap->focused_pid) < 0) return -1;
+    if (write_all(fd, &snap->focused_start_time, sizeof(snap->focused_start_time)) < 0) return -1;
+    if (write_string(fd, snap->focus_provider) < 0) return -1;
+    if (write_string(fd, snap->focus_profile) < 0) return -1;
+    if (write_string(fd, snap->background_profile) < 0) return -1;
+    if (write_string(fd, snap->focused_comm) < 0) return -1;
+    if (write_string(fd, snap->focused_exe) < 0) return -1;
+    if (write_string(fd, snap->focused_unit) < 0) return -1;
+    if (write_string(fd, snap->focused_slice) < 0) return -1;
+    if (write_string(fd, snap->focused_cgroup) < 0) return -1;
+
+    if (write_i32(fd, snap->profile_count) < 0) return -1;
+    for (int i = 0; i < snap->profile_count; i++) {
+        const LuloSchedProfileRow *row = &snap->profiles[i];
+
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_i32(fd, row->enabled) < 0) return -1;
+        if (write_i32(fd, row->has_nice) < 0) return -1;
+        if (write_i32(fd, row->nice) < 0) return -1;
+        if (write_i32(fd, row->has_policy) < 0) return -1;
+        if (write_i32(fd, row->policy) < 0) return -1;
+        if (write_i32(fd, row->has_rt_priority) < 0) return -1;
+        if (write_i32(fd, row->rt_priority) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->rule_count) < 0) return -1;
+    for (int i = 0; i < snap->rule_count; i++) {
+        const LuloSchedRuleRow *row = &snap->rules[i];
+
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_i32(fd, row->enabled) < 0) return -1;
+        if (write_i32(fd, row->exclude) < 0) return -1;
+        if (write_i32(fd, (int32_t)row->match_kind) < 0) return -1;
+        if (write_string(fd, row->pattern) < 0) return -1;
+        if (write_string(fd, row->profile) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->live_count) < 0) return -1;
+    for (int i = 0; i < snap->live_count; i++) {
+        const LuloSchedLiveRow *row = &snap->live[i];
+
+        if (write_i32(fd, row->pid) < 0) return -1;
+        if (write_all(fd, &row->start_time, sizeof(row->start_time)) < 0) return -1;
+        if (write_string(fd, row->comm) < 0) return -1;
+        if (write_string(fd, row->exe) < 0) return -1;
+        if (write_string(fd, row->unit) < 0) return -1;
+        if (write_string(fd, row->slice) < 0) return -1;
+        if (write_string(fd, row->cgroup) < 0) return -1;
+        if (write_string(fd, row->profile) < 0) return -1;
+        if (write_string(fd, row->rule) < 0) return -1;
+        if (write_i32(fd, row->policy) < 0) return -1;
+        if (write_i32(fd, row->rt_priority) < 0) return -1;
+        if (write_i32(fd, row->nice) < 0) return -1;
+        if (write_i32(fd, row->focused) < 0) return -1;
+        if (write_string(fd, row->status) < 0) return -1;
     }
 
     if (write_string(fd, snap->detail_title) < 0) return -1;
@@ -513,6 +664,136 @@ static int deserialize_tune_snapshot(int fd, LuloTuneSnapshot *snap)
 
 fail:
     lulo_tune_snapshot_free(snap);
+    return -1;
+}
+
+static int deserialize_sched_snapshot(int fd, LuloSchedSnapshot *snap)
+{
+    int32_t count = 0;
+    uint32_t lines = 0;
+    unsigned long long start_time = 0;
+
+    if (!snap) return -1;
+    memset(snap, 0, sizeof(*snap));
+
+    if (read_string_fixed(fd, snap->config_root, sizeof(snap->config_root)) < 0) goto fail;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->watcher_interval_ms = count;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->scan_generation = count;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->focus_enabled = count;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->focused_pid = count;
+    if (read_all(fd, &start_time, sizeof(start_time)) < 0) goto fail;
+    snap->focused_start_time = start_time;
+    if (read_string_fixed(fd, snap->focus_provider, sizeof(snap->focus_provider)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->focus_profile, sizeof(snap->focus_profile)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->background_profile, sizeof(snap->background_profile)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->focused_comm, sizeof(snap->focused_comm)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->focused_exe, sizeof(snap->focused_exe)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->focused_unit, sizeof(snap->focused_unit)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->focused_slice, sizeof(snap->focused_slice)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->focused_cgroup, sizeof(snap->focused_cgroup)) < 0) goto fail;
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->profiles = calloc((size_t)count, sizeof(*snap->profiles));
+        if (!snap->profiles) goto fail;
+    }
+    snap->profile_count = count;
+    for (int i = 0; i < snap->profile_count; i++) {
+        LuloSchedProfileRow *row = &snap->profiles[i];
+
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->enabled = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->has_nice = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->nice = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->has_policy = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->policy = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->has_rt_priority = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->rt_priority = count;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->rules = calloc((size_t)count, sizeof(*snap->rules));
+        if (!snap->rules) goto fail;
+    }
+    snap->rule_count = count;
+    for (int i = 0; i < snap->rule_count; i++) {
+        LuloSchedRuleRow *row = &snap->rules[i];
+
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->enabled = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->exclude = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->match_kind = (LuloSchedMatchKind)count;
+        if (read_string_fixed(fd, row->pattern, sizeof(row->pattern)) < 0) goto fail;
+        if (read_string_fixed(fd, row->profile, sizeof(row->profile)) < 0) goto fail;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->live = calloc((size_t)count, sizeof(*snap->live));
+        if (!snap->live) goto fail;
+    }
+    snap->live_count = count;
+    for (int i = 0; i < snap->live_count; i++) {
+        LuloSchedLiveRow *row = &snap->live[i];
+
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->pid = count;
+        if (read_all(fd, &row->start_time, sizeof(row->start_time)) < 0) goto fail;
+        if (read_string_fixed(fd, row->comm, sizeof(row->comm)) < 0) goto fail;
+        if (read_string_fixed(fd, row->exe, sizeof(row->exe)) < 0) goto fail;
+        if (read_string_fixed(fd, row->unit, sizeof(row->unit)) < 0) goto fail;
+        if (read_string_fixed(fd, row->slice, sizeof(row->slice)) < 0) goto fail;
+        if (read_string_fixed(fd, row->cgroup, sizeof(row->cgroup)) < 0) goto fail;
+        if (read_string_fixed(fd, row->profile, sizeof(row->profile)) < 0) goto fail;
+        if (read_string_fixed(fd, row->rule, sizeof(row->rule)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->policy = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->rt_priority = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->nice = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->focused = count;
+        if (read_string_fixed(fd, row->status, sizeof(row->status)) < 0) goto fail;
+    }
+
+    if (read_string_fixed(fd, snap->detail_title, sizeof(snap->detail_title)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->detail_status, sizeof(snap->detail_status)) < 0) goto fail;
+    if (read_u32(fd, &lines) < 0) goto fail;
+    for (uint32_t i = 0; i < lines; i++) {
+        char *line = NULL;
+
+        if (read_string_dyn(fd, &line) < 0) goto fail;
+        if (append_owned_line(&snap->detail_lines, &snap->detail_line_count, line) < 0) {
+            free(line);
+            goto fail;
+        }
+        free(line);
+    }
+    return 0;
+
+fail:
+    lulo_sched_snapshot_free(snap);
     return -1;
 }
 
@@ -696,4 +977,53 @@ int lulod_recv_tune_response(int fd, LuloTuneSnapshot *snap, char *err, size_t e
         return -1;
     }
     return deserialize_tune_snapshot(fd, snap);
+}
+
+int lulod_send_sched_request(int fd, uint32_t type, const LuloSchedState *state)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_u32(fd, type) < 0) return -1;
+    return serialize_sched_state(fd, state);
+}
+
+int lulod_recv_sched_state(int fd, LuloSchedState *state)
+{
+    return deserialize_sched_state(fd, state);
+}
+
+int lulod_recv_sched_request(int fd, uint32_t *type, LuloSchedState *state)
+{
+    if (lulod_recv_request_header(fd, type) < 0) return -1;
+    return deserialize_sched_state(fd, state);
+}
+
+int lulod_send_sched_response(int fd, int status, const char *err, const LuloSchedSnapshot *snap)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_i32(fd, status) < 0) return -1;
+    if (status < 0) return write_string(fd, err ? err : "request failed");
+    return serialize_sched_snapshot(fd, snap);
+}
+
+int lulod_recv_sched_response(int fd, LuloSchedSnapshot *snap, char *err, size_t errlen)
+{
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    int32_t status = 0;
+    char *msg = NULL;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (read_u32(fd, &magic) < 0) return -1;
+    if (read_u32(fd, &version) < 0) return -1;
+    if (read_i32(fd, &status) < 0) return -1;
+    if (magic != LULOD_MAGIC || version != LULOD_VERSION) return -1;
+    if (status < 0) {
+        if (read_string_dyn(fd, &msg) < 0) return -1;
+        if (err && errlen > 0) snprintf(err, errlen, "%s", msg ? msg : "request failed");
+        free(msg);
+        return -1;
+    }
+    return deserialize_sched_snapshot(fd, snap);
 }

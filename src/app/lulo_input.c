@@ -221,8 +221,9 @@ static InputAction decode_key_byte(unsigned char ch)
     case 'P':
         return INPUT_TOGGLE_PROC_CPU;
     case 'r':
-    case 'R':
         return INPUT_CYCLE_PROC_REFRESH;
+    case 'R':
+        return INPUT_RELOAD_PAGE;
     case 'f':
     case 'F':
         return INPUT_TOGGLE_FOCUS;
@@ -419,7 +420,7 @@ int raw_input_decode_one(RawInput *in, DecodedInput *out)
         if (raw_input_decode_csi(in, out)) return 1;
         if (in->len == 1) {
             if (in->first_ms > 0 && mono_ms_now_local() - in->first_ms >= 80) {
-                out->action = INPUT_QUIT;
+                out->action = INPUT_NONE;
                 out->cancel = 1;
                 raw_input_consume(in, 1);
                 return 1;
@@ -454,7 +455,7 @@ int raw_input_decode_one(RawInput *in, DecodedInput *out)
             return 1;
         }
         if (in->buf[1] != '[') {
-            out->action = INPUT_QUIT;
+            out->action = INPUT_NONE;
             out->cancel = 1;
             raw_input_consume(in, 1);
             return 1;
@@ -499,6 +500,8 @@ InputAction decode_notcurses_input(uint32_t id)
         return INPUT_TOGGLE_PROC_CPU;
     case 'r':
         return INPUT_CYCLE_PROC_REFRESH;
+    case 'R':
+        return INPUT_RELOAD_PAGE;
     case 'f':
         return INPUT_TOGGLE_FOCUS;
     case 'k':

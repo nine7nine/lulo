@@ -2,7 +2,6 @@
 #define LULO_APP_H
 
 #include <notcurses/notcurses.h>
-#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -222,25 +221,6 @@ typedef struct {
     int proc_prev_scroll;
 } RenderFlags;
 
-typedef struct NcQueuedInput {
-    uint32_t id;
-    ncinput ni;
-    struct NcQueuedInput *next;
-} NcQueuedInput;
-
-typedef struct {
-    pthread_t tid;
-    pthread_mutex_t lock;
-    int pipefd[2];
-    int running;
-    int started;
-    int notified;
-    struct notcurses *nc;
-    DebugLog *dlog;
-    NcQueuedInput *head;
-    NcQueuedInput **tail;
-} NcInputThread;
-
 const char *input_backend_name(InputBackend backend);
 int parse_input_backend(const char *text, InputBackend *backend);
 InputBackend auto_input_backend(void);
@@ -261,47 +241,57 @@ int raw_input_enable(RawInput *in);
 void raw_input_disable(RawInput *in);
 ssize_t raw_input_fill(RawInput *in);
 int raw_input_decode_one(RawInput *in, DecodedInput *out);
-
-int nc_input_start(NcInputThread *ctx, struct notcurses *nc, DebugLog *dlog);
-void nc_input_begin_drain(NcInputThread *ctx);
-void nc_input_stop(NcInputThread *ctx);
-int nc_input_pop(NcInputThread *ctx, uint32_t *id, ncinput *ni);
 InputAction decode_notcurses_input(uint32_t id);
 
+void plane_reset(struct ncplane *p, const Theme *theme);
+void plane_putn(struct ncplane *p, int y, int x, Rgb fg, Rgb bg, const char *text, int width);
+void plane_fill(struct ncplane *p, int y, int x, int width, Rgb fg, Rgb bg);
+int clamp_int(int value, int lo, int hi);
+int rect_valid(const LuloRect *rect);
+int rect_inner_rows(const LuloRect *rect);
+int rect_inner_cols(const LuloRect *rect);
+void draw_inner_box(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                    Rgb border, const char *title, Rgb title_color);
+void draw_inner_meta(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                     const char *text, Rgb fg);
+Rgb disk_usage_fill(const Theme *theme, int pct);
+Rgb disk_usage_text(const Theme *theme, int pct);
+void render_inline_meter(struct ncplane *p, const Theme *theme, int y, int x, int width,
+                         int pct, Rgb fill);
 int disk_visible_rows(const Ui *ui);
-int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state);
-int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state);
-int tune_list_rows_visible(const Ui *ui, const LuloTuneState *state);
-int tune_preview_rows_visible(const Ui *ui, const LuloTuneState *state);
-
 void render_disk_widget(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state);
 void render_disk_status(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state);
+int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state);
+int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state);
 void render_systemd_widget(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state);
 void render_systemd_status(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state,
                            const LuloSystemdBackendStatus *backend_status);
-void render_tune_widget(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state);
-void render_tune_status(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
-                        const LuloTuneBackendStatus *backend_status);
+int point_on_systemd_view_tabs(Ui *ui, const LuloSystemdState *state, int global_y, int global_x);
 int handle_systemd_click(Ui *ui, int global_y, int global_x,
                          const LuloSystemdSnapshot *snap, LuloSystemdState *state,
                          RenderFlags *render);
+int handle_systemd_wheel_target(Ui *ui, LuloSystemdState *state,
+                                RenderFlags *render, int global_y, int global_x);
+void tune_status_set(AppState *app, const char *fmt, ...);
+const char *tune_status_current(AppState *app);
+void tune_edit_prompt_refresh(AppState *app);
+void tune_edit_prompt_format(const AppState *app, char *buf, size_t len);
+int tune_list_rows_visible(const Ui *ui, const LuloTuneState *state);
+int tune_preview_rows_visible(const Ui *ui, const LuloTuneState *state);
+const LuloTuneRow *active_tune_explore_row(const LuloTuneSnapshot *snap, const LuloTuneState *state);
+int start_tune_edit(AppState *app, const LuloTuneSnapshot *snap, const LuloTuneState *state);
+int active_tune_row_is_staged(const LuloTuneSnapshot *snap, const LuloTuneState *state);
+int handle_tune_edit_input(AppState *app, const DecodedInput *in,
+                           LuloTuneState *tune_state, RenderFlags *render);
+void render_tune_widget(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                        const AppState *app);
+void render_tune_status(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                        const LuloTuneBackendStatus *backend_status, AppState *app);
+int point_on_tune_view_tabs(Ui *ui, const LuloTuneState *state, int global_y, int global_x);
+int handle_tune_wheel_target(Ui *ui, LuloTuneState *state,
+                             RenderFlags *render, int global_y, int global_x);
 int handle_tune_click(Ui *ui, int global_y, int global_x,
                       const LuloTuneSnapshot *snap, LuloTuneState *state,
                       RenderFlags *render);
-void update_systemd_render_flags(RenderFlags *render, const LuloSystemdState *state,
-                                 int prev_cursor, int prev_selected,
-                                 int prev_list_scroll, int prev_file_scroll,
-                                 int prev_config_cursor, int prev_config_selected,
-                                 int prev_config_list_scroll, int prev_config_file_scroll,
-                                 int prev_focus);
-void update_tune_render_flags(RenderFlags *render, const LuloTuneState *state,
-                              int prev_view, const char *prev_browse_path,
-                              int prev_cursor, int prev_selected,
-                              int prev_list_scroll, int prev_detail_scroll,
-                              int prev_snapshot_cursor, int prev_snapshot_selected,
-                              int prev_snapshot_list_scroll, int prev_snapshot_detail_scroll,
-                              int prev_preset_cursor, int prev_preset_selected,
-                              int prev_preset_list_scroll, int prev_preset_detail_scroll,
-                              int prev_focus);
 
 #endif

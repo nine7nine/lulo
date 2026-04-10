@@ -16,6 +16,7 @@ static int helper_binary_path(char *buf, size_t len)
     char exe[PATH_MAX];
     ssize_t n;
     char *slash;
+    size_t exe_len;
 
     n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (n < 0) return -1;
@@ -23,8 +24,10 @@ static int helper_binary_path(char *buf, size_t len)
     slash = strrchr(exe, '/');
     if (!slash) return -1;
     slash[1] = '\0';
-    if (strlen(exe) + strlen("lulo-admin") + 1 > len) return -1;
-    snprintf(buf, len, "%slulo-admin", exe);
+    exe_len = strlen(exe);
+    if (exe_len + sizeof("lulo-admin") > len) return -1;
+    memcpy(buf, exe, exe_len);
+    memcpy(buf + exe_len, "lulo-admin", sizeof("lulo-admin"));
     return 0;
 }
 
@@ -52,14 +55,25 @@ static int read_error_pipe(int fd, char *err, size_t errlen)
     return 0;
 }
 
+static void close_if_open(int *fd)
+{
+    if (*fd >= 0) {
+        close(*fd);
+        *fd = -1;
+    }
+}
+
 int lulod_admin_apply_tune_plan(const LuloAdminTunePlan *plan, char *err, size_t errlen)
 {
     char helper[PATH_MAX];
-    int stdin_pipe[2] = { -1, -1 };
-    int stderr_pipe[2] = { -1, -1 };
+    int stdin_read_fd = -1;
+    int stdin_write_fd = -1;
+    int stderr_read_fd = -1;
+    int stderr_write_fd = -1;
     pid_t pid;
     int status = 0;
     FILE *fp = NULL;
+    int fds[2];
 
     if (err && errlen > 0) err[0] = '\0';
     if (!plan || plan->count <= 0) {
@@ -70,10 +84,18 @@ int lulod_admin_apply_tune_plan(const LuloAdminTunePlan *plan, char *err, size_t
         if (err && errlen > 0) snprintf(err, errlen, "failed to resolve lulo-admin path");
         return -1;
     }
-    if (pipe2(stdin_pipe, O_CLOEXEC) < 0 || pipe2(stderr_pipe, O_CLOEXEC) < 0) {
+    if (pipe2(fds, O_CLOEXEC) < 0) {
         if (err && errlen > 0) snprintf(err, errlen, "failed to create helper pipes");
         goto fail;
     }
+    stdin_read_fd = fds[0];
+    stdin_write_fd = fds[1];
+    if (pipe2(fds, O_CLOEXEC) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "failed to create helper pipes");
+        goto fail;
+    }
+    stderr_read_fd = fds[0];
+    stderr_write_fd = fds[1];
 
     pid = fork();
     if (pid < 0) {
@@ -81,43 +103,39 @@ int lulod_admin_apply_tune_plan(const LuloAdminTunePlan *plan, char *err, size_t
         goto fail;
     }
     if (pid == 0) {
-        dup2(stdin_pipe[0], STDIN_FILENO);
-        dup2(stderr_pipe[1], STDERR_FILENO);
-        dup2(stderr_pipe[1], STDOUT_FILENO);
-        close(stdin_pipe[0]);
-        close(stdin_pipe[1]);
-        close(stderr_pipe[0]);
-        close(stderr_pipe[1]);
+        dup2(stdin_read_fd, STDIN_FILENO);
+        dup2(stderr_write_fd, STDERR_FILENO);
+        dup2(stderr_write_fd, STDOUT_FILENO);
+        close_if_open(&stdin_read_fd);
+        close_if_open(&stdin_write_fd);
+        close_if_open(&stderr_read_fd);
+        close_if_open(&stderr_write_fd);
         execlp("pkexec", "pkexec", helper, "apply-tune", (char *)NULL);
         _exit(127);
     }
 
-    close(stdin_pipe[0]);
-    stdin_pipe[0] = -1;
-    close(stderr_pipe[1]);
-    stderr_pipe[1] = -1;
+    close_if_open(&stdin_read_fd);
+    close_if_open(&stderr_write_fd);
 
-    fp = fdopen(stdin_pipe[1], "w");
+    fp = fdopen(stdin_write_fd, "w");
     if (!fp) {
         if (err && errlen > 0) snprintf(err, errlen, "failed to open helper stdin");
-        close(stdin_pipe[1]);
-        stdin_pipe[1] = -1;
+        close_if_open(&stdin_write_fd);
         goto wait_child;
     }
     if (lulo_admin_tune_plan_write_stream(fp, plan, err, errlen) < 0) {
         fclose(fp);
         fp = NULL;
-        stdin_pipe[1] = -1;
+        stdin_write_fd = -1;
         goto wait_child;
     }
     fclose(fp);
     fp = NULL;
-    stdin_pipe[1] = -1;
+    stdin_write_fd = -1;
 
 wait_child:
-    read_error_pipe(stderr_pipe[0], err, errlen);
-    close(stderr_pipe[0]);
-    stderr_pipe[0] = -1;
+    read_error_pipe(stderr_read_fd, err, errlen);
+    close_if_open(&stderr_read_fd);
     while (waitpid(pid, &status, 0) < 0) {
         if (errno != EINTR) break;
     }
@@ -129,9 +147,9 @@ wait_child:
     return -1;
 
 fail:
-    if (stdin_pipe[0] >= 0) close(stdin_pipe[0]);
-    if (stdin_pipe[1] >= 0) close(stdin_pipe[1]);
-    if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
-    if (stderr_pipe[1] >= 0) close(stderr_pipe[1]);
+    close_if_open(&stdin_read_fd);
+    close_if_open(&stdin_write_fd);
+    close_if_open(&stderr_read_fd);
+    close_if_open(&stderr_write_fd);
     return -1;
 }

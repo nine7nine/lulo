@@ -102,7 +102,8 @@ static int append_config_row(LuloSystemdSnapshot *snap, const char *path, const 
     row = &snap->configs[snap->config_count++];
     memset(row, 0, sizeof(*row));
     snprintf(row->path, sizeof(row->path), "%s", path ? path : "");
-    snprintf(row->name, sizeof(row->name), "%s", name ? name : row->path);
+    snprintf(row->name, sizeof(row->name), "%.*s",
+             (int)sizeof(row->name) - 1, name ? name : row->path);
     return snap->config_count - 1;
 }
 

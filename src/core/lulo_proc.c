@@ -771,7 +771,16 @@ static int flatten_node_rows(const ProcNodeList *nodes, const LuloProcState *sta
     row.label_prefix_len = (int)strlen(prefix);
     row.label_prefix_cols = prefix_cols;
     snprintf(row.user, sizeof(row.user), "%s", node.user);
-    snprintf(row.label, sizeof(row.label), "%s%s", prefix, node.command);
+    {
+        int prefix_len = (int)strlen(prefix);
+        int cmd_len;
+
+        if (prefix_len > (int)sizeof(row.label) - 1) prefix_len = (int)sizeof(row.label) - 1;
+        cmd_len = (int)sizeof(row.label) - 1 - prefix_len;
+        if (cmd_len < 0) cmd_len = 0;
+        snprintf(row.label, sizeof(row.label), "%.*s%.*s",
+                 prefix_len, prefix, cmd_len, node.command);
+    }
     if (append_row(rows, &row) < 0) return -1;
 
     if (state && state->parents_only) {

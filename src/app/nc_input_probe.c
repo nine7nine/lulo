@@ -18,7 +18,7 @@ int main(void)
     };
 
     setlocale(LC_ALL, "");
-    nc = notcurses_init(&opts, NULL);
+    nc = notcurses_core_init(&opts, NULL);
     if (!nc) {
         fprintf(stderr, "init failed\n");
         if (log) fclose(log);

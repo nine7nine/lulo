@@ -37,6 +37,7 @@ static int lulod_binary_path(char *buf, size_t len)
     char exe[PATH_MAX];
     ssize_t n;
     char *slash;
+    size_t exe_len;
 
     n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (n < 0) return -1;
@@ -44,8 +45,10 @@ static int lulod_binary_path(char *buf, size_t len)
     slash = strrchr(exe, '/');
     if (!slash) return -1;
     slash[1] = '\0';
-    if (strlen(exe) + strlen("lulod") + 1 > len) return -1;
-    snprintf(buf, len, "%slulod", exe);
+    exe_len = strlen(exe);
+    if (exe_len + sizeof("lulod") > len) return -1;
+    memcpy(buf, exe, exe_len);
+    memcpy(buf + exe_len, "lulod", sizeof("lulod"));
     return 0;
 }
 

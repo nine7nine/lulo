@@ -22,261 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "lulo_model.h"
-#include "lulo_dizk.h"
-#include "lulo_proc.h"
-#include "lulo_systemd.h"
-#include "lulo_systemd_backend.h"
-#include "lulo_tune.h"
-#include "lulo_tune_backend.h"
-
-typedef struct {
-    unsigned r;
-    unsigned g;
-    unsigned b;
-} Rgb;
-
-typedef struct {
-    int mono;
-    Rgb bg;
-    Rgb fg;
-    Rgb dim;
-    Rgb cyan;
-    Rgb white;
-    Rgb blue;
-    Rgb green;
-    Rgb yellow;
-    Rgb orange;
-    Rgb red;
-    Rgb border_header;
-    Rgb border_frame;
-    Rgb border_panel;
-    Rgb branch;
-    Rgb select_bg;
-    Rgb select_fg;
-    Rgb mem_free_bg;
-    Rgb mem_fill[6];
-    Rgb mem_text[6];
-} Theme;
-
-typedef enum {
-    APP_PAGE_CPU = 0,
-    APP_PAGE_DIZK,
-    APP_PAGE_SYSTEMD,
-    APP_PAGE_TUNE,
-    APP_PAGE_COUNT
-} AppPage;
-
-typedef struct {
-    int visible;
-    int x;
-    int width;
-    LuloProcSortKey sort_key;
-} ProcHeaderHit;
-
-typedef struct {
-    int inner_w;
-    int show_user;
-    int show_mem;
-    int show_time;
-    int pid_w;
-    int user_w;
-    int policy_w;
-    int prio_w;
-    int nice_w;
-    int cpu_w;
-    int mem_w;
-    int time_w;
-    int cmd_w;
-    int body_x;
-    int body_y;
-    int body_rows;
-    int controls_visible;
-    int collapse_all_x;
-    int collapse_all_w;
-    int expand_all_x;
-    int expand_all_w;
-    ProcHeaderHit headers[LULO_PROC_SORT_COUNT];
-} ProcTableLayout;
-
-typedef struct {
-    int x;
-    int width;
-} TabHit;
-
-typedef struct {
-    struct notcurses *nc;
-    struct ncplane *std;
-    struct ncplane *header;
-    struct ncplane *tabs;
-    struct ncplane *top;
-    struct ncplane *cpu;
-    struct ncplane *mem;
-    struct ncplane *proc;
-    struct ncplane *disk;
-    struct ncplane *systemd;
-    struct ncplane *tune;
-    struct ncplane *load;
-    struct ncplane *footer;
-    TopLayout lo;
-    int term_h;
-    int term_w;
-    const Theme *theme;
-    ProcTableLayout proc_table;
-    TabHit tab_hits[APP_PAGE_COUNT];
-} Ui;
-
-typedef struct {
-    AppPage active_page;
-    int proc_refresh_ms;
-    LuloProcCpuMode proc_cpu_mode;
-    int last_scroll_action;
-    long long last_scroll_ms;
-    int scroll_streak;
-    char status[160];
-    long long status_until_ms;
-    char tune_status[160];
-    long long tune_status_until_ms;
-    int tune_edit_active;
-    char tune_edit_path[320];
-    char tune_edit_value[192];
-    int tune_edit_len;
-    char tune_edit_prompt[320];
-} AppState;
-
-typedef struct {
-    int enabled;
-    FILE *fp;
-} DebugLog;
-
-typedef struct {
-    int active;
-    struct termios old_tc;
-    unsigned char buf[512];
-    size_t len;
-    long long first_ms;
-} RawInput;
-
-typedef enum {
-    INPUT_NONE = 0,
-    INPUT_QUIT,
-    INPUT_SAMPLE_FASTER,
-    INPUT_SAMPLE_SLOWER,
-    INPUT_TOGGLE_PROC_CPU,
-    INPUT_CYCLE_PROC_REFRESH,
-    INPUT_TOGGLE_FOCUS,
-    INPUT_SCROLL_UP,
-    INPUT_SCROLL_DOWN,
-    INPUT_PAGE_UP,
-    INPUT_PAGE_DOWN,
-    INPUT_HOME,
-    INPUT_END,
-    INPUT_TAB_NEXT,
-    INPUT_TAB_PREV,
-    INPUT_VIEW_NEXT,
-    INPUT_VIEW_PREV,
-    INPUT_TOGGLE_BRANCH,
-    INPUT_COLLAPSE_ALL,
-    INPUT_EXPAND_ALL,
-    INPUT_SIGNAL_TERM,
-    INPUT_SIGNAL_KILL,
-    INPUT_SAVE_SNAPSHOT,
-    INPUT_SAVE_PRESET,
-    INPUT_EDIT_SELECTED,
-    INPUT_APPLY_SELECTED,
-    INPUT_RESIZE,
-} InputAction;
-
-typedef struct {
-    InputAction action;
-    int mouse_press;
-    int mouse_release;
-    int mouse_wheel;
-    int key_repeat;
-    int text_len;
-    int backspace;
-    int submit;
-    int cancel;
-    char text[16];
-    int mouse_x;
-    int mouse_y;
-    int mouse_button;
-} DecodedInput;
-
-typedef enum {
-    INPUT_BACKEND_AUTO = 0,
-    INPUT_BACKEND_NOTCURSES,
-    INPUT_BACKEND_RAW,
-} InputBackend;
-
-typedef struct {
-    int need_render;
-    int need_tabs;
-    int need_footer;
-    int need_load;
-    int need_header;
-    int need_cpu;
-    int need_proc;
-    int need_disk;
-    int need_systemd;
-    int need_tune;
-    int need_rebuild;
-    int need_proc_refresh;
-    int need_disk_refresh;
-    int need_systemd_refresh;
-    int need_tune_refresh;
-    int need_tune_refresh_full;
-    int need_tune_save_snapshot;
-    int need_tune_save_preset;
-    int need_tune_apply_selected;
-    int need_proc_cursor_only;
-    int need_proc_body_only;
-    int proc_prev_selected;
-    int proc_prev_scroll;
-} RenderFlags;
-
-typedef struct NcQueuedInput {
-    uint32_t id;
-    ncinput ni;
-    struct NcQueuedInput *next;
-} NcQueuedInput;
-
-typedef struct {
-    pthread_t tid;
-    pthread_mutex_t lock;
-    int pipefd[2];
-    int running;
-    int started;
-    int notified;
-    struct notcurses *nc;
-    DebugLog *dlog;
-    NcQueuedInput *head;
-    NcQueuedInput **tail;
-} NcInputThread;
-
-const char *input_backend_name(InputBackend backend);
-int parse_input_backend(const char *text, InputBackend *backend);
-InputBackend auto_input_backend(void);
-void debug_log_open(DebugLog *log);
-void debug_log_close(DebugLog *log);
-void debug_log_stage(DebugLog *log, const char *stage);
-void debug_log_errno(DebugLog *log, const char *tag);
-void debug_log_poll(DebugLog *log, const char *tag, int fd, int revents);
-void debug_log_message(DebugLog *log, const char *tag, const char *value);
-void debug_log_nc_event(DebugLog *log, const char *tag, uint32_t id, const ncinput *ni);
-void debug_log_bytes(DebugLog *log, const char *tag, const unsigned char *buf, size_t len);
-void debug_log_action(DebugLog *log, const char *tag, const DecodedInput *in);
-void terminal_mouse_enable(void);
-void terminal_mouse_disable(void);
-int raw_input_enable(RawInput *in);
-void raw_input_disable(RawInput *in);
-ssize_t raw_input_fill(RawInput *in);
-int raw_input_decode_one(RawInput *in, DecodedInput *out);
-int nc_input_start(NcInputThread *ctx, struct notcurses *nc, DebugLog *dlog);
-void nc_input_begin_drain(NcInputThread *ctx);
-void nc_input_stop(NcInputThread *ctx);
-int nc_input_pop(NcInputThread *ctx, uint32_t *id, ncinput *ni);
-InputAction decode_notcurses_input(uint32_t id);
+#include "lulo_app.h"
 
 static const Theme theme_color = {
     .mono = 0,
@@ -376,13 +122,13 @@ static void plane_color(struct ncplane *p, Rgb fg, Rgb bg)
     ncplane_set_bg_rgb8(p, bg.r, bg.g, bg.b);
 }
 
-static void plane_reset(struct ncplane *p, const Theme *theme)
+void plane_reset(struct ncplane *p, const Theme *theme)
 {
     ncplane_set_base(p, " ", 0, rgb_channels(theme->fg, theme->bg));
     ncplane_erase(p);
 }
 
-static void plane_putn(struct ncplane *p, int y, int x, Rgb fg, Rgb bg, const char *text, int width)
+void plane_putn(struct ncplane *p, int y, int x, Rgb fg, Rgb bg, const char *text, int width)
 {
     char buf[1024];
     int n;
@@ -397,7 +143,7 @@ static void plane_putn(struct ncplane *p, int y, int x, Rgb fg, Rgb bg, const ch
     ncplane_putstr_yx(p, y, x, buf);
 }
 
-static void plane_fill(struct ncplane *p, int y, int x, int width, Rgb fg, Rgb bg)
+void plane_fill(struct ncplane *p, int y, int x, int width, Rgb fg, Rgb bg)
 {
     char spaces[128];
 
@@ -459,7 +205,7 @@ static void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 }
 
-static int clamp_int(int value, int lo, int hi)
+int clamp_int(int value, int lo, int hi)
 {
     if (value < lo) return lo;
     if (value > hi) return hi;
@@ -546,7 +292,7 @@ static void app_status_set(AppState *app, const char *fmt, ...)
     app->status_until_ms = mono_ms_now() + 2500;
 }
 
-static void tune_status_set(AppState *app, const char *fmt, ...)
+void tune_status_set(AppState *app, const char *fmt, ...)
 {
     va_list ap;
 
@@ -557,7 +303,7 @@ static void tune_status_set(AppState *app, const char *fmt, ...)
     app->tune_status_until_ms = mono_ms_now() + 2500;
 }
 
-static const char *tune_status_current(AppState *app)
+const char *tune_status_current(AppState *app)
 {
     if (!app || !app->tune_status[0]) return NULL;
     if (mono_ms_now() > app->tune_status_until_ms) {
@@ -568,35 +314,43 @@ static const char *tune_status_current(AppState *app)
     return app->tune_status;
 }
 
-static void tune_edit_prompt_refresh(AppState *app)
+void tune_edit_prompt_refresh(AppState *app)
 {
-    const char *label;
+    const char *name;
     const char *slash;
+    int label_len;
     int max_value_len;
 
     if (!app || !app->tune_edit_active) return;
     slash = strrchr(app->tune_edit_path, '/');
-    label = slash ? slash + 1 : app->tune_edit_path;
-    max_value_len = (int)sizeof(app->tune_edit_prompt) - 12 - (int)strlen(label && *label ? label : "value");
+    name = slash ? slash + 1 : app->tune_edit_path;
+    if (!name || !*name) name = "value";
+    label_len = (int)strlen(name);
+    if (label_len > 96) label_len = 96;
+    max_value_len = (int)sizeof(app->tune_edit_prompt) - 9 - label_len;
     if (max_value_len < 0) max_value_len = 0;
     snprintf(app->tune_edit_prompt, sizeof(app->tune_edit_prompt),
-             "edit %s = %.*s", label && *label ? label : "value", max_value_len, app->tune_edit_value);
+             "edit %.*s = %.*s", label_len, name, max_value_len, app->tune_edit_value);
 }
 
-static void tune_edit_prompt_format(const AppState *app, char *buf, size_t len)
+void tune_edit_prompt_format(const AppState *app, char *buf, size_t len)
 {
-    const char *label;
+    const char *name;
     const char *slash;
+    int label_len;
     int max_value_len;
 
     if (!buf || len == 0) return;
     buf[0] = '\0';
     if (!app || !app->tune_edit_active) return;
     slash = strrchr(app->tune_edit_path, '/');
-    label = slash ? slash + 1 : app->tune_edit_path;
-    max_value_len = (int)len - 12 - (int)strlen(label && *label ? label : "value");
+    name = slash ? slash + 1 : app->tune_edit_path;
+    if (!name || !*name) name = "value";
+    label_len = (int)strlen(name);
+    if (label_len > 96) label_len = 96;
+    max_value_len = (int)len - 9 - label_len;
     if (max_value_len < 0) max_value_len = 0;
-    snprintf(buf, len, "edit %s = %.*s", label && *label ? label : "value", max_value_len, app->tune_edit_value);
+    snprintf(buf, len, "edit %.*s = %.*s", label_len, name, max_value_len, app->tune_edit_value);
 }
 
 static const char *app_status_current(AppState *app)
@@ -1303,13 +1057,20 @@ static void render_process_count(Ui *ui, const LuloProcSnapshot *snap, const Lul
     int field_w;
     int rows_x;
     char rows_buf[32];
+    char core_buf[24];
+    int text_len;
+    int pad;
 
     if (!ui->proc || !snap || snap->count <= 0 || !state) return;
     count_digits = clamp_int(digits_int(snap->count), 1, 9);
     field_w = count_digits * 2 + 1;
     rows_x = ui->lo.proc.width - field_w - 2;
     if (rows_x < 2) return;
-    snprintf(rows_buf, sizeof(rows_buf), "%*d/%d", count_digits, state->selected + 1, snap->count);
+    snprintf(core_buf, sizeof(core_buf), "%d/%d", state->selected + 1, snap->count);
+    text_len = (int)strlen(core_buf);
+    pad = field_w - text_len;
+    if (pad < 0) pad = 0;
+    snprintf(rows_buf, sizeof(rows_buf), "%*s%s", pad, "", core_buf);
     plane_putn(ui->proc, 0, rows_x, ui->theme->dim, ui->theme->bg, rows_buf, field_w);
 }
 
@@ -1542,1210 +1303,6 @@ static void render_process_cursor_only(Ui *ui, const LuloProcSnapshot *snap, con
     }
 }
 
-typedef struct {
-    LuloRect fs;
-    LuloRect dev;
-    LuloRect io;
-    LuloRect queue;
-    int show_dev;
-    int show_io;
-    int show_queue;
-} DiskWidgetLayout;
-
-static int rect_valid(const LuloRect *rect)
-{
-    return rect && rect->height >= 3 && rect->width >= 12;
-}
-
-static int rect_inner_rows(const LuloRect *rect)
-{
-    if (!rect_valid(rect)) return 0;
-    return rect->height - 2;
-}
-
-static int rect_inner_cols(const LuloRect *rect)
-{
-    if (!rect_valid(rect)) return 0;
-    return rect->width - 2;
-}
-
-static void draw_inner_box(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                           Rgb border, const char *title, Rgb title_color)
-{
-    if (!rect_valid(rect)) return;
-    ncplane_cursor_move_yx(p, rect->row, rect->col);
-    ncplane_rounded_box_sized(p, 0, rgb_channels(border, theme->bg),
-                              (unsigned)rect->height, (unsigned)rect->width, 0);
-    if (title && *title) {
-        int max_title = rect->width - 6;
-        if (max_title > 0) {
-            plane_putn(p, rect->row, rect->col + 2, title_color, theme->bg, title, max_title);
-        }
-    }
-}
-
-static void draw_inner_meta(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                            const char *text, Rgb fg)
-{
-    int len;
-    int x;
-
-    if (!rect_valid(rect) || !text || !*text) return;
-    len = (int)strlen(text);
-    x = rect->col + rect->width - len - 2;
-    if (x <= rect->col + 2) return;
-    plane_putn(p, rect->row, x, fg, theme->bg, text, len);
-}
-
-static Rgb disk_usage_fill(const Theme *theme, int pct)
-{
-    if (pct >= 90) return theme->red;
-    if (pct >= 75) return theme->mem_fill[4];
-    if (pct >= 50) return theme->mem_fill[2];
-    if (pct >= 25) return theme->mem_fill[1];
-    return theme->mem_fill[0];
-}
-
-static Rgb disk_usage_text(const Theme *theme, int pct)
-{
-    if (pct >= 90) return theme->red;
-    if (pct >= 75) return theme->orange;
-    if (pct >= 50) return theme->yellow;
-    if (pct >= 25) return theme->green;
-    return theme->cyan;
-}
-
-static void render_inline_meter(struct ncplane *p, const Theme *theme, int y, int x, int width,
-                                int pct, Rgb fill_bg)
-{
-    int used;
-    int free_w;
-
-    if (width <= 0) return;
-    pct = clamp_int(pct, 0, 100);
-    used = pct * width / 100;
-    free_w = width - used;
-    if (used > 0) plane_fill(p, y, x, used, theme->bg, fill_bg);
-    if (free_w > 0) plane_fill(p, y, x + used, free_w, theme->bg, theme->mem_free_bg);
-}
-
-static void build_disk_widget_layout(const Ui *ui, DiskWidgetLayout *layout)
-{
-    unsigned rows = 0;
-    unsigned cols = 0;
-    int inner_h;
-    int inner_w;
-    int reserve_bottom;
-    int lower_row;
-    int lower_h;
-
-    memset(layout, 0, sizeof(*layout));
-    if (!ui->disk) return;
-    ncplane_dim_yx(ui->disk, &rows, &cols);
-    if (rows < 5 || cols < 24) return;
-
-    inner_h = (int)rows - 2;
-    inner_w = (int)cols - 2;
-    layout->fs.row = 1;
-    layout->fs.col = 1;
-    layout->fs.width = inner_w;
-    layout->fs.height = inner_h;
-
-    if (inner_h < 10) return;
-
-    reserve_bottom = inner_w >= 96 ? 9 : inner_w >= 72 ? 8 : 6;
-    layout->fs.height = clamp_int(inner_h - reserve_bottom - 1, 6, 10);
-    if (layout->fs.height >= inner_h - 3) return;
-
-    lower_row = layout->fs.row + layout->fs.height + 1;
-    lower_h = (int)rows - 1 - lower_row;
-    if (lower_h < 4) {
-        layout->fs.height = inner_h;
-        return;
-    }
-
-    if (inner_w >= 96) {
-        int left_w = clamp_int(inner_w * 11 / 20, 32, inner_w - 34);
-        int right_w = inner_w - left_w - 1;
-
-        layout->dev.row = lower_row;
-        layout->dev.col = 1;
-        layout->dev.width = left_w;
-        layout->dev.height = lower_h;
-        layout->show_dev = rect_valid(&layout->dev);
-
-        layout->io.col = left_w + 2;
-        layout->io.width = right_w;
-        if (lower_h >= 10) {
-            int io_h = clamp_int(lower_h / 2, 4, lower_h - 5);
-            int queue_h = lower_h - io_h - 1;
-
-            layout->io.row = lower_row;
-            layout->io.height = io_h;
-            layout->queue.row = lower_row + io_h + 1;
-            layout->queue.col = layout->io.col;
-            layout->queue.width = right_w;
-            layout->queue.height = queue_h;
-            layout->show_queue = rect_valid(&layout->queue);
-        } else {
-            layout->io.row = lower_row;
-            layout->io.height = lower_h;
-        }
-        layout->show_io = rect_valid(&layout->io);
-        return;
-    }
-
-    if (lower_h >= 12) {
-        int dev_h = clamp_int(lower_h / 3 + 1, 4, lower_h - 8);
-        int io_h = clamp_int((lower_h - dev_h - 1) / 2, 4, lower_h - dev_h - 5);
-        int queue_h = lower_h - dev_h - io_h - 2;
-
-        layout->dev.row = lower_row;
-        layout->dev.col = 1;
-        layout->dev.width = inner_w;
-        layout->dev.height = dev_h;
-        layout->show_dev = rect_valid(&layout->dev);
-
-        layout->io.row = lower_row + dev_h + 1;
-        layout->io.col = 1;
-        layout->io.width = inner_w;
-        layout->io.height = io_h;
-        layout->show_io = rect_valid(&layout->io);
-
-        layout->queue.row = layout->io.row + io_h + 1;
-        layout->queue.col = 1;
-        layout->queue.width = inner_w;
-        layout->queue.height = queue_h;
-        layout->show_queue = rect_valid(&layout->queue);
-        return;
-    }
-
-    layout->dev.row = lower_row;
-    layout->dev.col = 1;
-    layout->dev.width = inner_w;
-    layout->dev.height = clamp_int(lower_h / 2, 4, lower_h);
-    layout->show_dev = rect_valid(&layout->dev);
-
-    layout->io.row = lower_row + layout->dev.height + 1;
-    layout->io.col = 1;
-    layout->io.width = inner_w;
-    layout->io.height = lower_h - layout->dev.height - 1;
-    layout->show_io = rect_valid(&layout->io);
-}
-
-static int disk_visible_rows(const Ui *ui)
-{
-    DiskWidgetLayout layout;
-
-    if (!ui->disk) return 1;
-    build_disk_widget_layout(ui, &layout);
-    return clamp_int(rect_inner_rows(&layout.fs), 1, 1024);
-}
-
-static void render_disk_filesystems(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                    const LuloDizkSnapshot *snap, const LuloDizkState *state)
-{
-    char rows_buf[48];
-    int visible_rows;
-    int start;
-    int dev_w;
-    int mount_w;
-    int value_w;
-    int bar_w;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " Filesystems ", theme->white);
-
-    visible_rows = rect_inner_rows(rect);
-    start = state ? clamp_int(state->scroll, 0, snap && snap->fs_count > visible_rows ? snap->fs_count - visible_rows : 0) : 0;
-    if (snap && snap->fs_count > 0) {
-        snprintf(rows_buf, sizeof(rows_buf), "%d-%d/%d",
-                 start + 1,
-                 clamp_int(start + visible_rows, 1, snap->fs_count),
-                 snap->fs_count);
-        draw_inner_meta(p, theme, rect, rows_buf, theme->cyan);
-    }
-
-    if (!snap || snap->fs_count <= 0) {
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg,
-                   "no mounted filesystems", rect->width - 4);
-        return;
-    }
-
-    dev_w = rect->width >= 84 ? 12 : 8;
-    mount_w = rect->width >= 84 ? 16 : 12;
-    value_w = rect->width >= 96 ? 18 : rect->width >= 72 ? 14 : 11;
-    bar_w = rect_inner_cols(rect) - dev_w - mount_w - value_w - 8;
-    if (bar_w < 8) {
-        mount_w = clamp_int(mount_w - (8 - bar_w), 8, mount_w);
-        bar_w = rect_inner_cols(rect) - dev_w - mount_w - value_w - 8;
-    }
-    if (bar_w < 8) bar_w = 8;
-
-    for (int i = 0; i < visible_rows; i++) {
-        int idx = start + i;
-        int y = rect->row + 1 + i;
-        int x = rect->col + 1;
-        char pctbuf[8];
-        char value[32];
-
-        if (idx >= snap->fs_count) break;
-        plane_putn(p, y, x, theme->cyan, theme->bg, snap->filesystems[idx].device, dev_w);
-        x += dev_w + 1;
-        plane_putn(p, y, x, theme->white, theme->bg, snap->filesystems[idx].mount, mount_w);
-        x += mount_w + 1;
-        render_inline_meter(p, theme, y, x, bar_w, snap->filesystems[idx].pct,
-                            disk_usage_fill(theme, snap->filesystems[idx].pct));
-        x += bar_w + 1;
-        snprintf(pctbuf, sizeof(pctbuf), "%3d%%", snap->filesystems[idx].pct);
-        plane_putn(p, y, x, disk_usage_text(theme, snap->filesystems[idx].pct), theme->bg, pctbuf, 4);
-        x += 5;
-        if (value_w >= 14) snprintf(value, sizeof(value), "%s/%s",
-                                    snap->filesystems[idx].used, snap->filesystems[idx].total);
-        else snprintf(value, sizeof(value), "%s", snap->filesystems[idx].used);
-        plane_putn(p, y, x, theme->white, theme->bg, value, value_w);
-    }
-}
-
-static void render_disk_devices(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                const LuloDizkSnapshot *snap)
-{
-    int visible_rows;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " Devices ", theme->white);
-    if (snap && snap->blockdev_count > 0) {
-        char meta[16];
-        snprintf(meta, sizeof(meta), "%d", snap->blockdev_count);
-        draw_inner_meta(p, theme, rect, meta, theme->green);
-    }
-
-    visible_rows = rect_inner_rows(rect);
-    if (!snap || snap->blockdev_count <= 0) {
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg,
-                   "no block devices", rect->width - 4);
-        return;
-    }
-
-    for (int i = 0; i < visible_rows; i++) {
-        int y = rect->row + 1 + i;
-        int x = rect->col + 1;
-        int right_w;
-        const LuloDizkBlockRow *row;
-        char kind[48];
-
-        if (i >= snap->blockdev_count) break;
-        row = &snap->blockdevs[i];
-        snprintf(kind, sizeof(kind), "%s %s", row->type, row->transport);
-        plane_putn(p, y, x, theme->cyan, theme->bg, row->name, 10);
-        x += 11;
-        plane_putn(p, y, x, theme->white, theme->bg, row->size, 10);
-        x += 11;
-        plane_putn(p, y, x, theme->green, theme->bg, kind, 10);
-        x += 11;
-        right_w = rect->col + rect->width - 1 - x;
-        if (right_w > 0) plane_putn(p, y, x, theme->white, theme->bg, row->model, right_w);
-    }
-}
-
-static void render_disk_io(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                           const LuloDizkSnapshot *snap)
-{
-    int visible_rows;
-    int name_w;
-    int bar_w;
-    int data_w;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " I/O ", theme->white);
-    if (snap && snap->iostat_count > 0) {
-        char meta[16];
-        snprintf(meta, sizeof(meta), "%d", snap->iostat_count);
-        draw_inner_meta(p, theme, rect, meta, theme->green);
-    }
-
-    visible_rows = rect_inner_rows(rect);
-    if (!snap || snap->iostat_count <= 0) {
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg,
-                   "no disk activity data", rect->width - 4);
-        return;
-    }
-
-    name_w = rect->width >= 38 ? 10 : 8;
-    data_w = rect->width >= 46 ? 9 : 7;
-    bar_w = rect_inner_cols(rect) - name_w - data_w * 2 - 8;
-    if (bar_w < 6) bar_w = 6;
-
-    for (int i = 0; i < visible_rows; i++) {
-        int y = rect->row + 1 + i;
-        int x = rect->col + 1;
-        char pctbuf[8];
-        const LuloDizkIoRow *row;
-
-        if (i >= snap->iostat_count) break;
-        row = &snap->iostats[i];
-        plane_putn(p, y, x, theme->cyan, theme->bg, row->name, name_w);
-        x += name_w + 1;
-        render_inline_meter(p, theme, y, x, bar_w, row->util_pct, disk_usage_fill(theme, row->util_pct));
-        x += bar_w + 1;
-        snprintf(pctbuf, sizeof(pctbuf), "%3d%%", row->util_pct);
-        plane_putn(p, y, x, disk_usage_text(theme, row->util_pct), theme->bg, pctbuf, 4);
-        x += 5;
-        plane_putn(p, y, x, theme->green, theme->bg, row->rd_bytes, data_w);
-        x += data_w + 1;
-        plane_putn(p, y, x, theme->orange, theme->bg, row->wr_bytes, data_w);
-    }
-}
-
-static void render_disk_queue(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                              const LuloDizkSnapshot *snap)
-{
-    int visible_rows;
-    int tunable_rows;
-    int swap_rows;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " Queue / Swap ", theme->white);
-    if (snap) {
-        char meta[32];
-        snprintf(meta, sizeof(meta), "q %d  s %d", snap->tunable_count, snap->swap_count);
-        draw_inner_meta(p, theme, rect, meta, theme->green);
-    }
-
-    visible_rows = rect_inner_rows(rect);
-    tunable_rows = snap ? snap->tunable_count : 0;
-    if (snap && snap->swap_count > 0 && visible_rows >= 3) {
-        swap_rows = clamp_int(snap->swap_count, 1, visible_rows / 2);
-        tunable_rows = clamp_int(tunable_rows, 0, visible_rows - swap_rows);
-    } else {
-        swap_rows = 0;
-        tunable_rows = clamp_int(tunable_rows, 0, visible_rows);
-    }
-
-    if ((!snap || snap->tunable_count <= 0) && (!snap || snap->swap_count <= 0)) {
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg,
-                   "no queue or swap data", rect->width - 4);
-        return;
-    }
-
-    for (int i = 0; i < tunable_rows; i++) {
-        int y = rect->row + 1 + i;
-        int x = rect->col + 1;
-        int tail_w;
-        char buf[64];
-        const LuloDizkTunableRow *row = &snap->tunables[i];
-
-        plane_putn(p, y, x, theme->cyan, theme->bg, row->name, 10);
-        x += 11;
-        plane_putn(p, y, x, theme->green, theme->bg, row->scheduler, 10);
-        x += 11;
-        snprintf(buf, sizeof(buf), "%s %d/%d", row->cache, row->read_ahead_kb, row->nr_requests);
-        plane_putn(p, y, x, theme->yellow, theme->bg, buf, 12);
-        x += 13;
-        tail_w = rect->col + rect->width - 1 - x;
-        if (tail_w > 0) plane_putn(p, y, x, theme->white, theme->bg, row->state, tail_w);
-    }
-
-    for (int i = 0; i < swap_rows; i++) {
-        int y = rect->row + 1 + tunable_rows + i;
-        int x = rect->col + 1;
-        int bar_w = clamp_int(rect_inner_cols(rect) - 28, 8, 20);
-        char pctbuf[8];
-        char usedbuf[24];
-        const LuloDizkSwapRow *row = &snap->swaps[i];
-
-        plane_putn(p, y, x, theme->cyan, theme->bg, row->name, 10);
-        x += 11;
-        render_inline_meter(p, theme, y, x, bar_w, row->pct, disk_usage_fill(theme, row->pct));
-        x += bar_w + 1;
-        snprintf(pctbuf, sizeof(pctbuf), "%3d%%", row->pct);
-        plane_putn(p, y, x, disk_usage_text(theme, row->pct), theme->bg, pctbuf, 4);
-        x += 5;
-        snprintf(usedbuf, sizeof(usedbuf), "%s/%s", row->used, row->size);
-        plane_putn(p, y, x, theme->white, theme->bg, usedbuf, rect->col + rect->width - 1 - x);
-    }
-}
-
-static void render_disk_widget(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state)
-{
-    DiskWidgetLayout layout;
-    unsigned rows = 0;
-    unsigned cols = 0;
-
-    if (!ui->disk) return;
-    ncplane_dim_yx(ui->disk, &rows, &cols);
-    plane_clear_inner(ui->disk, ui->theme, (int)rows, (int)cols);
-    build_disk_widget_layout(ui, &layout);
-    render_disk_filesystems(ui->disk, ui->theme, &layout.fs, snap, state);
-    if (layout.show_dev) render_disk_devices(ui->disk, ui->theme, &layout.dev, snap);
-    if (layout.show_io) render_disk_io(ui->disk, ui->theme, &layout.io, snap);
-    if (layout.show_queue) render_disk_queue(ui->disk, ui->theme, &layout.queue, snap);
-}
-
-static void render_disk_status(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state)
-{
-    char buf[160];
-    int visible_rows;
-
-    if (!ui->load) return;
-    plane_reset(ui->load, ui->theme);
-    visible_rows = disk_visible_rows(ui);
-    if (!snap) return;
-    snprintf(buf, sizeof(buf),
-             "fs %d  dev %d  io %d  queue %d  swap %d  fstab %d  fs-scroll %d-%d/%d",
-             snap->fs_count, snap->blockdev_count, snap->iostat_count,
-             snap->tunable_count, snap->swap_count, snap->fstab_count,
-             snap->fs_count > 0 ? state->scroll + 1 : 0,
-             snap->fs_count > 0 ? clamp_int(state->scroll + visible_rows, 1, snap->fs_count) : 0,
-             snap->fs_count > 0 ? snap->fs_count : 0);
-    plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
-}
-
-typedef struct {
-    int tabs_y;
-    int tabs_x;
-    LuloRect list;
-    LuloRect info;
-    LuloRect preview;
-    int show_info;
-} SystemdWidgetLayout;
-
-static int systemd_service_selection_active(const LuloSystemdState *state)
-{
-    return state && state->selected >= 0 && state->selected_unit[0];
-}
-
-static int systemd_service_cursor_active(const LuloSystemdState *state)
-{
-    return state && state->cursor >= 0;
-}
-
-static int systemd_config_selection_active(const LuloSystemdState *state)
-{
-    return state && state->config_selected >= 0 && state->selected_config[0];
-}
-
-static int systemd_config_cursor_active(const LuloSystemdState *state)
-{
-    return state && state->config_cursor >= 0;
-}
-
-static int systemd_preview_open(const LuloSystemdState *state)
-{
-    if (!state) return 0;
-    return state->view == LULO_SYSTEMD_VIEW_CONFIG ?
-           systemd_config_selection_active(state) :
-           systemd_service_selection_active(state);
-}
-
-static void build_systemd_widget_layout(const Ui *ui, const LuloSystemdState *state, SystemdWidgetLayout *layout)
-{
-    unsigned rows = 0;
-    unsigned cols = 0;
-    int inner_w;
-    int content_h;
-    int info_h;
-    int preview_open;
-
-    memset(layout, 0, sizeof(*layout));
-    if (!ui->systemd) return;
-    ncplane_dim_yx(ui->systemd, &rows, &cols);
-    if (rows < 8 || cols < 28) return;
-    layout->tabs_y = 1;
-    layout->tabs_x = 2;
-    inner_w = (int)cols - 2;
-    content_h = (int)rows - 4;
-    if (inner_w < 20 || content_h < 4) return;
-
-    preview_open = systemd_preview_open(state);
-    info_h = state && state->view == LULO_SYSTEMD_VIEW_CONFIG ? 4 : 5;
-    layout->show_info = content_h >= info_h + 4;
-
-    if (!preview_open) {
-        layout->list.row = 2;
-        layout->list.col = 1;
-        layout->list.width = inner_w;
-        layout->list.height = content_h;
-        layout->show_info = 0;
-        return;
-    }
-
-    if (inner_w >= 104) {
-        int list_w = clamp_int(inner_w * 11 / 20, 42, inner_w - 34);
-        int right_w = inner_w - list_w - 1;
-
-        layout->list.row = 2;
-        layout->list.col = 1;
-        layout->list.width = list_w;
-        layout->list.height = content_h;
-
-        layout->info.row = 2;
-        layout->info.col = list_w + 2;
-        layout->info.width = right_w;
-        layout->info.height = layout->show_info ? info_h : 0;
-
-        layout->preview.col = list_w + 2;
-        layout->preview.width = right_w;
-        if (layout->show_info) {
-            layout->preview.row = 2 + info_h + 1;
-            layout->preview.height = content_h - info_h - 1;
-        } else {
-            layout->preview.row = 2;
-            layout->preview.height = content_h;
-        }
-        return;
-    }
-
-    {
-        int list_h = clamp_int(content_h / 3 + 1, 7, content_h - 4);
-
-        layout->list.row = 2;
-        layout->list.col = 1;
-        layout->list.width = inner_w;
-        layout->list.height = list_h;
-
-        layout->info.row = 2 + list_h + 1;
-        layout->info.col = 1;
-        layout->info.width = inner_w;
-        layout->info.height = layout->show_info ? info_h : 0;
-
-        layout->preview.col = 1;
-        layout->preview.width = inner_w;
-        if (layout->show_info) {
-            layout->preview.row = layout->info.row + info_h + 1;
-            layout->preview.height = content_h - list_h - info_h - 2;
-        } else {
-            layout->preview.row = 2 + list_h + 1;
-            layout->preview.height = content_h - list_h - 1;
-        }
-    }
-}
-
-static int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state)
-{
-    SystemdWidgetLayout layout;
-
-    if (!ui->systemd || !state) return 1;
-    build_systemd_widget_layout(ui, state, &layout);
-    return clamp_int(rect_inner_rows(&layout.list) - 1, 1, 4096);
-}
-
-static int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state)
-{
-    SystemdWidgetLayout layout;
-
-    if (!ui->systemd || !state) return 1;
-    build_systemd_widget_layout(ui, state, &layout);
-    return clamp_int(rect_inner_rows(&layout.preview), 1, 4096);
-}
-
-static const LuloSystemdServiceRow *selected_systemd_service(const LuloSystemdSnapshot *snap,
-                                                             const LuloSystemdState *state)
-{
-    if (!snap || !state || snap->count <= 0 || !systemd_service_selection_active(state)) return NULL;
-    if (state->selected >= 0 && state->selected < snap->count) return &snap->rows[state->selected];
-    return NULL;
-}
-
-static const LuloSystemdConfigRow *selected_systemd_config(const LuloSystemdSnapshot *snap,
-                                                           const LuloSystemdState *state)
-{
-    if (!snap || !state || snap->config_count <= 0 || !systemd_config_selection_active(state)) return NULL;
-    if (state->config_selected >= 0 && state->config_selected < snap->config_count) {
-        return &snap->configs[state->config_selected];
-    }
-    return NULL;
-}
-
-static Rgb systemd_active_color(const Theme *theme, const LuloSystemdServiceRow *row)
-{
-    if (!strcmp(row->active, "failed")) return theme->red;
-    if (!strcmp(row->active, "active") && !strcmp(row->sub, "running")) return theme->green;
-    if (!strcmp(row->active, "active")) return theme->cyan;
-    if (!strcmp(row->active, "activating")) return theme->orange;
-    if (!strcmp(row->active, "deactivating")) return theme->yellow;
-    if (!strcmp(row->active, "inactive")) return theme->dim;
-    return theme->white;
-}
-
-static Rgb systemd_file_state_color(const Theme *theme, const char *state)
-{
-    if (!strcmp(state, "enabled")) return theme->green;
-    if (!strcmp(state, "disabled")) return theme->dim;
-    if (!strcmp(state, "static")) return theme->cyan;
-    if (!strcmp(state, "generated")) return theme->blue;
-    if (!strcmp(state, "transient")) return theme->orange;
-    if (!strcmp(state, "alias")) return theme->dim;
-    return theme->white;
-}
-
-static void render_systemd_view_tabs(struct ncplane *p, const Theme *theme, const SystemdWidgetLayout *layout,
-                                     const LuloSystemdState *state)
-{
-    unsigned cols = 0;
-    int x = layout->tabs_x;
-
-    ncplane_dim_yx(p, NULL, &cols);
-    plane_fill(p, layout->tabs_y, 1, (int)cols - 2, theme->bg, theme->bg);
-    for (int i = 0; i < LULO_SYSTEMD_VIEW_COUNT; i++) {
-        char label[24];
-        int active = state && state->view == (LuloSystemdView)i;
-        int width;
-        Rgb fg = active ? theme->bg : theme->white;
-        Rgb bg = active ? theme->border_header : theme->bg;
-
-        snprintf(label, sizeof(label), " %s ", lulo_systemd_view_name((LuloSystemdView)i));
-        width = (int)strlen(label);
-        plane_putn(p, layout->tabs_y, x, fg, bg, label, width);
-        x += width + 1;
-    }
-}
-
-static void render_systemd_services_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                         const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
-{
-    char meta[48];
-    int visible_rows;
-    int start;
-    int scope_w = 3;
-    int state_w = rect->width >= 56 ? 12 : 10;
-    int file_w = rect->width >= 72 ? 10 : 8;
-    int unit_w;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel,
-                   state && state->view == LULO_SYSTEMD_VIEW_DEPS ? " Services / Deps " : " Services ",
-                   theme->white);
-    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
-    start = state ? clamp_int(state->list_scroll, 0, snap && snap->count > visible_rows ? snap->count - visible_rows : 0) : 0;
-    if (snap && snap->count > 0) {
-        snprintf(meta, sizeof(meta), "%d-%d/%d",
-                 start + 1, clamp_int(start + visible_rows, 1, snap->count), snap->count);
-        draw_inner_meta(p, theme, rect, meta, state && !state->focus_preview ? theme->green : theme->cyan);
-    }
-    if (!snap || snap->count <= 0) {
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no services", rect->width - 4);
-        return;
-    }
-
-    unit_w = rect_inner_cols(rect) - scope_w - state_w - file_w - 3;
-    if (unit_w < 12) unit_w = 12;
-    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "scp", scope_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + scope_w + 1, theme->dim, theme->bg, "state", state_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + scope_w + 1 + state_w + 1, theme->dim, theme->bg, "file", file_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + scope_w + 1 + state_w + 1 + file_w + 1,
-               theme->dim, theme->bg, "unit", unit_w);
-
-    for (int i = 0; i < visible_rows; i++) {
-        int idx = start + i;
-        int y = rect->row + 2 + i;
-        int x = rect->col + 1;
-        int selected = state && idx == state->cursor;
-        Rgb row_bg = selected ? theme->select_bg : theme->bg;
-        const LuloSystemdServiceRow *row;
-        char statebuf[64];
-
-        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
-        if (idx >= snap->count) continue;
-        row = &snap->rows[idx];
-        snprintf(statebuf, sizeof(statebuf), "%s/%s", row->active, row->sub);
-        plane_putn(p, y, x, selected ? theme->select_fg : (row->user_scope ? theme->orange : theme->cyan),
-                   row_bg, row->user_scope ? "usr" : "sys", scope_w);
-        x += scope_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : systemd_active_color(theme, row), row_bg, statebuf, state_w);
-        x += state_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : systemd_file_state_color(theme, row->file_state),
-                   row_bg, row->file_state, file_w);
-        x += file_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, row->unit, unit_w);
-    }
-}
-
-static void render_systemd_config_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                       const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
-{
-    char meta[48];
-    int visible_rows;
-    int start;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " Config Files ", theme->white);
-    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
-    start = state ? clamp_int(state->config_list_scroll, 0,
-                              snap && snap->config_count > visible_rows ? snap->config_count - visible_rows : 0) : 0;
-    if (snap && snap->config_count > 0) {
-        snprintf(meta, sizeof(meta), "%d-%d/%d",
-                 start + 1, clamp_int(start + visible_rows, 1, snap->config_count), snap->config_count);
-        draw_inner_meta(p, theme, rect, meta, state && !state->focus_preview ? theme->green : theme->cyan);
-    }
-    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "path", rect_inner_cols(rect));
-    if (!snap || snap->config_count <= 0) {
-        plane_putn(p, rect->row + 2, rect->col + 2, theme->white, theme->bg, "no configs", rect->width - 4);
-        return;
-    }
-
-    for (int i = 0; i < visible_rows; i++) {
-        int idx = start + i;
-        int y = rect->row + 2 + i;
-        int selected = state && idx == state->config_cursor;
-        Rgb row_bg = selected ? theme->select_bg : theme->bg;
-
-        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
-        if (idx >= snap->config_count) continue;
-        plane_putn(p, y, rect->col + 1,
-                   selected ? theme->select_fg :
-                   (strstr(snap->configs[idx].path, ".pacnew") ? theme->orange : theme->cyan),
-                   row_bg, snap->configs[idx].name, rect_inner_cols(rect));
-    }
-}
-
-static void render_systemd_info(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
-{
-    char buf[512];
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " Details ", theme->white);
-
-    if (state && state->view == LULO_SYSTEMD_VIEW_CONFIG) {
-        const LuloSystemdConfigRow *row = selected_systemd_config(snap, state);
-
-        if (!row) {
-            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no config selected", rect->width - 4);
-            return;
-        }
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, row->name, rect->width - 4);
-        plane_putn(p, rect->row + 2, rect->col + 2, theme->dim, theme->bg, row->path, rect->width - 4);
-        snprintf(buf, sizeof(buf), "lines %d%s", snap ? snap->config_line_count : 0,
-                 strstr(row->path, ".pacnew") ? "  pacnew" : "");
-        plane_putn(p, rect->row + 3, rect->col + 2,
-                   strstr(row->path, ".pacnew") ? theme->orange : theme->cyan, theme->bg,
-                   buf, rect->width - 4);
-        return;
-    }
-
-    {
-        const LuloSystemdServiceRow *row = selected_systemd_service(snap, state);
-
-        if (!row) {
-            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no service selected", rect->width - 4);
-            return;
-        }
-        snprintf(buf, sizeof(buf), "%s  (%s)", row->unit, row->user_scope ? "user" : "system");
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, buf, rect->width - 4);
-        snprintf(buf, sizeof(buf), "load %-10s active %-10s sub %-10s", row->load, row->active, row->sub);
-        plane_putn(p, rect->row + 2, rect->col + 2, systemd_active_color(theme, row), theme->bg, buf, rect->width - 4);
-        snprintf(buf, sizeof(buf), "file %-10s preset %-10s", row->file_state, row->preset);
-        plane_putn(p, rect->row + 3, rect->col + 2, systemd_file_state_color(theme, row->file_state), theme->bg,
-                   buf, rect->width - 4);
-        snprintf(buf, sizeof(buf), "%s", row->description[0] ? row->description : "(no description)");
-        plane_putn(p, rect->row + 4, rect->col + 2, theme->dim, theme->bg, buf, rect->width - 4);
-    }
-}
-
-static Rgb systemd_preview_line_color(const Theme *theme, LuloSystemdView view, const char *line)
-{
-    const char *trim = line;
-
-    while (trim && *trim == ' ') trim++;
-    if (!line || !*line) return theme->dim;
-    if (line[0] == '#') return theme->dim;
-    if (line[0] == '[') return theme->cyan;
-    if (view == LULO_SYSTEMD_VIEW_DEPS) {
-        if (strstr(trim, ".target")) return theme->cyan;
-        if (strstr(trim, ".service")) return theme->green;
-        if (strstr(trim, ".socket")) return theme->orange;
-        if (strstr(trim, ".timer")) return theme->yellow;
-        return theme->white;
-    }
-    if (view == LULO_SYSTEMD_VIEW_CONFIG) {
-        if (strchr(line, '=')) return theme->green;
-        return theme->white;
-    }
-    if (!strncmp(line, "Exec", 4) || !strncmp(line, "WantedBy", 8) || !strncmp(line, "Alias", 5)) return theme->green;
-    if (strstr(line, "failed") || strstr(line, "No files")) return theme->red;
-    return theme->white;
-}
-
-static void render_systemd_preview(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                   const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
-{
-    char meta[48];
-    char title[96];
-    const char *const *lines = NULL;
-    int line_count = 0;
-    int start;
-    int visible_rows;
-
-    if (!rect_valid(rect) || !state) return;
-
-    switch (state->view) {
-    case LULO_SYSTEMD_VIEW_SERVICES:
-        snprintf(title, sizeof(title), " Unit File ");
-        lines = (const char *const *)snap->file_lines;
-        line_count = snap->file_line_count;
-        break;
-    case LULO_SYSTEMD_VIEW_DEPS:
-        snprintf(title, sizeof(title), " Reverse Deps ");
-        lines = (const char *const *)snap->dep_lines;
-        line_count = snap->dep_line_count;
-        break;
-    case LULO_SYSTEMD_VIEW_CONFIG:
-    default:
-        snprintf(title, sizeof(title), " Config Preview ");
-        lines = (const char *const *)snap->config_lines;
-        line_count = snap->config_line_count;
-        break;
-    }
-
-    draw_inner_box(p, theme, rect, theme->border_panel, title, theme->white);
-    visible_rows = rect_inner_rows(rect);
-    start = state->view == LULO_SYSTEMD_VIEW_CONFIG ? state->config_file_scroll : state->file_scroll;
-    start = clamp_int(start, 0, line_count > visible_rows ? line_count - visible_rows : 0);
-    if (line_count > 0) {
-        snprintf(meta, sizeof(meta), "%d-%d/%d",
-                 start + 1, clamp_int(start + visible_rows, 1, line_count), line_count);
-        draw_inner_meta(p, theme, rect, meta, state->focus_preview ? theme->green : theme->cyan);
-    }
-    if (!lines || line_count <= 0) {
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no preview", rect->width - 4);
-        return;
-    }
-
-    for (int i = 0; i < visible_rows; i++) {
-        int idx = start + i;
-        int y = rect->row + 1 + i;
-        const char *line;
-
-        if (idx >= line_count) break;
-        line = lines[idx];
-        if (!line) line = "";
-        plane_putn(p, y, rect->col + 1, systemd_preview_line_color(theme, state->view, line),
-                   theme->bg, line, rect_inner_cols(rect));
-    }
-}
-
-static void render_systemd_widget(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
-{
-    SystemdWidgetLayout layout;
-    unsigned rows = 0;
-    unsigned cols = 0;
-
-    if (!ui->systemd || !state) return;
-    ncplane_dim_yx(ui->systemd, &rows, &cols);
-    plane_clear_inner(ui->systemd, ui->theme, (int)rows, (int)cols);
-    build_systemd_widget_layout(ui, state, &layout);
-    render_systemd_view_tabs(ui->systemd, ui->theme, &layout, state);
-    if (state->view == LULO_SYSTEMD_VIEW_CONFIG) render_systemd_config_list(ui->systemd, ui->theme, &layout.list, snap, state);
-    else render_systemd_services_list(ui->systemd, ui->theme, &layout.list, snap, state);
-    if (layout.show_info) render_systemd_info(ui->systemd, ui->theme, &layout.info, snap, state);
-    render_systemd_preview(ui->systemd, ui->theme, &layout.preview, snap, state);
-}
-
-static void render_systemd_status(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state,
-                                  const LuloSystemdBackendStatus *backend_status)
-{
-    char buf[512];
-
-    if (!ui->load || !state) return;
-    plane_reset(ui->load, ui->theme);
-    if (backend_status && !backend_status->have_snapshot && backend_status->busy) {
-        snprintf(buf, sizeof(buf), "view %s  loading systemd cache...",
-                 lulo_systemd_view_name(state->view));
-        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
-        return;
-    }
-    if (backend_status && backend_status->error[0]) {
-        plane_putn(ui->load, 0, 0, ui->theme->red, ui->theme->bg,
-                   backend_status->error, ui->lo.load.width - 2);
-        return;
-    }
-    if (state->view == LULO_SYSTEMD_VIEW_CONFIG) {
-        const LuloSystemdConfigRow *row = selected_systemd_config(snap, state);
-
-        snprintf(buf, sizeof(buf), "view %s  configs %d  focus %s  cursor %d/%d  open %s",
-                 lulo_systemd_view_name(state->view),
-                 snap ? snap->config_count : 0,
-                 state->focus_preview ? "preview" : "list",
-                 snap && snap->config_count > 0 && systemd_config_cursor_active(state) ? state->config_cursor + 1 : 0,
-                 snap ? snap->config_count : 0,
-                 row ? row->name : "none");
-        if (backend_status && backend_status->loading_active) {
-            strncat(buf, "  loading", sizeof(buf) - strlen(buf) - 1);
-        } else if (backend_status && backend_status->loading_full) {
-            strncat(buf, "  refreshing", sizeof(buf) - strlen(buf) - 1);
-        }
-        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
-        return;
-    }
-
-    {
-        const LuloSystemdServiceRow *row = selected_systemd_service(snap, state);
-
-        snprintf(buf, sizeof(buf), "view %s  services %d  focus %s  cursor %d/%d  open %s%.160s%s",
-                 lulo_systemd_view_name(state->view),
-                 snap ? snap->count : 0,
-                 state->focus_preview ? "preview" : "list",
-                 snap && snap->count > 0 && systemd_service_cursor_active(state) ? state->cursor + 1 : 0,
-                 snap ? snap->count : 0,
-                 row ? (row->user_scope ? "usr " : "sys ") : "",
-                 row ? row->unit : "none",
-                 row && row->description[0] ? "  " : "");
-        if (backend_status && backend_status->loading_active) {
-            strncat(buf, "  loading", sizeof(buf) - strlen(buf) - 1);
-        } else if (backend_status && backend_status->loading_full) {
-            strncat(buf, "  refreshing", sizeof(buf) - strlen(buf) - 1);
-        }
-        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
-        if (row && row->description[0]) {
-            int used = (int)strlen(buf);
-            if (used + 2 < ui->lo.load.width - 2) {
-                plane_putn(ui->load, 0, used, ui->theme->dim, ui->theme->bg,
-                           row->description, ui->lo.load.width - used - 2);
-            }
-        }
-    }
-}
-
-typedef struct {
-    int tabs_y;
-    int tabs_x;
-    LuloRect list;
-    LuloRect info;
-    LuloRect preview;
-    int show_info;
-} TuneWidgetLayout;
-
-static int tune_explore_selection_active(const LuloTuneState *state)
-{
-    return state && state->selected >= 0 && state->selected_path[0];
-}
-
-static int tune_snapshot_selection_active(const LuloTuneState *state)
-{
-    return state && state->snapshot_selected >= 0 && state->selected_snapshot_id[0];
-}
-
-static int tune_preset_selection_active(const LuloTuneState *state)
-{
-    return state && state->preset_selected >= 0 && state->selected_preset_id[0];
-}
-
-static int tune_preview_open(const LuloTuneState *state)
-{
-    if (!state) return 0;
-    switch (state->view) {
-    case LULO_TUNE_VIEW_SNAPSHOTS:
-        return tune_snapshot_selection_active(state);
-    case LULO_TUNE_VIEW_PRESETS:
-        return tune_preset_selection_active(state);
-    case LULO_TUNE_VIEW_EXPLORE:
-    default:
-        return tune_explore_selection_active(state);
-    }
-}
-
-static void build_tune_widget_layout(const Ui *ui, const LuloTuneState *state, TuneWidgetLayout *layout)
-{
-    unsigned rows = 0;
-    unsigned cols = 0;
-    int inner_w;
-    int content_h;
-    int info_h;
-
-    memset(layout, 0, sizeof(*layout));
-    if (!ui->tune) return;
-    ncplane_dim_yx(ui->tune, &rows, &cols);
-    if (rows < 8 || cols < 28) return;
-    layout->tabs_y = 1;
-    layout->tabs_x = 2;
-    inner_w = (int)cols - 2;
-    content_h = (int)rows - 4;
-    if (inner_w < 20 || content_h < 4) return;
-
-    info_h = 5;
-    layout->show_info = content_h >= info_h + 4;
-    if (!tune_preview_open(state)) {
-        layout->list.row = 2;
-        layout->list.col = 1;
-        layout->list.width = inner_w;
-        layout->list.height = content_h;
-        layout->show_info = 0;
-        return;
-    }
-
-    if (inner_w >= 104) {
-        int list_w = clamp_int(inner_w * 11 / 20, 42, inner_w - 34);
-        int right_w = inner_w - list_w - 1;
-
-        layout->list.row = 2;
-        layout->list.col = 1;
-        layout->list.width = list_w;
-        layout->list.height = content_h;
-        layout->info.row = 2;
-        layout->info.col = list_w + 2;
-        layout->info.width = right_w;
-        layout->info.height = layout->show_info ? info_h : 0;
-        layout->preview.col = list_w + 2;
-        layout->preview.width = right_w;
-        if (layout->show_info) {
-            layout->preview.row = 2 + info_h + 1;
-            layout->preview.height = content_h - info_h - 1;
-        } else {
-            layout->preview.row = 2;
-            layout->preview.height = content_h;
-        }
-        return;
-    }
-
-    {
-        int list_h = clamp_int(content_h / 3 + 1, 7, content_h - 4);
-
-        layout->list.row = 2;
-        layout->list.col = 1;
-        layout->list.width = inner_w;
-        layout->list.height = list_h;
-        layout->info.row = 2 + list_h + 1;
-        layout->info.col = 1;
-        layout->info.width = inner_w;
-        layout->info.height = layout->show_info ? info_h : 0;
-        layout->preview.col = 1;
-        layout->preview.width = inner_w;
-        if (layout->show_info) {
-            layout->preview.row = layout->info.row + info_h + 1;
-            layout->preview.height = content_h - list_h - info_h - 2;
-        } else {
-            layout->preview.row = 2 + list_h + 1;
-            layout->preview.height = content_h - list_h - 1;
-        }
-    }
-}
-
-static int tune_list_rows_visible(const Ui *ui, const LuloTuneState *state)
-{
-    TuneWidgetLayout layout;
-
-    if (!ui->tune || !state) return 1;
-    build_tune_widget_layout(ui, state, &layout);
-    return clamp_int(rect_inner_rows(&layout.list) - 1, 1, 4096);
-}
-
-static int tune_preview_rows_visible(const Ui *ui, const LuloTuneState *state)
-{
-    TuneWidgetLayout layout;
-
-    if (!ui->tune || !state) return 1;
-    build_tune_widget_layout(ui, state, &layout);
-    return clamp_int(rect_inner_rows(&layout.preview), 1, 4096);
-}
-
-static const LuloTuneRow *selected_tune_row(const LuloTuneSnapshot *snap, const LuloTuneState *state)
-{
-    if (!snap || !state || snap->count <= 0 || !tune_explore_selection_active(state)) return NULL;
-    if (state->selected >= 0 && state->selected < snap->count) return &snap->rows[state->selected];
-    return NULL;
-}
-
-static const LuloTuneRow *active_tune_explore_row(const LuloTuneSnapshot *snap, const LuloTuneState *state)
-{
-    const LuloTuneRow *row = selected_tune_row(snap, state);
-
-    if (row) return row;
-    if (!snap || !state || snap->count <= 0) return NULL;
-    if (state->cursor >= 0 && state->cursor < snap->count) return &snap->rows[state->cursor];
-    return NULL;
-}
-
-static int start_tune_edit(AppState *app, const LuloTuneSnapshot *snap, const LuloTuneState *state)
-{
-    const LuloTuneRow *row;
-
-    if (!app || !snap || !state) return 0;
-    if (state->view != LULO_TUNE_VIEW_EXPLORE) {
-        tune_status_set(app, "edit is available from Explore");
-        return 0;
-    }
-    row = active_tune_explore_row(snap, state);
-    if (!row) {
-        tune_status_set(app, "no tunable selected");
-        return 0;
-    }
-    if (row->is_dir) {
-        tune_status_set(app, "select a file to edit");
-        return 0;
-    }
-    app->tune_edit_active = 1;
-    snprintf(app->tune_edit_path, sizeof(app->tune_edit_path), "%s", row->path);
-    if (state->staged_path[0] && strcmp(state->staged_path, row->path) == 0) {
-        snprintf(app->tune_edit_value, sizeof(app->tune_edit_value), "%s", state->staged_value);
-    } else {
-        snprintf(app->tune_edit_value, sizeof(app->tune_edit_value), "%s", row->value);
-    }
-    app->tune_edit_len = (int)strlen(app->tune_edit_value);
-    tune_edit_prompt_refresh(app);
-    return 1;
-}
-
-static int active_tune_row_is_staged(const LuloTuneSnapshot *snap, const LuloTuneState *state)
-{
-    const LuloTuneRow *row = active_tune_explore_row(snap, state);
-
-    return row && state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0;
-}
-
-static int handle_tune_edit_input(AppState *app, const DecodedInput *in,
-                                  LuloTuneState *tune_state, RenderFlags *render)
-{
-    if (!app || !in || !tune_state || !app->tune_edit_active) return 0;
-
-    if (in->cancel) {
-        app->tune_edit_active = 0;
-        app->tune_edit_path[0] = '\0';
-        app->tune_edit_value[0] = '\0';
-        app->tune_edit_len = 0;
-        tune_status_set(app, "edit cancelled");
-        render->need_tune = 1;
-        render->need_render = 1;
-        return 1;
-    }
-    if (in->submit) {
-        app->tune_edit_active = 0;
-        snprintf(tune_state->staged_path, sizeof(tune_state->staged_path), "%s", app->tune_edit_path);
-        snprintf(tune_state->staged_value, sizeof(tune_state->staged_value), "%s", app->tune_edit_value);
-        tune_status_set(app, "staged value for %s",
-                        tune_state->selected_path[0] ? tune_state->selected_path : app->tune_edit_path);
-        app->tune_edit_path[0] = '\0';
-        app->tune_edit_value[0] = '\0';
-        app->tune_edit_len = 0;
-        render->need_tune = 1;
-        render->need_render = 1;
-        return 1;
-    }
-    if (in->backspace) {
-        if (app->tune_edit_len > 0) {
-            app->tune_edit_value[--app->tune_edit_len] = '\0';
-            tune_edit_prompt_refresh(app);
-            render->need_tune = 1;
-            render->need_render = 1;
-        }
-        return 1;
-    }
-    if (in->text_len > 0) {
-        int avail = (int)sizeof(app->tune_edit_value) - 1 - app->tune_edit_len;
-        if (avail > 0) {
-            int take = in->text_len < avail ? in->text_len : avail;
-            memcpy(app->tune_edit_value + app->tune_edit_len, in->text, (size_t)take);
-            app->tune_edit_len += take;
-            app->tune_edit_value[app->tune_edit_len] = '\0';
-            tune_edit_prompt_refresh(app);
-            render->need_tune = 1;
-            render->need_render = 1;
-        }
-        return 1;
-    }
-    return 1;
-}
-
 static void fill_decoded_input_from_nc(DecodedInput *out, uint32_t id, const ncinput *ni, InputAction action)
 {
     memset(out, 0, sizeof(*out));
@@ -2771,364 +1328,6 @@ static void fill_decoded_input_from_nc(DecodedInput *out, uint32_t id, const nci
         snprintf(out->text, sizeof(out->text), "%s", ni->utf8);
         out->text_len = (int)strlen(out->text);
     }
-}
-
-static const LuloTuneBundleMeta *selected_tune_bundle(const LuloTuneSnapshot *snap, const LuloTuneState *state, int preset)
-{
-    if (!snap || !state) return NULL;
-    if (preset) {
-        if (!tune_preset_selection_active(state) || snap->preset_count <= 0) return NULL;
-        if (state->preset_selected >= 0 && state->preset_selected < snap->preset_count) {
-            return &snap->presets[state->preset_selected];
-        }
-    } else {
-        if (!tune_snapshot_selection_active(state) || snap->snapshot_count <= 0) return NULL;
-        if (state->snapshot_selected >= 0 && state->snapshot_selected < snap->snapshot_count) {
-            return &snap->snapshots[state->snapshot_selected];
-        }
-    }
-    return NULL;
-}
-
-static Rgb tune_source_color(const Theme *theme, LuloTuneSource source)
-{
-    switch (source) {
-    case LULO_TUNE_SOURCE_SYS:
-        return theme->green;
-    case LULO_TUNE_SOURCE_CGROUP:
-        return theme->orange;
-    case LULO_TUNE_SOURCE_PROC:
-    default:
-        return theme->cyan;
-    }
-}
-
-static void render_tune_view_tabs(struct ncplane *p, const Theme *theme, const TuneWidgetLayout *layout,
-                                  const LuloTuneState *state)
-{
-    unsigned cols = 0;
-    int x = layout->tabs_x;
-
-    ncplane_dim_yx(p, NULL, &cols);
-    plane_fill(p, layout->tabs_y, 1, (int)cols - 2, theme->bg, theme->bg);
-    for (int i = 0; i < LULO_TUNE_VIEW_COUNT; i++) {
-        char label[32];
-        int active = state && state->view == (LuloTuneView)i;
-        int width;
-        Rgb fg = active ? theme->bg : theme->white;
-        Rgb bg = active ? theme->border_header : theme->bg;
-
-        snprintf(label, sizeof(label), " %s ", lulo_tune_view_name((LuloTuneView)i));
-        width = (int)strlen(label);
-        plane_putn(p, layout->tabs_y, x, fg, bg, label, width);
-        x += width + 1;
-    }
-}
-
-static void render_tune_explore_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                     const LuloTuneSnapshot *snap, const LuloTuneState *state,
-                                     const AppState *app)
-{
-    int visible_rows;
-    int start;
-    int src_w = 4;
-    int rw_w = 2;
-    int type_w = 3;
-    int name_w;
-    int value_w;
-    const char *path_meta;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " Explorer ", theme->white);
-    path_meta = state && state->browse_path[0] ? state->browse_path : "roots";
-    draw_inner_meta(p, theme, rect, path_meta, state && !state->focus_preview ? theme->green : theme->cyan);
-    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
-    start = state ? clamp_int(state->list_scroll, 0, snap && snap->count > visible_rows ? snap->count - visible_rows : 0) : 0;
-    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "src", src_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1, theme->dim, theme->bg, "rw", rw_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1 + rw_w + 1, theme->dim, theme->bg, "typ", type_w);
-    name_w = rect->width >= 78 ? 22 : rect->width >= 64 ? 18 : 14;
-    value_w = rect_inner_cols(rect) - src_w - rw_w - type_w - name_w - 4;
-    if (value_w < 10) value_w = 10;
-    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1 + rw_w + 1 + type_w + 1, theme->dim, theme->bg, "name", name_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1 + rw_w + 1 + type_w + 1 + name_w + 1,
-               theme->dim, theme->bg, "value / path", value_w);
-    if (!snap || snap->count <= 0) {
-        plane_putn(p, rect->row + 2, rect->col + 2, theme->white, theme->bg, "empty directory", rect->width - 4);
-        return;
-    }
-    for (int i = 0; i < visible_rows; i++) {
-        int idx = start + i;
-        int y = rect->row + 2 + i;
-        int x = rect->col + 1;
-        int selected = state && idx == state->cursor;
-        int editing = 0;
-        Rgb row_bg = selected ? theme->select_bg : theme->bg;
-        const LuloTuneRow *row;
-        char edit_buf[224];
-        const char *type_text;
-        const char *value_text;
-        Rgb type_fg;
-        Rgb value_fg;
-
-        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
-        if (idx >= snap->count) continue;
-        row = &snap->rows[idx];
-        editing = app && app->tune_edit_active && strcmp(app->tune_edit_path, row->path) == 0;
-        type_text = row->is_dir ? "dir" :
-                    (editing ? "edt" :
-                     (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? "stg" : "val"));
-        if (editing && !row->is_dir) {
-            snprintf(edit_buf, sizeof(edit_buf), "%s|", app->tune_edit_value);
-            value_text = edit_buf;
-        } else {
-            value_text = row->is_dir ? row->path :
-                         (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? state->staged_value : row->value);
-        }
-        type_fg = selected ? theme->select_fg :
-                  (row->is_dir ? theme->orange :
-                   (editing ? theme->yellow :
-                    (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? theme->green : theme->white)));
-        value_fg = selected ? theme->select_fg :
-                   (editing ? theme->yellow :
-                    (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? theme->green : theme->dim));
-        plane_putn(p, y, x, selected ? theme->select_fg : tune_source_color(theme, row->source),
-                   row_bg, lulo_tune_source_name(row->source), src_w);
-        x += src_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : (row->writable ? theme->green : theme->dim),
-                   row_bg, row->is_dir ? "--" : (row->writable ? "rw" : "ro"), rw_w);
-        x += rw_w + 1;
-        plane_putn(p, y, x, type_fg, row_bg, type_text, type_w);
-        x += type_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : (row->is_dir ? theme->yellow : theme->white),
-                   row_bg, row->name, name_w);
-        x += name_w + 1;
-        plane_putn(p, y, x, value_fg, row_bg, value_text, value_w);
-    }
-}
-
-static void render_tune_bundle_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                    const LuloTuneSnapshot *snap, const LuloTuneState *state, int preset)
-{
-    char meta[48];
-    int visible_rows;
-    int start;
-    int created_w = 19;
-    int items_w = 5;
-    int name_w;
-    const LuloTuneBundleMeta *items = preset ? snap->presets : snap->snapshots;
-    int count = preset ? snap->preset_count : snap->snapshot_count;
-    int cursor = preset ? state->preset_cursor : state->snapshot_cursor;
-    int scroll = preset ? state->preset_list_scroll : state->snapshot_list_scroll;
-
-    if (!rect_valid(rect)) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, preset ? " Presets " : " Snapshots ", theme->white);
-    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
-    start = clamp_int(scroll, 0, count > visible_rows ? count - visible_rows : 0);
-    if (count > 0) {
-        snprintf(meta, sizeof(meta), "%d-%d/%d",
-                 start + 1, clamp_int(start + visible_rows, 1, count), count);
-        draw_inner_meta(p, theme, rect, meta, state && !state->focus_preview ? theme->green : theme->cyan);
-    }
-    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "created", created_w);
-    plane_putn(p, rect->row + 1, rect->col + 1 + created_w + 1, theme->dim, theme->bg, "itms", items_w);
-    name_w = rect_inner_cols(rect) - created_w - items_w - 2;
-    if (name_w < 12) name_w = 12;
-    plane_putn(p, rect->row + 1, rect->col + 1 + created_w + 1 + items_w + 1, theme->dim, theme->bg, "name", name_w);
-    if (count <= 0) {
-        plane_putn(p, rect->row + 2, rect->col + 2, theme->white, theme->bg, "no saved configs", rect->width - 4);
-        return;
-    }
-    for (int i = 0; i < visible_rows; i++) {
-        int idx = start + i;
-        int y = rect->row + 2 + i;
-        int x = rect->col + 1;
-        int selected = idx == cursor;
-        Rgb row_bg = selected ? theme->select_bg : theme->bg;
-        char items_buf[8];
-
-        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
-        if (idx >= count) continue;
-        snprintf(items_buf, sizeof(items_buf), "%d", items[idx].item_count);
-        plane_putn(p, y, x, selected ? theme->select_fg : theme->cyan, row_bg, items[idx].created, created_w);
-        x += created_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : theme->green, row_bg, items_buf, items_w);
-        x += items_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, items[idx].name, name_w);
-    }
-}
-
-static void render_tune_info(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                             const LuloTuneSnapshot *snap, const LuloTuneState *state,
-                             const AppState *app)
-{
-    char buf[512];
-
-    if (!rect_valid(rect) || !state) return;
-    draw_inner_box(p, theme, rect, theme->border_panel, " Details ", theme->white);
-    if (state->view == LULO_TUNE_VIEW_EXPLORE) {
-        const LuloTuneRow *row = selected_tune_row(snap, state);
-
-        if (!row) {
-            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no file selected", rect->width - 4);
-            return;
-        }
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, row->name, rect->width - 4);
-        plane_putn(p, rect->row + 2, rect->col + 2, theme->dim, theme->bg, row->path, rect->width - 4);
-        snprintf(buf, sizeof(buf), "%s  %s  %s",
-                 lulo_tune_source_name(row->source), row->group,
-                 row->is_dir ? "directory" : (row->writable ? "writable" : "read-only"));
-        plane_putn(p, rect->row + 3, rect->col + 2,
-                   row->is_dir ? theme->orange : tune_source_color(theme, row->source),
-                   theme->bg, buf, rect->width - 4);
-        if (!row->is_dir && app && app->tune_edit_active && strcmp(app->tune_edit_path, row->path) == 0) {
-            snprintf(buf, sizeof(buf), "editing: %s|", app->tune_edit_value);
-            plane_putn(p, rect->row + 4, rect->col + 2, theme->yellow, theme->bg, buf, rect->width - 4);
-        } else if (!row->is_dir && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0) {
-            snprintf(buf, sizeof(buf), "staged: %s", state->staged_value[0] ? state->staged_value : "(empty)");
-            plane_putn(p, rect->row + 4, rect->col + 2, theme->green, theme->bg, buf, rect->width - 4);
-        } else {
-            plane_putn(p, rect->row + 4, rect->col + 2,
-                       row->is_dir ? theme->dim : theme->green, theme->bg,
-                       row->is_dir ? "<directory>" : row->value, rect->width - 4);
-        }
-        return;
-    }
-
-    {
-        const LuloTuneBundleMeta *bundle = selected_tune_bundle(snap, state, state->view == LULO_TUNE_VIEW_PRESETS);
-
-        if (!bundle) {
-            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no saved config selected", rect->width - 4);
-            return;
-        }
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, bundle->name, rect->width - 4);
-        plane_putn(p, rect->row + 2, rect->col + 2, theme->dim, theme->bg, bundle->id, rect->width - 4);
-        snprintf(buf, sizeof(buf), "created %s", bundle->created);
-        plane_putn(p, rect->row + 3, rect->col + 2, theme->cyan, theme->bg, buf, rect->width - 4);
-        snprintf(buf, sizeof(buf), "items %d", bundle->item_count);
-        plane_putn(p, rect->row + 4, rect->col + 2, theme->green, theme->bg, buf, rect->width - 4);
-    }
-}
-
-static Rgb tune_preview_line_color(const Theme *theme, const char *line)
-{
-    if (!line || !*line) return theme->dim;
-    if (!strncmp(line, "path:", 5) || !strncmp(line, "id:", 3) || !strncmp(line, "created:", 8)) return theme->cyan;
-    if (!strncmp(line, "note:", 5)) return theme->yellow;
-    if (!strncmp(line, "current value", 13) || !strncmp(line, "raw file", 8)) return theme->white;
-    if (line[0] == '[') return theme->green;
-    if (strchr(line, '=')) return theme->green;
-    return theme->white;
-}
-
-static void render_tune_preview(struct ncplane *p, const Theme *theme, const LuloRect *rect,
-                                const LuloTuneSnapshot *snap, const LuloTuneState *state)
-{
-    char meta[48];
-    const char *title = " Preview ";
-    int visible_rows;
-    int start;
-    int scroll = 0;
-
-    if (!rect_valid(rect) || !state) return;
-    if (state->view == LULO_TUNE_VIEW_SNAPSHOTS) title = " Snapshot ";
-    else if (state->view == LULO_TUNE_VIEW_PRESETS) title = " Preset ";
-    draw_inner_box(p, theme, rect, theme->border_panel, title, theme->white);
-    visible_rows = rect_inner_rows(rect);
-    switch (state->view) {
-    case LULO_TUNE_VIEW_SNAPSHOTS: scroll = state->snapshot_detail_scroll; break;
-    case LULO_TUNE_VIEW_PRESETS: scroll = state->preset_detail_scroll; break;
-    case LULO_TUNE_VIEW_EXPLORE:
-    default: scroll = state->detail_scroll; break;
-    }
-    start = clamp_int(scroll, 0, snap->detail_line_count > visible_rows ? snap->detail_line_count - visible_rows : 0);
-    if (snap->detail_line_count > 0) {
-        snprintf(meta, sizeof(meta), "%d-%d/%d",
-                 start + 1, clamp_int(start + visible_rows, 1, snap->detail_line_count), snap->detail_line_count);
-        draw_inner_meta(p, theme, rect, meta, state->focus_preview ? theme->green : theme->cyan);
-    }
-    if (!snap->detail_lines || snap->detail_line_count <= 0) {
-        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, snap->detail_status, rect->width - 4);
-        return;
-    }
-    for (int i = 0; i < visible_rows; i++) {
-        int idx = start + i;
-        int y = rect->row + 1 + i;
-        const char *line;
-
-        if (idx >= snap->detail_line_count) break;
-        line = snap->detail_lines[idx];
-        if (!line) line = "";
-        plane_putn(p, y, rect->col + 1, tune_preview_line_color(theme, line), theme->bg,
-                   line, rect_inner_cols(rect));
-    }
-}
-
-static void render_tune_widget(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
-                               const AppState *app)
-{
-    TuneWidgetLayout layout;
-    unsigned rows = 0;
-    unsigned cols = 0;
-
-    if (!ui->tune || !state) return;
-    ncplane_dim_yx(ui->tune, &rows, &cols);
-    plane_clear_inner(ui->tune, ui->theme, (int)rows, (int)cols);
-    build_tune_widget_layout(ui, state, &layout);
-    render_tune_view_tabs(ui->tune, ui->theme, &layout, state);
-    if (state->view == LULO_TUNE_VIEW_EXPLORE) render_tune_explore_list(ui->tune, ui->theme, &layout.list, snap, state, app);
-    else render_tune_bundle_list(ui->tune, ui->theme, &layout.list, snap, state, state->view == LULO_TUNE_VIEW_PRESETS);
-    if (layout.show_info) render_tune_info(ui->tune, ui->theme, &layout.info, snap, state, app);
-    render_tune_preview(ui->tune, ui->theme, &layout.preview, snap, state);
-}
-
-static void render_tune_status(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
-                               const LuloTuneBackendStatus *backend_status, AppState *app)
-{
-    char buf[512];
-    char prompt[320];
-
-    if (!ui->load || !state) return;
-    plane_reset(ui->load, ui->theme);
-    if (backend_status && !backend_status->have_snapshot && backend_status->busy) {
-        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg,
-                   "view Tune  loading explorer...", ui->lo.load.width - 2);
-        return;
-    }
-    if (backend_status && backend_status->error[0]) {
-        plane_putn(ui->load, 0, 0, ui->theme->red, ui->theme->bg,
-                   backend_status->error, ui->lo.load.width - 2);
-        return;
-    }
-    if (app && app->tune_edit_active) {
-        tune_edit_prompt_format(app, prompt, sizeof(prompt));
-        snprintf(buf, sizeof(buf), "editing  %s  Enter stage  Esc cancel",
-                 prompt[0] ? prompt : "value");
-        plane_putn(ui->load, 0, 0, ui->theme->yellow, ui->theme->bg, buf, ui->lo.load.width - 2);
-        return;
-    }
-    if (app && tune_status_current(app)) {
-        plane_putn(ui->load, 0, 0, ui->theme->green, ui->theme->bg,
-                   app->tune_status, ui->lo.load.width - 2);
-        return;
-    }
-    snprintf(buf, sizeof(buf), "view %s  path %s  items %d  snapshots %d  presets %d  focus %s",
-             lulo_tune_view_name(state->view),
-             state->browse_path[0] ? state->browse_path : "roots",
-             snap ? snap->count : 0,
-             snap ? snap->snapshot_count : 0,
-             snap ? snap->preset_count : 0,
-             state->focus_preview ? "preview" : "list");
-    if (backend_status) {
-        if (backend_status->saving_snapshot) strncat(buf, "  saving snapshot", sizeof(buf) - strlen(buf) - 1);
-        else if (backend_status->saving_preset) strncat(buf, "  saving preset", sizeof(buf) - strlen(buf) - 1);
-        else if (backend_status->applying_selected) strncat(buf, "  applying", sizeof(buf) - strlen(buf) - 1);
-        else if (backend_status->loading_active) strncat(buf, "  loading", sizeof(buf) - strlen(buf) - 1);
-        else if (backend_status->loading_full) strncat(buf, "  refreshing", sizeof(buf) - strlen(buf) - 1);
-    }
-    if (state->staged_path[0]) strncat(buf, "  staged", sizeof(buf) - strlen(buf) - 1);
-    plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
 }
 
 static void render_static(Ui *ui, AppPage page, AppState *app)
@@ -3444,136 +1643,16 @@ static int handle_proc_click(Ui *ui, int global_y, int global_x,
     }
 }
 
-static int point_in_rect_global(const LuloRect *origin, const LuloRect *rect, int y, int x)
-{
-    int top = origin->row + 1 + rect->row;
-    int left = origin->col + 1 + rect->col;
-
-    return y >= top && y < top + rect->height && x >= left && x < left + rect->width;
-}
-
-static LuloSystemdView systemd_view_from_point(Ui *ui, const SystemdWidgetLayout *layout,
-                                               int global_y, int global_x)
-{
-    int row = ui->lo.top.row + 1 + layout->tabs_y;
-    int x = ui->lo.top.col + 1 + layout->tabs_x;
-
-    if (global_y != row) return LULO_SYSTEMD_VIEW_COUNT;
-    for (int i = 0; i < LULO_SYSTEMD_VIEW_COUNT; i++) {
-        char label[24];
-        int width;
-
-        snprintf(label, sizeof(label), " %s ", lulo_systemd_view_name((LuloSystemdView)i));
-        width = (int)strlen(label);
-        if (global_x >= x && global_x < x + width) return (LuloSystemdView)i;
-        x += width + 1;
-    }
-    return LULO_SYSTEMD_VIEW_COUNT;
-}
-
-static int handle_systemd_click(Ui *ui, int global_y, int global_x,
-                                const LuloSystemdSnapshot *snap, LuloSystemdState *state,
-                                RenderFlags *render)
-{
-    SystemdWidgetLayout layout;
-    LuloSystemdView hit_view;
-    int local_y;
-
-    if (!ui->systemd || !state || !snap) return 0;
-    build_systemd_widget_layout(ui, state, &layout);
-    hit_view = systemd_view_from_point(ui, &layout, global_y, global_x);
-    if (hit_view != LULO_SYSTEMD_VIEW_COUNT) {
-        if (state->view != hit_view) {
-            state->view = hit_view;
-            state->focus_preview = 0;
-            render->need_systemd_refresh = 1;
-        } else {
-            render->need_systemd = 1;
-        }
-        render->need_render = 1;
-        return 1;
-    }
-    if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
-        int list_rows = systemd_list_rows_visible(ui, state);
-        int preview_rows = systemd_preview_rows_visible(ui, state);
-
-        state->focus_preview = 0;
-        local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
-        if (local_y >= 2) {
-            if (state->view == LULO_SYSTEMD_VIEW_CONFIG) {
-                int row_index = state->config_list_scroll + (local_y - 2);
-
-                if (row_index >= 0 && row_index < snap->config_count) {
-                    lulo_systemd_set_cursor(state, snap, list_rows, preview_rows, row_index);
-                    if (lulo_systemd_open_current(state, snap, list_rows, preview_rows)) render->need_systemd_refresh = 1;
-                    else render->need_systemd = 1;
-                }
-            } else {
-                int row_index = state->list_scroll + (local_y - 2);
-
-                if (row_index >= 0 && row_index < snap->count) {
-                    lulo_systemd_set_cursor(state, snap, list_rows, preview_rows, row_index);
-                    if (lulo_systemd_open_current(state, snap, list_rows, preview_rows)) render->need_systemd_refresh = 1;
-                    else render->need_systemd = 1;
-                }
-            }
-        } else {
-            render->need_systemd = 1;
-        }
-        render->need_render = 1;
-        return 1;
-    }
-    if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
-        if (!state->focus_preview) {
-            state->focus_preview = 1;
-            render->need_systemd = 1;
-            render->need_render = 1;
-        }
-        return 1;
-    }
-    if (layout.show_info && point_in_rect_global(&ui->lo.top, &layout.info, global_y, global_x)) {
-        render->need_systemd = 1;
-        render->need_render = 1;
-        return 1;
-    }
-    return 0;
-}
-
-static LuloTuneView tune_view_from_point(Ui *ui, const TuneWidgetLayout *layout,
-                                         int global_y, int global_x)
-{
-    int row = ui->lo.top.row + 1 + layout->tabs_y;
-    int x = ui->lo.top.col + 1 + layout->tabs_x;
-
-    if (global_y != row) return LULO_TUNE_VIEW_COUNT;
-    for (int i = 0; i < LULO_TUNE_VIEW_COUNT; i++) {
-        char label[32];
-        int width;
-
-        snprintf(label, sizeof(label), " %s ", lulo_tune_view_name((LuloTuneView)i));
-        width = (int)strlen(label);
-        if (global_x >= x && global_x < x + width) return (LuloTuneView)i;
-        x += width + 1;
-    }
-    return LULO_TUNE_VIEW_COUNT;
-}
-
 static int point_on_inner_tabs(Ui *ui, AppPage page,
                                const LuloTuneState *tune_state,
                                const LuloSystemdState *systemd_state,
                                int global_y, int global_x)
 {
     if (page == APP_PAGE_TUNE && ui->tune && tune_state) {
-        TuneWidgetLayout layout;
-
-        build_tune_widget_layout(ui, tune_state, &layout);
-        return tune_view_from_point(ui, &layout, global_y, global_x) != LULO_TUNE_VIEW_COUNT;
+        return point_on_tune_view_tabs(ui, tune_state, global_y, global_x);
     }
     if (page == APP_PAGE_SYSTEMD && ui->systemd && systemd_state) {
-        SystemdWidgetLayout layout;
-
-        build_systemd_widget_layout(ui, systemd_state, &layout);
-        return systemd_view_from_point(ui, &layout, global_y, global_x) != LULO_SYSTEMD_VIEW_COUNT;
+        return point_on_systemd_view_tabs(ui, systemd_state, global_y, global_x);
     }
     return 0;
 }
@@ -3600,134 +1679,12 @@ static int handle_mouse_wheel_target(Ui *ui, AppState *app,
                global_x >= ui->lo.top.col + 1 &&
                global_x < ui->lo.top.col + ui->lo.top.width - 1;
     case APP_PAGE_SYSTEMD:
-        if (ui->systemd && systemd_state) {
-            SystemdWidgetLayout layout;
-
-            build_systemd_widget_layout(ui, systemd_state, &layout);
-            if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
-                int local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
-
-                if (local_y < 2) return 0;
-                if (systemd_state->focus_preview) {
-                    systemd_state->focus_preview = 0;
-                    if (render) render->need_systemd = 1;
-                }
-                return 1;
-            }
-            if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
-                int local_y = global_y - (ui->lo.top.row + 1 + layout.preview.row);
-
-                if (local_y < 1) return 0;
-                if (!systemd_state->focus_preview) {
-                    systemd_state->focus_preview = 1;
-                    if (render) render->need_systemd = 1;
-                }
-                return 1;
-            }
-        }
-        return 0;
+        return handle_systemd_wheel_target(ui, systemd_state, render, global_y, global_x);
     case APP_PAGE_TUNE:
-        if (ui->tune && tune_state) {
-            TuneWidgetLayout layout;
-
-            build_tune_widget_layout(ui, tune_state, &layout);
-            if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
-                int local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
-
-                if (local_y < 2) return 0;
-                if (tune_state->focus_preview) {
-                    tune_state->focus_preview = 0;
-                    if (render) render->need_tune = 1;
-                }
-                return 1;
-            }
-            if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
-                int local_y = global_y - (ui->lo.top.row + 1 + layout.preview.row);
-
-                if (local_y < 1) return 0;
-                if (!tune_state->focus_preview) {
-                    tune_state->focus_preview = 1;
-                    if (render) render->need_tune = 1;
-                }
-                return 1;
-            }
-        }
-        return 0;
+        return handle_tune_wheel_target(ui, tune_state, render, global_y, global_x);
     default:
         return 0;
     }
-}
-
-static int handle_tune_click(Ui *ui, int global_y, int global_x,
-                             const LuloTuneSnapshot *snap, LuloTuneState *state,
-                             RenderFlags *render)
-{
-    TuneWidgetLayout layout;
-    LuloTuneView hit_view;
-    int local_y;
-
-    if (!ui->tune || !state || !snap) return 0;
-    build_tune_widget_layout(ui, state, &layout);
-    hit_view = tune_view_from_point(ui, &layout, global_y, global_x);
-    if (hit_view != LULO_TUNE_VIEW_COUNT) {
-        if (state->view != hit_view) {
-            state->view = hit_view;
-            state->focus_preview = 0;
-            render->need_tune_refresh = 1;
-        } else {
-            render->need_tune = 1;
-        }
-        render->need_render = 1;
-        return 1;
-    }
-    if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
-        int list_rows = tune_list_rows_visible(ui, state);
-        int preview_rows = tune_preview_rows_visible(ui, state);
-        int rc = 0;
-
-        state->focus_preview = 0;
-        local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
-        if (local_y >= 2) {
-            if (state->view == LULO_TUNE_VIEW_EXPLORE) {
-                int row_index = state->list_scroll + (local_y - 2);
-                if (row_index >= 0 && row_index < snap->count) {
-                    lulo_tune_set_cursor(state, snap, list_rows, preview_rows, row_index);
-                    rc = lulo_tune_open_current(state, snap, list_rows, preview_rows);
-                }
-            } else if (state->view == LULO_TUNE_VIEW_SNAPSHOTS) {
-                int row_index = state->snapshot_list_scroll + (local_y - 2);
-                if (row_index >= 0 && row_index < snap->snapshot_count) {
-                    lulo_tune_set_cursor(state, snap, list_rows, preview_rows, row_index);
-                    rc = lulo_tune_open_current(state, snap, list_rows, preview_rows);
-                }
-            } else {
-                int row_index = state->preset_list_scroll + (local_y - 2);
-                if (row_index >= 0 && row_index < snap->preset_count) {
-                    lulo_tune_set_cursor(state, snap, list_rows, preview_rows, row_index);
-                    rc = lulo_tune_open_current(state, snap, list_rows, preview_rows);
-                }
-            }
-        }
-        if (rc == 2) render->need_tune_refresh_full = 1;
-        else if (rc == 1) render->need_tune_refresh = 1;
-        else render->need_tune = 1;
-        render->need_render = 1;
-        return 1;
-    }
-    if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
-        if (!state->focus_preview) {
-            state->focus_preview = 1;
-            render->need_tune = 1;
-            render->need_render = 1;
-        }
-        return 1;
-    }
-    if (layout.show_info && point_in_rect_global(&ui->lo.top, &layout.info, global_y, global_x)) {
-        render->need_tune = 1;
-        render->need_render = 1;
-        return 1;
-    }
-    return 0;
 }
 
 static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
@@ -4377,7 +2334,6 @@ int main(int argc, char *argv[])
     };
     Ui ui;
     RawInput rawin;
-    NcInputThread ncin;
     notcurses_options opts;
     DebugLog dlog;
     const char *env_input_backend;
@@ -4432,7 +2388,7 @@ int main(int argc, char *argv[])
     opts.flags = NCOPTION_SUPPRESS_BANNERS | NCOPTION_INHIBIT_SETLOCALE;
     ui.theme = no_color ? &theme_mono : &theme_color;
     debug_log_stage(&dlog, "before_init");
-    ui.nc = notcurses_init(&opts, NULL);
+    ui.nc = notcurses_core_init(&opts, NULL);
     if (!ui.nc) {
         fprintf(stderr, "failed to initialize Notcurses\n");
         debug_log_close(&dlog);
@@ -4518,17 +2474,6 @@ int main(int argc, char *argv[])
             return 1;
         }
         terminal_mouse_enable();
-    } else if (nc_input_start(&ncin, ui.nc, &dlog) < 0) {
-        fprintf(stderr, "failed to start Notcurses input thread\n");
-        lulo_proc_state_cleanup(&proc_state);
-        lulo_dizk_state_cleanup(&dizk_state);
-        lulo_tune_state_cleanup(&tune_state);
-        lulo_systemd_state_cleanup(&systemd_state);
-        lulo_tune_backend_stop(&tune_backend);
-        lulo_systemd_backend_stop(&systemd_backend);
-        notcurses_stop(ui.nc);
-        debug_log_close(&dlog);
-        return 1;
     }
     debug_log_message(&dlog, "input-backend-active", input_backend_name(input_backend));
     debug_log_stage(&dlog, "after_input_enable");
@@ -4676,7 +2621,7 @@ int main(int argc, char *argv[])
             long long deadline = mono_ms_now() + sample_ms;
             int resample = 0;
             struct pollfd pfd = {
-                .fd = input_backend == INPUT_BACKEND_RAW ? STDIN_FILENO : ncin.pipefd[0],
+                .fd = STDIN_FILENO,
                 .events = POLLIN
             };
 
@@ -4763,10 +2708,32 @@ int main(int argc, char *argv[])
                         if (need_resize || render.need_rebuild || exit_requested) break;
                     }
                 } else {
-                    int pr = poll(&pfd, 1, timeout_ms);
+                    const struct timespec wait_ts = {
+                        .tv_sec = timeout_ms / 1000,
+                        .tv_nsec = (long)(timeout_ms % 1000) * 1000000L,
+                    };
+                    const struct timespec zero_ts = {0};
+                    ncinput ni;
+                    uint32_t id;
+                    int saved_errno;
 
-                    if (pr < 0) {
-                        if (errno == EINTR) {
+                    errno = 0;
+                    memset(&ni, 0, sizeof(ni));
+                    id = notcurses_get(ui.nc, &wait_ts, &ni);
+                    saved_errno = errno;
+                    if (id == (uint32_t)-1) {
+                        if (saved_errno == 0) {
+                            debug_log_message(&dlog, "nc-timeout", "0");
+                            if (terminal_get_size(&term_rows, &term_cols) == 0 &&
+                                (term_rows != last_h || term_cols != last_w)) {
+                                need_resize = 1;
+                                need_rebuild = 1;
+                                resample = 1;
+                            }
+                            if (ms_until_deadline(deadline) == 0) resample = 1;
+                            continue;
+                        }
+                        if (saved_errno == EINTR) {
                             if (terminal_get_size(&term_rows, &term_cols) == 0 &&
                                 (term_rows != last_h || term_cols != last_w)) {
                                 need_resize = 1;
@@ -4775,38 +2742,14 @@ int main(int argc, char *argv[])
                             }
                             continue;
                         }
-                        debug_log_errno(&dlog, "nc-poll-error");
+                        debug_log_errno(&dlog, "nc-get-error");
                         exit_requested = 1;
                         break;
                     }
-                    if (pr == 0) {
-                        debug_log_message(&dlog, "nc-timeout", "0");
-                        if (terminal_get_size(&term_rows, &term_cols) == 0 &&
-                            (term_rows != last_h || term_cols != last_w)) {
-                            need_resize = 1;
-                            need_rebuild = 1;
-                            resample = 1;
-                            continue;
-                        }
-                        if (ms_until_deadline(deadline) == 0) resample = 1;
-                        continue;
-                    }
-                    debug_log_poll(&dlog, "nc-poll-ready", pfd.fd, pfd.revents);
-                    if (!(pfd.revents & POLLIN)) {
-                        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                            debug_log_errno(&dlog, "nc-poll-error");
-                        }
-                        if (ms_until_deadline(deadline) == 0) resample = 1;
-                        continue;
-                    }
-                    nc_input_begin_drain(&ncin);
                     for (;;) {
-                        ncinput ni;
-                        uint32_t id;
                         InputAction action;
                         DecodedInput in;
 
-                        if (!nc_input_pop(&ncin, &id, &ni)) break;
                         action = decode_notcurses_input(id);
                         fill_decoded_input_from_nc(&in, id, &ni, action);
                         debug_log_nc_event(&dlog, "dispatch-nc", id, &ni);
@@ -4838,6 +2781,18 @@ int main(int argc, char *argv[])
                                                &exit_requested, &need_resize, &render, scroll_units);
                         }
                         if (need_resize || render.need_rebuild || exit_requested) break;
+
+                        errno = 0;
+                        memset(&ni, 0, sizeof(ni));
+                        id = notcurses_get(ui.nc, &zero_ts, &ni);
+                        saved_errno = errno;
+                        if (id == (uint32_t)-1) {
+                            if (saved_errno != 0 && saved_errno != EINTR) {
+                                debug_log_errno(&dlog, "nc-get-error");
+                                exit_requested = 1;
+                            }
+                            break;
+                        }
                     }
                 }
 
@@ -4948,8 +2903,6 @@ int main(int argc, char *argv[])
     if (input_backend == INPUT_BACKEND_RAW) {
         terminal_mouse_disable();
         raw_input_disable(&rawin);
-    } else {
-        nc_input_stop(&ncin);
     }
     lulo_proc_snapshot_free(&proc_snap);
     lulo_tune_snapshot_free(&tune_snap);

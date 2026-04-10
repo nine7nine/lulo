@@ -132,15 +132,18 @@ static void fmt_size(char *buf, size_t len, unsigned long long bytes)
 static int read_sysfs_str(const char *path, char *buf, size_t len)
 {
     FILE *f = fopen(path, "r");
-    int ok;
-    char *end;
+    size_t used;
 
     if (!f) return -1;
-    ok = fgets(buf, (int)len, f) != NULL;
+    if (!fgets(buf, (int)len, f)) {
+        fclose(f);
+        return -1;
+    }
     fclose(f);
-    if (!ok) return -1;
-    end = buf + strlen(buf) - 1;
-    while (end >= buf && isspace((unsigned char)*end)) *end-- = '\0';
+    used = strlen(buf);
+    while (used > 0 && isspace((unsigned char)buf[used - 1])) {
+        buf[--used] = '\0';
+    }
     return 0;
 }
 
@@ -496,10 +499,10 @@ static int gather_ktunables(KTunable *tunables, int max)
         }
         nlen = (int)strlen(dn);
         if (!strncmp(dn, "nvme", 4)) {
-            char *p = strrchr((char *)dn, 'p');
+            const char *p = strrchr(dn, 'p');
             if (p && p > dn) {
                 int all_digits = 1;
-                for (char *q = p + 1; *q; q++) {
+                for (const char *q = p + 1; *q; q++) {
                     if (!isdigit((unsigned char)*q)) {
                         all_digits = 0;
                         break;
@@ -513,7 +516,7 @@ static int gather_ktunables(KTunable *tunables, int max)
 
         t = &tunables[count++];
         memset(t, 0, sizeof(*t));
-        snprintf(t->name, sizeof(t->name), "%s", dn);
+        trunc_str(dn, t->name, (int)sizeof(t->name) - 1);
 
         snprintf(path, sizeof(path), "/sys/block/%s/queue/scheduler", dn);
         if (read_sysfs_str(path, buf, sizeof(buf)) == 0) {
@@ -670,7 +673,8 @@ static void fill_tunable_rows(LuloDizkSnapshot *snap, const KTunable *tunables, 
         if (tunables[i].power_state[0]) {
             trunc_str(tunables[i].power_state, row->state, (int)sizeof(row->state) - 1);
         } else if (tunables[i].wbt_lat[0]) {
-            snprintf(row->state, sizeof(row->state), "wbt=%sus", tunables[i].wbt_lat);
+            snprintf(row->state, sizeof(row->state), "wbt=%.*sus",
+                     (int)sizeof(row->state) - 8, tunables[i].wbt_lat);
         } else {
             snprintf(row->state, sizeof(row->state), "-");
         }

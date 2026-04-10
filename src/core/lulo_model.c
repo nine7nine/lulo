@@ -12,15 +12,20 @@
 static int read_file_str(const char *path, char *buf, size_t len)
 {
     FILE *f = fopen(path, "r");
-    int ok;
-    char *end;
+    size_t used;
 
     if (!f) return -1;
-    ok = (fgets(buf, (int)len, f) != NULL);
+    if (!fgets(buf, (int)len, f)) {
+        fclose(f);
+        return -1;
+    }
     fclose(f);
-    if (!ok) return -1;
-    end = buf + strlen(buf) - 1;
-    while (end >= buf && (*end == '\n' || *end == '\r' || *end == ' ')) *end-- = '\0';
+    used = strlen(buf);
+    while (used > 0) {
+        char ch = buf[used - 1];
+        if (ch != '\n' && ch != '\r' && ch != ' ') break;
+        buf[--used] = '\0';
+    }
     return 0;
 }
 
@@ -152,8 +157,10 @@ void lulo_gather_cpu_info(CpuInfo *ci)
         key[klen] = '\0';
         k = key;
         while (*k == '\t' || *k == ' ') k++;
-        ke = k + strlen(k) - 1;
-        while (ke > k && (*ke == ' ' || *ke == '\t')) *ke-- = '\0';
+        if (*k) {
+            ke = k + strlen(k) - 1;
+            while (ke > k && (*ke == ' ' || *ke == '\t')) *ke-- = '\0';
+        }
         v = colon + 1;
         while (*v == ' ') v++;
         vlen = (int)strlen(v);

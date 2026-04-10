@@ -4,9 +4,6 @@
 
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,18 +16,6 @@ static long long mono_ms_now_local(void)
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
-}
-
-static void nc_input_queue_free(NcInputThread *ctx)
-{
-    NcQueuedInput *q = ctx->head;
-    while (q) {
-        NcQueuedInput *next = q->next;
-        free(q);
-        q = next;
-    }
-    ctx->head = NULL;
-    ctx->tail = &ctx->head;
 }
 
 const char *input_backend_name(InputBackend backend)
@@ -145,128 +130,6 @@ void debug_log_action(DebugLog *log, const char *tag, const DecodedInput *in)
             tag, in->action, in->mouse_press, in->mouse_release, in->mouse_wheel,
             in->key_repeat, in->mouse_x, in->mouse_y, in->mouse_button);
     fflush(log->fp);
-}
-
-static void *nc_input_thread_main(void *opaque)
-{
-    NcInputThread *ctx = opaque;
-
-    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
-    while (ctx->running) {
-        ncinput ni;
-        uint32_t id;
-        int saved_errno;
-        NcQueuedInput *q;
-        int notify = 0;
-
-        errno = 0;
-        memset(&ni, 0, sizeof(ni));
-        id = notcurses_get_blocking(ctx->nc, &ni);
-        saved_errno = errno;
-        if (!ctx->running) break;
-        if (id == 0) continue;
-        if (id == (uint32_t)-1) {
-            if (saved_errno == EINTR) continue;
-            if (saved_errno) debug_log_errno(ctx->dlog, "nc-thread-get-error");
-            else debug_log_message(ctx->dlog, "nc-thread-get-minus1", "errno0");
-            {
-                struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000L };
-                nanosleep(&ts, NULL);
-            }
-            continue;
-        }
-
-        q = calloc(1, sizeof(*q));
-        if (!q) continue;
-        q->id = id;
-        q->ni = ni;
-
-        pthread_mutex_lock(&ctx->lock);
-        if (!ctx->notified) {
-            ctx->notified = 1;
-            notify = 1;
-        }
-        *ctx->tail = q;
-        ctx->tail = &q->next;
-        pthread_mutex_unlock(&ctx->lock);
-
-        if (notify && write(ctx->pipefd[1], "i", 1) < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            debug_log_errno(ctx->dlog, "nc-thread-pipe-write-error");
-        }
-    }
-
-    return NULL;
-}
-
-int nc_input_start(NcInputThread *ctx, struct notcurses *nc, DebugLog *dlog)
-{
-    memset(ctx, 0, sizeof(*ctx));
-    ctx->pipefd[0] = -1;
-    ctx->pipefd[1] = -1;
-    ctx->nc = nc;
-    ctx->dlog = dlog;
-    ctx->tail = &ctx->head;
-    if (pipe2(ctx->pipefd, O_CLOEXEC | O_NONBLOCK) < 0) return -1;
-    if (pthread_mutex_init(&ctx->lock, NULL) != 0) {
-        close(ctx->pipefd[0]);
-        close(ctx->pipefd[1]);
-        ctx->pipefd[0] = ctx->pipefd[1] = -1;
-        return -1;
-    }
-    ctx->running = 1;
-    if (pthread_create(&ctx->tid, NULL, nc_input_thread_main, ctx) != 0) {
-        ctx->running = 0;
-        pthread_mutex_destroy(&ctx->lock);
-        close(ctx->pipefd[0]);
-        close(ctx->pipefd[1]);
-        ctx->pipefd[0] = ctx->pipefd[1] = -1;
-        return -1;
-    }
-    ctx->started = 1;
-    return 0;
-}
-
-void nc_input_begin_drain(NcInputThread *ctx)
-{
-    char drain[64];
-
-    while (read(ctx->pipefd[0], drain, sizeof(drain)) > 0) {}
-    pthread_mutex_lock(&ctx->lock);
-    ctx->notified = 0;
-    pthread_mutex_unlock(&ctx->lock);
-}
-
-void nc_input_stop(NcInputThread *ctx)
-{
-    if (!ctx || !ctx->started) return;
-    ctx->running = 0;
-    pthread_cancel(ctx->tid);
-    pthread_join(ctx->tid, NULL);
-    close(ctx->pipefd[0]);
-    close(ctx->pipefd[1]);
-    ctx->pipefd[0] = ctx->pipefd[1] = -1;
-    pthread_mutex_destroy(&ctx->lock);
-    nc_input_queue_free(ctx);
-    ctx->started = 0;
-}
-
-int nc_input_pop(NcInputThread *ctx, uint32_t *id, ncinput *ni)
-{
-    NcQueuedInput *node;
-
-    pthread_mutex_lock(&ctx->lock);
-    node = ctx->head;
-    if (node) {
-        ctx->head = node->next;
-        if (!ctx->head) ctx->tail = &ctx->head;
-    }
-    pthread_mutex_unlock(&ctx->lock);
-    if (!node) return 0;
-    if (id) *id = node->id;
-    if (ni) *ni = node->ni;
-    free(node);
-    return 1;
 }
 
 static void terminal_write_escape(const char *seq)

@@ -24,7 +24,9 @@
 #include <unistd.h>
 
 #include "lulo_app.h"
+#include "lulo_auth.h"
 #include "lulo_edit.h"
+#include "lulo_proc_meta.h"
 
 static const Theme theme_color = {
     .mono = 0,
@@ -1216,6 +1218,32 @@ static struct ncplane *create_plane(struct ncplane *parent, int row, int col, in
     return ncplane_create(parent, &opts);
 }
 
+static void destroy_plane(struct ncplane **p);
+
+static struct ncplane *ensure_modal_plane(Ui *ui, int row, int col, int height, int width, const char *name)
+{
+    unsigned cur_h = 0;
+    unsigned cur_w = 0;
+    int cur_y = -1;
+    int cur_x = -1;
+
+    if (!ui || !ui->std) return NULL;
+    if (!ui->modal) {
+        ui->modal = create_plane(ui->std, row, col, height, width, name);
+        return ui->modal;
+    }
+    ncplane_dim_yx(ui->modal, &cur_h, &cur_w);
+    ncplane_yx(ui->modal, &cur_y, &cur_x);
+    if (cur_h != (unsigned)height || cur_w != (unsigned)width) {
+        destroy_plane(&ui->modal);
+        ui->modal = create_plane(ui->std, row, col, height, width, name);
+        return ui->modal;
+    }
+    if (cur_y != row - 1 || cur_x != col - 1) ncplane_move_yx(ui->modal, row - 1, col - 1);
+    ncplane_set_name(ui->modal, name);
+    return ui->modal;
+}
+
 static void destroy_plane(struct ncplane **p)
 {
     if (*p) {
@@ -1683,8 +1711,7 @@ static void render_help_overlay(Ui *ui, AppPage page)
     if (row < 1) row = 1;
     if (col < 1) col = 1;
 
-    destroy_plane(&ui->modal);
-    ui->modal = create_plane(ui->std, row, col, height, width, "help");
+    ui->modal = ensure_modal_plane(ui, row, col, height, width, "help");
     if (!ui->modal) return;
 
     draw_box_title(ui->modal, ui->theme, ui->theme->border_panel, title, ui->theme->white);
@@ -1703,6 +1730,69 @@ static void render_help_overlay(Ui *ui, AppPage page)
     ncplane_move_top(ui->modal);
 }
 
+static void render_auth_overlay(Ui *ui, const AppState *app)
+{
+    int width;
+    int height;
+    int row;
+    int col;
+    int prompt_y;
+    int input_y;
+    int status_y;
+    int y;
+    char display_input[sizeof(app->auth_input)];
+    char ident_line[160];
+
+    if (!ui || !ui->std || !app || !app->auth_active) return;
+    width = ui->term_w - 30;
+    if (width > 42) width = 42;
+    if (width < 32) width = 32;
+    height = 8;
+    if (height > ui->term_h - 4) height = ui->term_h - 4;
+    if (height < 7) height = 7;
+    row = (ui->term_h - height) / 2 + 1;
+    col = (ui->term_w - width) / 2 + 1;
+    if (row < 1) row = 1;
+    if (col < 1) col = 1;
+    prompt_y = 4;
+    input_y = 5;
+    status_y = 6;
+
+    ui->modal = ensure_modal_plane(ui, row, col, height, width, "auth");
+    if (!ui->modal) return;
+
+    draw_box_title(ui->modal, ui->theme, ui->theme->border_panel, " Unlock RW ", ui->theme->white);
+    for (y = 1; y < height - 1; y++) {
+        plane_fill(ui->modal, y, 1, width - 2, ui->theme->bg, ui->theme->bg);
+    }
+    plane_putn(ui->modal, 1, 3, ui->theme->green, ui->theme->bg,
+               app->auth_message[0] ? app->auth_message : "Unlock RW mode",
+               width - 6);
+    if (app->auth_identity[0]) {
+        snprintf(ident_line, sizeof(ident_line), "user: %s", app->auth_identity);
+        plane_putn(ui->modal, 2, 3, ui->theme->dim, ui->theme->bg, ident_line, width - 6);
+    } else {
+        plane_fill(ui->modal, 2, 1, width - 2, ui->theme->bg, ui->theme->bg);
+    }
+    plane_putn(ui->modal, prompt_y, 3, ui->theme->yellow, ui->theme->bg,
+               app->auth_prompt[0] ? app->auth_prompt : "Password:", width - 6);
+    if (app->auth_echo) {
+        snprintf(display_input, sizeof(display_input), "%s", app->auth_input);
+    } else {
+        memset(display_input, '*', (size_t)app->auth_input_len);
+        display_input[app->auth_input_len] = '\0';
+    }
+    plane_fill(ui->modal, input_y, 3, width - 6, ui->theme->bg, ui->theme->mem_free_bg);
+    plane_putn(ui->modal, input_y, 4, ui->theme->white, ui->theme->mem_free_bg,
+               display_input, width - 8);
+    plane_putn(ui->modal, status_y, 3, app->auth_output[0] ? ui->theme->yellow : ui->theme->dim,
+               ui->theme->bg,
+               app->auth_output[0] ? app->auth_output :
+               (app->auth_busy ? "Waiting..." : " "),
+               width - 6);
+    ncplane_move_top(ui->modal);
+}
+
 static int help_overlay_consume_input(Ui *ui, AppState *app, const DecodedInput *in,
                                       InputAction action, RenderFlags *render)
 {
@@ -1715,6 +1805,45 @@ static int help_overlay_consume_input(Ui *ui, AppState *app, const DecodedInput 
         render->need_render = 1;
         return 1;
     }
+    return 1;
+}
+
+static int auth_overlay_consume_input(Ui *ui, AppState *app, const DecodedInput *in,
+                                      InputAction action, RenderFlags *render)
+{
+    (void)ui;
+    if (!app || !app->auth_active || !in) return 0;
+    if (action == INPUT_RESIZE) return 0;
+    if (in->cancel || action == INPUT_TOGGLE_RW_MODE) {
+        lulo_auth_cancel(app);
+        app->rw_mode = 0;
+        render->need_header = 1;
+        render->need_footer = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    if (app->auth_busy) {
+        if (in->mouse_press || in->mouse_release || in->mouse_wheel || action != INPUT_NONE ||
+            in->text_len > 0 || in->backspace || in->submit) {
+            return 1;
+        }
+    }
+    if (in->backspace) {
+        lulo_auth_backspace(app);
+        render->need_render = 1;
+        return 1;
+    }
+    if (in->submit) {
+        lulo_auth_submit(app);
+        render->need_render = 1;
+        return 1;
+    }
+    if (in->text_len > 0) {
+        lulo_auth_append_text(app, in->text, (size_t)in->text_len);
+        render->need_render = 1;
+        return 1;
+    }
+    if (in->mouse_press || in->mouse_release || in->mouse_wheel || action != INPUT_NONE) return 1;
     return 1;
 }
 
@@ -1887,6 +2016,9 @@ static void render_trace_widget(Ui *ui, AppState *app)
     int inner_w;
     int max_scroll;
     int max_x_scroll;
+    int info_y;
+    int trace_body_y;
+    int trace_body_rows;
     char left_buf[256];
     char right_buf[64];
     char err[160];
@@ -1894,20 +2026,22 @@ static void render_trace_widget(Ui *ui, AppState *app)
     if (!ui || !ui->proc || !app || !app->strace_active) return;
     build_proc_table_layout(ui);
     render_proc_panel_title(ui, app);
-    body_rows = pt->body_rows;
+    info_y = 1;
+    trace_body_y = pt->body_y;
+    trace_body_rows = pt->body_rows;
+    body_rows = trace_body_rows;
     inner_w = pt->inner_w;
-    plane_fill(ui->proc, 0, 1, inner_w, ui->theme->bg, ui->theme->bg);
-    plane_fill(ui->proc, 1, 1, inner_w, ui->theme->bg, ui->theme->bg);
+    plane_fill(ui->proc, info_y, 1, inner_w, ui->theme->bg, ui->theme->bg);
 
     if (proc_trace_read_tail(app->strace_output_path, &buf, &offsets,
                              &line_count, &max_width, err, sizeof(err)) < 0) {
         snprintf(left_buf, sizeof(left_buf), "pid %d  %s", app->strace_target_pid,
                  app->strace_target_label[0] ? app->strace_target_label : "trace");
-        plane_putn(ui->proc, 0, 1, ui->theme->green, ui->theme->bg, left_buf, inner_w);
-        plane_putn(ui->proc, 1, 1, ui->theme->red, ui->theme->bg,
+        plane_putn(ui->proc, info_y, 1, ui->theme->green, ui->theme->bg, left_buf, inner_w);
+        plane_putn(ui->proc, trace_body_y, 1, ui->theme->red, ui->theme->bg,
                    err[0] ? err : "trace output unavailable", inner_w);
-        for (int i = 0; i < body_rows; i++) {
-            plane_fill(ui->proc, pt->body_y + i, 1, inner_w, ui->theme->bg, ui->theme->bg);
+        for (int i = 1; i < body_rows; i++) {
+            plane_fill(ui->proc, trace_body_y + i, 1, inner_w, ui->theme->bg, ui->theme->bg);
         }
         return;
     }
@@ -1930,19 +2064,17 @@ static void render_trace_widget(Ui *ui, AppState *app)
     } else {
         snprintf(right_buf, sizeof(right_buf), "0/0");
     }
-    plane_putn(ui->proc, 0, 1, ui->theme->green, ui->theme->bg, left_buf, inner_w);
+    plane_putn(ui->proc, info_y, 1, ui->theme->green, ui->theme->bg, left_buf, inner_w);
     {
         int right_x = ui->lo.proc.width - (int)strlen(right_buf) - 2;
 
         if (right_x < 1) right_x = 1;
-        plane_putn(ui->proc, 0, right_x, ui->theme->dim, ui->theme->bg,
+        plane_putn(ui->proc, info_y, right_x, ui->theme->dim, ui->theme->bg,
                    right_buf, (int)strlen(right_buf));
     }
-    plane_putn(ui->proc, 1, 1, ui->theme->dim, ui->theme->bg,
-               "s stop   j/k scroll   left/right hscroll   PgUp/PgDn jump", inner_w);
 
     for (int slot = 0; slot < body_rows; slot++) {
-        int y = pt->body_y + slot;
+        int y = trace_body_y + slot;
         int line_index = app->strace_scroll + slot;
 
         plane_fill(ui->proc, y, 1, inner_w, ui->theme->bg, ui->theme->bg);
@@ -1959,7 +2091,7 @@ static void render_trace_widget(Ui *ui, AppState *app)
     }
 
     if (line_count == 0) {
-        plane_putn(ui->proc, pt->body_y, 1, ui->theme->dim, ui->theme->bg,
+        plane_putn(ui->proc, trace_body_y, 1, ui->theme->dim, ui->theme->bg,
                    "waiting for strace output...", inner_w);
     }
 
@@ -3202,8 +3334,22 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         render->need_render = 1;
         break;
     case INPUT_TOGGLE_RW_MODE:
-        app->rw_mode = !app->rw_mode;
-        app_status_set(app, "mode %s", app->rw_mode ? "root/RW" : "user/RO");
+        if (app->auth_active) {
+            lulo_auth_cancel(app);
+            app->rw_mode = 0;
+        } else if (app->rw_mode) {
+            char err[160];
+
+            if (lulo_system_auth_lock(err, sizeof(err)) < 0) {
+                app_status_set(app, "%s", err[0] ? err : "failed to lock privileged mode");
+            } else {
+                app->rw_mode = 0;
+                app_status_set(app, "mode user/RO");
+            }
+        } else if (lulo_auth_start(app) == 0) {
+            app->help_visible = 0;
+            app_status_set(app, "authenticate to unlock privileged mode");
+        }
         render->need_header = 1;
         render->need_footer = 1;
         render->need_render = 1;
@@ -4494,7 +4640,8 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
             render_systemd_only(ui, systemd_snap, systemd_state, systemd_backend_status);
         }
     }
-    if (app->help_visible) render_help_overlay(ui, app->active_page);
+    if (app->auth_active) render_auth_overlay(ui, app);
+    else if (app->help_visible) render_help_overlay(ui, app->active_page);
     else destroy_plane(&ui->modal);
     notcurses_render(ui->nc);
 }
@@ -4967,7 +5114,8 @@ int main(int argc, char *argv[])
         } else {
             render_systemd_page(&ui, &app, &dash, &systemd_snap, &systemd_state, &systemd_backend_status);
         }
-        if (app.help_visible) render_help_overlay(&ui, app.active_page);
+        if (app.auth_active) render_auth_overlay(&ui, &app);
+        else if (app.help_visible) render_help_overlay(&ui, app.active_page);
         else destroy_plane(&ui.modal);
         debug_log_stage(&dlog, "before_render");
         if (notcurses_render(ui.nc) < 0) {
@@ -4992,6 +5140,17 @@ int main(int argc, char *argv[])
 
                 if (timeout_ms > 100) timeout_ms = 100;
                 if (timeout_ms < 0) timeout_ms = 0;
+                lulo_auth_poll(&app, &render);
+                if (render.need_render && !need_resize && !exit_requested) {
+                    render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
+                                   cpu_temps, ncpu_temp, &proc_snap, &proc_state,
+                                   &dizk_snap, &dizk_state, &sched_snap, &sched_state,
+                                   &sched_backend_status, &cgroups_snap, &cgroups_state,
+                                   &cgroups_backend_status, &udev_snap, &udev_state,
+                                   &udev_backend_status, &tune_snap, &tune_state,
+                                   &tune_backend_status, &systemd_snap, &systemd_state,
+                                   &systemd_backend_status, &render);
+                }
 
                 if (input_backend == INPUT_BACKEND_RAW) {
                     DecodedInput in;
@@ -5034,6 +5193,7 @@ int main(int argc, char *argv[])
                                            &tune_backend_status, &systemd_snap, &systemd_state,
                                            &systemd_backend_status, &trace_render);
                         }
+                        if (app.auth_active) continue;
                         if (ms_until_deadline(deadline) == 0) resample = 1;
                         continue;
                     }
@@ -5058,6 +5218,10 @@ int main(int argc, char *argv[])
 
                     while (raw_input_decode_one(&rawin, &in)) {
                         debug_log_action(&dlog, "dispatch", &in);
+                        if (auth_overlay_consume_input(&ui, &app, &in, in.action, &render)) {
+                            if (need_resize || render.need_rebuild || exit_requested) break;
+                            continue;
+                        }
                         if (help_overlay_consume_input(&ui, &app, &in, in.action, &render)) {
                             if (need_resize || render.need_rebuild || exit_requested) break;
                             continue;
@@ -5114,17 +5278,17 @@ int main(int argc, char *argv[])
                     memset(&ni, 0, sizeof(ni));
                     id = notcurses_get(ui.nc, &wait_ts, &ni);
                     saved_errno = errno;
-                    if (id == (uint32_t)-1) {
-                        if (saved_errno == 0) {
-                            debug_log_message(&dlog, "nc-timeout", "0");
-                            if (terminal_get_size(&term_rows, &term_cols) == 0 &&
-                                (term_rows != last_h || term_cols != last_w)) {
+                        if (id == (uint32_t)-1) {
+                            if (saved_errno == 0) {
+                                debug_log_message(&dlog, "nc-timeout", "0");
+                                if (terminal_get_size(&term_rows, &term_cols) == 0 &&
+                                    (term_rows != last_h || term_cols != last_w)) {
                                 need_resize = 1;
                                 need_rebuild = 1;
                                 resample = 1;
                             }
-                            if (app.active_page == APP_PAGE_CPU && app.strace_active && !need_resize) {
-                                RenderFlags trace_render = {0};
+                                if (app.active_page == APP_PAGE_CPU && app.strace_active && !need_resize) {
+                                    RenderFlags trace_render = {0};
 
                                 trace_render.need_render = 1;
                                 trace_render.need_proc_body_only = 1;
@@ -5136,10 +5300,11 @@ int main(int argc, char *argv[])
                                                &udev_backend_status, &tune_snap, &tune_state,
                                                &tune_backend_status, &systemd_snap, &systemd_state,
                                                &systemd_backend_status, &trace_render);
+                                }
+                                if (app.auth_active) continue;
+                                if (ms_until_deadline(deadline) == 0) resample = 1;
+                                continue;
                             }
-                            if (ms_until_deadline(deadline) == 0) resample = 1;
-                            continue;
-                        }
                         if (saved_errno == EINTR) {
                             if (terminal_get_size(&term_rows, &term_cols) == 0 &&
                                 (term_rows != last_h || term_cols != last_w)) {
@@ -5163,6 +5328,10 @@ int main(int argc, char *argv[])
                         }
                         fill_decoded_input_from_nc(&in, id, &ni, action);
                         debug_log_nc_event(&dlog, "dispatch-nc", id, &ni);
+                        if (auth_overlay_consume_input(&ui, &app, &in, action, &render)) {
+                            if (need_resize || render.need_rebuild || exit_requested) break;
+                            continue;
+                        }
                         if (help_overlay_consume_input(&ui, &app, &in, action, &render)) {
                             if (need_resize || render.need_rebuild || exit_requested) break;
                             continue;
@@ -5412,6 +5581,7 @@ int main(int argc, char *argv[])
     }
 
     if (app.strace_active) stop_proc_trace(&app, 1);
+    lulo_auth_shutdown(&app);
     ui_destroy_planes(&ui);
     if (input_backend == INPUT_BACKEND_RAW) {
         terminal_mouse_disable();

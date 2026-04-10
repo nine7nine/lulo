@@ -132,6 +132,16 @@ typedef struct {
     AppPage active_page;
     int rw_mode;
     int help_visible;
+    int auth_active;
+    void *auth_ctx;
+    int auth_echo;
+    int auth_busy;
+    int auth_input_len;
+    char auth_message[256];
+    char auth_identity[128];
+    char auth_prompt[160];
+    char auth_input[192];
+    char auth_output[1024];
     int strace_active;
     int strace_scroll;
     int strace_x_scroll;

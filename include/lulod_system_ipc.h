@@ -19,6 +19,8 @@ enum {
     LULOD_SYSTEM_REQ_SCHED_APPLY_PRESET = 9,
     LULOD_SYSTEM_REQ_TRACE_BEGIN = 10,
     LULOD_SYSTEM_REQ_TRACE_END = 11,
+    LULOD_SYSTEM_REQ_AUTH_UNLOCK = 12,
+    LULOD_SYSTEM_REQ_AUTH_LOCK = 13,
 };
 
 int lulod_system_socket_path(char *buf, size_t len);
@@ -42,6 +44,8 @@ int lulod_system_send_trace_begin_response(int fd, int status, const char *err,
 int lulod_system_recv_trace_begin_response(int fd, char *session_id, size_t session_id_len,
                                            char *output_path, size_t output_path_len,
                                            char *err, size_t errlen);
+int lulod_system_send_auth_unlock_request(int fd);
+int lulod_system_send_auth_lock_request(int fd);
 int lulod_system_send_edit_begin_request(int fd, const char *path);
 int lulod_system_recv_edit_begin_request(int fd, char *path, size_t path_len);
 int lulod_system_send_edit_session_request(int fd, uint32_t type, const char *session_id);

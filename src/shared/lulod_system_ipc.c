@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_SYSTEM_MAGIC 0x4c555359U
-#define LULOD_SYSTEM_VERSION 8U
+#define LULOD_SYSTEM_VERSION 9U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -625,6 +625,16 @@ int lulod_system_recv_trace_begin_response(int fd, char *session_id, size_t sess
     if (status < 0) return -1;
     if (read_string_fixed(fd, session_id, session_id_len) < 0) return -1;
     return read_string_fixed(fd, output_path, output_path_len);
+}
+
+int lulod_system_send_auth_unlock_request(int fd)
+{
+    return lulod_system_send_sched_request(fd, LULOD_SYSTEM_REQ_AUTH_UNLOCK);
+}
+
+int lulod_system_send_auth_lock_request(int fd)
+{
+    return lulod_system_send_sched_request(fd, LULOD_SYSTEM_REQ_AUTH_LOCK);
 }
 
 int lulod_system_send_edit_begin_request(int fd, const char *path)

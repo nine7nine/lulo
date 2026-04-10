@@ -3,6 +3,16 @@
 <policyconfig>
   <vendor>Lulo</vendor>
   <vendor_url>https://local.invalid/lulo</vendor_url>
+  <action id="io.lulo.system.unlock-rw">
+    <description>Unlock Lulo privileged mode</description>
+    <message>Authentication is required to unlock Lulo privileged mode</message>
+    <icon_name>preferences-system</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
   <action id="io.lulo.admin.pkexec.apply-tune">
     <description>Apply Lulo tunable changes</description>
     <message>Authentication is required to apply Lulo tunable changes</message>

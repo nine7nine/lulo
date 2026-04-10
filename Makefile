@@ -22,6 +22,9 @@ LULO_PATH_CPPFLAGS := -DLULO_HELPERDIR=\"$(LULO_HELPERDIR)\" -DLULO_DATADIR=\"$(
 NC_CFLAGS := $(shell $(PKG_CONFIG) --cflags notcurses-core)
 NC_LIBS := $(shell $(PKG_CONFIG) --libs notcurses-core)
 SYSTEMD_LIBS := $(shell $(PKG_CONFIG) --libs libsystemd)
+POLKIT_CFLAGS := $(shell $(PKG_CONFIG) --cflags polkit-agent-1 polkit-gobject-1 gio-2.0 glib-2.0 gobject-2.0)
+POLKIT_LIBS := $(shell $(PKG_CONFIG) --libs polkit-agent-1 polkit-gobject-1 gio-2.0 gobject-2.0 glib-2.0)
+POLKIT_AGENT_ACK := -DPOLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE
 STRICT_WARNINGS := -Wall -Wextra -Wformat=2 -Wstrict-prototypes -Wmissing-prototypes -Wshadow -Wpointer-arith -Wcast-qual -Wwrite-strings -Wundef -Wvla
 STRICT_CXXWARNINGS := -Wall -Wextra -Wformat=2 -Wshadow -Wpointer-arith -Wcast-qual -Wwrite-strings -Wundef -Wvla
 ASAN_FLAGS := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -39,6 +42,7 @@ SRC_SHARED := src/shared
 
 LULO_SRCS := \
 	$(SRC_APP)/lulo.c \
+	$(SRC_APP)/lulo_auth.c \
 	$(SRC_APP)/lulo_input.c \
 	$(SRC_APP)/lulo_widgets.c \
 	$(SRC_APP)/lulo_sched_page.c \
@@ -60,6 +64,7 @@ LULO_SRCS := \
 	$(SRC_CORE)/lulo_systemd_backend.c \
 	$(SRC_CORE)/lulo_tune.c \
 	$(SRC_CORE)/lulo_tune_backend.c \
+	$(SRC_SHARED)/lulo_proc_meta.c \
 	$(SRC_SHARED)/lulod_system_ipc.c \
 	$(SRC_SHARED)/lulod_ipc.c
 
@@ -111,14 +116,14 @@ analyze:
 
 asan: lulo-asan lulod-asan lulod-system-asan lulo-admin-asan nc_input_probe-asan lulod-focus-kde-asan
 
-lulo: $(LULO_SRCS) include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_cgroups.h include/lulo_cgroups_backend.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulo_udev.h include/lulo_udev_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
-	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CFLAGS) $(NC_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) -lm -lpthread
+lulo: $(LULO_SRCS) include/lulo_auth.h include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_cgroups.h include/lulo_cgroups_backend.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulo_udev.h include/lulo_udev_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
+	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(POLKIT_AGENT_ACK) $(CFLAGS) $(NC_CFLAGS) $(POLKIT_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) $(POLKIT_LIBS) -lm -lpthread
 
 lulod: $(LULOD_SRCS) include/lulo_cgroups.h include/lulo_sched.h include/lulo_systemd.h include/lulo_tune.h include/lulo_udev.h include/lulod_cgroups.h include/lulod_sched.h include/lulod_systemd.h include/lulod_tune.h include/lulod_udev.h include/lulod_system_ipc.h include/lulod_ipc.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CFLAGS) -o $@ $(LULOD_SRCS) $(SYSTEMD_LIBS) -lm
 
 lulod-system: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h include/lulod_system_trace.h
-	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CFLAGS) -o $@ $(LULOD_SYSTEM_SRCS) -lm
+	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(POLKIT_AGENT_ACK) $(CFLAGS) $(POLKIT_CFLAGS) -o $@ $(LULOD_SYSTEM_SRCS) $(POLKIT_LIBS) -lm
 
 lulo-admin: $(LULO_ADMIN_SRCS) include/lulo_admin.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CFLAGS) -o $@ $(LULO_ADMIN_SRCS) -lm
@@ -132,14 +137,14 @@ $(LULOD_FOCUS_KDE_MOC): $(LULOD_FOCUS_KDE_SRCS)
 lulod-focus-kde: $(LULOD_FOCUS_KDE_SRCS) $(LULOD_FOCUS_KDE_MOC)
 	$(CXX) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CXXFLAGS) $(FOCUS_KDE_PIC) $(FOCUS_KDE_CFLAGS) -o $@ $(LULOD_FOCUS_KDE_SRCS) $(FOCUS_KDE_LIBS)
 
-lulo-asan: $(LULO_SRCS) include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_cgroups.h include/lulo_cgroups_backend.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulo_udev.h include/lulo_udev_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
-	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) $(NC_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) -lm -lpthread
+lulo-asan: $(LULO_SRCS) include/lulo_auth.h include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_cgroups.h include/lulo_cgroups_backend.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulo_udev.h include/lulo_udev_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
+	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(POLKIT_AGENT_ACK) $(STRICT_WARNINGS) $(ASAN_FLAGS) $(NC_CFLAGS) $(POLKIT_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) $(POLKIT_LIBS) -lm -lpthread
 
 lulod-asan: $(LULOD_SRCS) include/lulo_cgroups.h include/lulo_sched.h include/lulo_systemd.h include/lulo_tune.h include/lulo_udev.h include/lulod_cgroups.h include/lulod_sched.h include/lulod_systemd.h include/lulod_tune.h include/lulod_udev.h include/lulod_system_ipc.h include/lulod_ipc.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) -o $@ $(LULOD_SRCS) $(SYSTEMD_LIBS) -lm
 
 lulod-system-asan: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h include/lulod_system_trace.h
-	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) -o $@ $(LULOD_SYSTEM_SRCS) -lm
+	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(POLKIT_AGENT_ACK) $(STRICT_WARNINGS) $(ASAN_FLAGS) $(POLKIT_CFLAGS) -o $@ $(LULOD_SYSTEM_SRCS) $(POLKIT_LIBS) -lm
 
 lulo-admin-asan: $(LULO_ADMIN_SRCS) include/lulo_admin.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) -o $@ $(LULO_ADMIN_SRCS) -lm

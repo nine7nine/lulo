@@ -31,5 +31,7 @@ void lulo_trace_session_clear(LuloTraceSession *session);
 int lulo_trace_session_begin(pid_t target_pid, LuloTraceSession *session,
                              char *err, size_t errlen);
 int lulo_trace_session_end(LuloTraceSession *session, char *err, size_t errlen);
+int lulo_system_auth_unlock(char *err, size_t errlen);
+int lulo_system_auth_lock(char *err, size_t errlen);
 
 #endif

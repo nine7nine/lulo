@@ -211,7 +211,6 @@ static InputAction decode_key_byte(unsigned char ch)
         return INPUT_TAB_NEXT;
     case 'q':
     case 'Q':
-    case 0x1b:
         return INPUT_QUIT;
     case '+':
     case '=':

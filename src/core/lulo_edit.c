@@ -205,6 +205,11 @@ typedef struct {
     size_t errlen;
 } TraceEndCtx;
 
+typedef struct {
+    char *err;
+    size_t errlen;
+} AuthStatusCtx;
+
 static int trace_end_request(int fd, void *opaque)
 {
     TraceEndCtx *ctx = opaque;
@@ -216,6 +221,40 @@ static int trace_end_request(int fd, void *opaque)
     if (lulod_system_recv_status_response(fd, ctx->err, ctx->errlen) < 0) {
         if (ctx->err && ctx->errlen > 0 && !ctx->err[0]) {
             snprintf(ctx->err, ctx->errlen, "failed to read trace stop response");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int auth_unlock_request(int fd, void *opaque)
+{
+    AuthStatusCtx *ctx = opaque;
+
+    if (lulod_system_send_auth_unlock_request(fd) < 0) {
+        if (ctx->err && ctx->errlen > 0) snprintf(ctx->err, ctx->errlen, "failed to send unlock request");
+        return -1;
+    }
+    if (lulod_system_recv_status_response(fd, ctx->err, ctx->errlen) < 0) {
+        if (ctx->err && ctx->errlen > 0 && !ctx->err[0]) {
+            snprintf(ctx->err, ctx->errlen, "failed to read unlock response");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int auth_lock_request(int fd, void *opaque)
+{
+    AuthStatusCtx *ctx = opaque;
+
+    if (lulod_system_send_auth_lock_request(fd) < 0) {
+        if (ctx->err && ctx->errlen > 0) snprintf(ctx->err, ctx->errlen, "failed to send lock request");
+        return -1;
+    }
+    if (lulod_system_recv_status_response(fd, ctx->err, ctx->errlen) < 0) {
+        if (ctx->err && ctx->errlen > 0 && !ctx->err[0]) {
+            snprintf(ctx->err, ctx->errlen, "failed to read lock response");
         }
         return -1;
     }
@@ -415,4 +454,26 @@ int lulo_trace_session_end(LuloTraceSession *session, char *err, size_t errlen)
     if (with_system_socket(trace_end_request, &ctx, err, errlen) < 0) return -1;
     lulo_trace_session_clear(session);
     return 0;
+}
+
+int lulo_system_auth_unlock(char *err, size_t errlen)
+{
+    AuthStatusCtx ctx;
+
+    if (err && errlen > 0) err[0] = '\0';
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.err = err;
+    ctx.errlen = errlen;
+    return with_system_socket(auth_unlock_request, &ctx, err, errlen);
+}
+
+int lulo_system_auth_lock(char *err, size_t errlen)
+{
+    AuthStatusCtx ctx;
+
+    if (err && errlen > 0) err[0] = '\0';
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.err = err;
+    ctx.errlen = errlen;
+    return with_system_socket(auth_lock_request, &ctx, err, errlen);
 }

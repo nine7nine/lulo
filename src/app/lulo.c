@@ -1,8 +1,7 @@
 /* lulo.c — Notcurses frontend for lulo
  *
  * Build:
- *   gcc -O2 -Wall -Wextra -o lulo lulo.c lulo_model.c lulo_proc.c \
- *     $(pkg-config --cflags --libs notcurses) -lm
+ *   make
  */
 #define _GNU_SOURCE
 
@@ -28,6 +27,8 @@
 #include "lulo_proc.h"
 #include "lulo_systemd.h"
 #include "lulo_systemd_backend.h"
+#include "lulo_tune.h"
+#include "lulo_tune_backend.h"
 
 typedef struct {
     unsigned r;
@@ -62,6 +63,7 @@ typedef enum {
     APP_PAGE_CPU = 0,
     APP_PAGE_DIZK,
     APP_PAGE_SYSTEMD,
+    APP_PAGE_TUNE,
     APP_PAGE_COUNT
 } AppPage;
 
@@ -113,6 +115,7 @@ typedef struct {
     struct ncplane *proc;
     struct ncplane *disk;
     struct ncplane *systemd;
+    struct ncplane *tune;
     struct ncplane *load;
     struct ncplane *footer;
     TopLayout lo;
@@ -132,6 +135,13 @@ typedef struct {
     int scroll_streak;
     char status[160];
     long long status_until_ms;
+    char tune_status[160];
+    long long tune_status_until_ms;
+    int tune_edit_active;
+    char tune_edit_path[320];
+    char tune_edit_value[192];
+    int tune_edit_len;
+    char tune_edit_prompt[320];
 } AppState;
 
 typedef struct {
@@ -152,7 +162,6 @@ typedef enum {
     INPUT_QUIT,
     INPUT_SAMPLE_FASTER,
     INPUT_SAMPLE_SLOWER,
-    INPUT_TOGGLE_HEAT,
     INPUT_TOGGLE_PROC_CPU,
     INPUT_CYCLE_PROC_REFRESH,
     INPUT_TOGGLE_FOCUS,
@@ -171,6 +180,10 @@ typedef enum {
     INPUT_EXPAND_ALL,
     INPUT_SIGNAL_TERM,
     INPUT_SIGNAL_KILL,
+    INPUT_SAVE_SNAPSHOT,
+    INPUT_SAVE_PRESET,
+    INPUT_EDIT_SELECTED,
+    INPUT_APPLY_SELECTED,
     INPUT_RESIZE,
 } InputAction;
 
@@ -180,6 +193,11 @@ typedef struct {
     int mouse_release;
     int mouse_wheel;
     int key_repeat;
+    int text_len;
+    int backspace;
+    int submit;
+    int cancel;
+    char text[16];
     int mouse_x;
     int mouse_y;
     int mouse_button;
@@ -201,10 +219,16 @@ typedef struct {
     int need_proc;
     int need_disk;
     int need_systemd;
+    int need_tune;
     int need_rebuild;
     int need_proc_refresh;
     int need_disk_refresh;
     int need_systemd_refresh;
+    int need_tune_refresh;
+    int need_tune_refresh_full;
+    int need_tune_save_snapshot;
+    int need_tune_save_preset;
+    int need_tune_apply_selected;
     int need_proc_cursor_only;
     int need_proc_body_only;
     int proc_prev_selected;
@@ -229,6 +253,30 @@ typedef struct {
     NcQueuedInput *head;
     NcQueuedInput **tail;
 } NcInputThread;
+
+const char *input_backend_name(InputBackend backend);
+int parse_input_backend(const char *text, InputBackend *backend);
+InputBackend auto_input_backend(void);
+void debug_log_open(DebugLog *log);
+void debug_log_close(DebugLog *log);
+void debug_log_stage(DebugLog *log, const char *stage);
+void debug_log_errno(DebugLog *log, const char *tag);
+void debug_log_poll(DebugLog *log, const char *tag, int fd, int revents);
+void debug_log_message(DebugLog *log, const char *tag, const char *value);
+void debug_log_nc_event(DebugLog *log, const char *tag, uint32_t id, const ncinput *ni);
+void debug_log_bytes(DebugLog *log, const char *tag, const unsigned char *buf, size_t len);
+void debug_log_action(DebugLog *log, const char *tag, const DecodedInput *in);
+void terminal_mouse_enable(void);
+void terminal_mouse_disable(void);
+int raw_input_enable(RawInput *in);
+void raw_input_disable(RawInput *in);
+ssize_t raw_input_fill(RawInput *in);
+int raw_input_decode_one(RawInput *in, DecodedInput *out);
+int nc_input_start(NcInputThread *ctx, struct notcurses *nc, DebugLog *dlog);
+void nc_input_begin_drain(NcInputThread *ctx);
+void nc_input_stop(NcInputThread *ctx);
+int nc_input_pop(NcInputThread *ctx, uint32_t *id, ncinput *ni);
+InputAction decode_notcurses_input(uint32_t id);
 
 static const Theme theme_color = {
     .mono = 0,
@@ -440,41 +488,11 @@ static int terminal_get_size(int *rows, int *cols)
     return 0;
 }
 
-static const char *input_backend_name(InputBackend backend)
-{
-    switch (backend) {
-    case INPUT_BACKEND_NOTCURSES:
-        return "notcurses";
-    case INPUT_BACKEND_RAW:
-        return "raw";
-    default:
-        return "auto";
-    }
-}
-
-static int parse_input_backend(const char *text, InputBackend *backend)
-{
-    if (!text || !*text) return -1;
-    if (!strcmp(text, "auto")) *backend = INPUT_BACKEND_AUTO;
-    else if (!strcmp(text, "nc") || !strcmp(text, "notcurses")) *backend = INPUT_BACKEND_NOTCURSES;
-    else if (!strcmp(text, "raw")) *backend = INPUT_BACKEND_RAW;
-    else return -1;
-    return 0;
-}
-
-static InputBackend auto_input_backend(void)
-{
-    const char *term = getenv("TERM");
-
-    if (!term || !*term) return INPUT_BACKEND_RAW;
-    if (!strcmp(term, "vte-256color")) return INPUT_BACKEND_NOTCURSES;
-    if (!strcmp(term, "gnome")) return INPUT_BACKEND_NOTCURSES;
-    return INPUT_BACKEND_RAW;
-}
-
 static const char *app_page_name(AppPage page)
 {
     switch (page) {
+    case APP_PAGE_TUNE:
+        return "TUNE";
     case APP_PAGE_SYSTEMD:
         return "SYSTEMD";
     case APP_PAGE_DIZK:
@@ -488,13 +506,15 @@ static const char *app_page_name(AppPage page)
 static const char *footer_hint(AppPage page)
 {
     switch (page) {
+    case APP_PAGE_TUNE:
+        return "q / ESC exit   tab or <- -> page   click view   space open   i edit   Enter stage   a apply   s snapshot   S preset   f focus list/preview   j/k or arrows scroll";
     case APP_PAGE_SYSTEMD:
-        return "q / ESC exit   tab or <- -> page   ,/. view   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
+        return "q / ESC exit   tab or <- -> page   click view   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
     case APP_PAGE_DIZK:
         return "q / ESC exit   tab or <- -> switch   j/k or arrows scroll filesystems   PgUp/PgDn jump";
     case APP_PAGE_CPU:
     default:
-        return "q / ESC exit   tab or <- -> switch   +/- sample   t heat   p proc cpu   r proc ms   space fold   c/e all   x/X term/kill";
+        return "q / ESC exit   tab or <- -> switch   +/- sample   p proc cpu   r proc ms   space fold   c/e all   x/X term/kill";
     }
 }
 
@@ -524,6 +544,59 @@ static void app_status_set(AppState *app, const char *fmt, ...)
     vsnprintf(app->status, sizeof(app->status), fmt, ap);
     va_end(ap);
     app->status_until_ms = mono_ms_now() + 2500;
+}
+
+static void tune_status_set(AppState *app, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!app) return;
+    va_start(ap, fmt);
+    vsnprintf(app->tune_status, sizeof(app->tune_status), fmt, ap);
+    va_end(ap);
+    app->tune_status_until_ms = mono_ms_now() + 2500;
+}
+
+static const char *tune_status_current(AppState *app)
+{
+    if (!app || !app->tune_status[0]) return NULL;
+    if (mono_ms_now() > app->tune_status_until_ms) {
+        app->tune_status[0] = '\0';
+        app->tune_status_until_ms = 0;
+        return NULL;
+    }
+    return app->tune_status;
+}
+
+static void tune_edit_prompt_refresh(AppState *app)
+{
+    const char *label;
+    const char *slash;
+    int max_value_len;
+
+    if (!app || !app->tune_edit_active) return;
+    slash = strrchr(app->tune_edit_path, '/');
+    label = slash ? slash + 1 : app->tune_edit_path;
+    max_value_len = (int)sizeof(app->tune_edit_prompt) - 12 - (int)strlen(label && *label ? label : "value");
+    if (max_value_len < 0) max_value_len = 0;
+    snprintf(app->tune_edit_prompt, sizeof(app->tune_edit_prompt),
+             "edit %s = %.*s", label && *label ? label : "value", max_value_len, app->tune_edit_value);
+}
+
+static void tune_edit_prompt_format(const AppState *app, char *buf, size_t len)
+{
+    const char *label;
+    const char *slash;
+    int max_value_len;
+
+    if (!buf || len == 0) return;
+    buf[0] = '\0';
+    if (!app || !app->tune_edit_active) return;
+    slash = strrchr(app->tune_edit_path, '/');
+    label = slash ? slash + 1 : app->tune_edit_path;
+    max_value_len = (int)len - 12 - (int)strlen(label && *label ? label : "value");
+    if (max_value_len < 0) max_value_len = 0;
+    snprintf(buf, len, "edit %s = %.*s", label && *label ? label : "value", max_value_len, app->tune_edit_value);
 }
 
 static const char *app_status_current(AppState *app)
@@ -572,510 +645,7 @@ static int scroll_units_for_input(AppState *app, InputAction action, int wheel, 
     return 1;
 }
 
-static void debug_log_open(DebugLog *log)
-{
-    const char *path = getenv("LULO_DEBUG_INPUT");
-    memset(log, 0, sizeof(*log));
-    if (!path || !*path) return;
-    log->fp = fopen(path, "a");
-    if (!log->fp) return;
-    log->enabled = 1;
-    fprintf(log->fp, "opened\n");
-    fflush(log->fp);
-}
-
-static void debug_log_close(DebugLog *log)
-{
-    if (log->fp) fclose(log->fp);
-    log->fp = NULL;
-    log->enabled = 0;
-}
-
-static void debug_log_stage(DebugLog *log, const char *stage)
-{
-    if (!log->enabled || !log->fp) return;
-    fprintf(log->fp, "stage %s\n", stage);
-    fflush(log->fp);
-}
-
-static void debug_log_errno(DebugLog *log, const char *tag)
-{
-    if (!log->enabled || !log->fp) return;
-    fprintf(log->fp, "%s errno=%d (%s)\n", tag, errno, strerror(errno));
-    fflush(log->fp);
-}
-
-static void debug_log_poll(DebugLog *log, const char *tag, int fd, int revents)
-{
-    if (!log->enabled || !log->fp) return;
-    fprintf(log->fp, "%s fd=%d revents=0x%x\n", tag, fd, revents);
-    fflush(log->fp);
-}
-
-static void debug_log_message(DebugLog *log, const char *tag, const char *value)
-{
-    if (!log->enabled || !log->fp) return;
-    fprintf(log->fp, "%s %s\n", tag, value ? value : "");
-    fflush(log->fp);
-}
-
-static void debug_log_nc_event(DebugLog *log, const char *tag, uint32_t id, const ncinput *ni)
-{
-    if (!log->enabled || !log->fp) return;
-    fprintf(log->fp,
-            "%s id=%u evtype=%d y=%d x=%d mods=%u utf8='%s' eff0=%u eff1=%u\n",
-            tag, id, ni ? (int)ni->evtype : -1, ni ? ni->y : -1, ni ? ni->x : -1,
-            ni ? ni->modifiers : 0, ni ? ni->utf8 : "",
-            ni ? ni->eff_text[0] : 0, ni ? ni->eff_text[1] : 0);
-    fflush(log->fp);
-}
-
-static void nc_input_queue_free(NcInputThread *ctx)
-{
-    NcQueuedInput *q = ctx->head;
-    while (q) {
-        NcQueuedInput *next = q->next;
-        free(q);
-        q = next;
-    }
-    ctx->head = NULL;
-    ctx->tail = &ctx->head;
-}
-
-static void *nc_input_thread_main(void *opaque)
-{
-    NcInputThread *ctx = opaque;
-
-    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
-    while (ctx->running) {
-        ncinput ni;
-        uint32_t id;
-        int saved_errno;
-        NcQueuedInput *q;
-        int notify = 0;
-
-        errno = 0;
-        memset(&ni, 0, sizeof(ni));
-        id = notcurses_get_blocking(ctx->nc, &ni);
-        saved_errno = errno;
-        if (!ctx->running) break;
-        if (id == 0) continue;
-        if (id == (uint32_t)-1) {
-            if (saved_errno == EINTR) continue;
-            if (saved_errno) debug_log_errno(ctx->dlog, "nc-thread-get-error");
-            else debug_log_message(ctx->dlog, "nc-thread-get-minus1", "errno0");
-            sleep_ms(10);
-            continue;
-        }
-
-        q = calloc(1, sizeof(*q));
-        if (!q) continue;
-        q->id = id;
-        q->ni = ni;
-
-        pthread_mutex_lock(&ctx->lock);
-        if (!ctx->notified) {
-            ctx->notified = 1;
-            notify = 1;
-        }
-        *ctx->tail = q;
-        ctx->tail = &q->next;
-        pthread_mutex_unlock(&ctx->lock);
-
-        if (notify && write(ctx->pipefd[1], "i", 1) < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            debug_log_errno(ctx->dlog, "nc-thread-pipe-write-error");
-        }
-    }
-    return NULL;
-}
-
-static int nc_input_start(NcInputThread *ctx, struct notcurses *nc, DebugLog *dlog)
-{
-    memset(ctx, 0, sizeof(*ctx));
-    ctx->pipefd[0] = -1;
-    ctx->pipefd[1] = -1;
-    ctx->nc = nc;
-    ctx->dlog = dlog;
-    ctx->tail = &ctx->head;
-    if (pipe2(ctx->pipefd, O_CLOEXEC | O_NONBLOCK) < 0) return -1;
-    if (pthread_mutex_init(&ctx->lock, NULL) != 0) {
-        close(ctx->pipefd[0]);
-        close(ctx->pipefd[1]);
-        ctx->pipefd[0] = ctx->pipefd[1] = -1;
-        return -1;
-    }
-    ctx->running = 1;
-    if (pthread_create(&ctx->tid, NULL, nc_input_thread_main, ctx) != 0) {
-        ctx->running = 0;
-        pthread_mutex_destroy(&ctx->lock);
-        close(ctx->pipefd[0]);
-        close(ctx->pipefd[1]);
-        ctx->pipefd[0] = ctx->pipefd[1] = -1;
-        return -1;
-    }
-    ctx->started = 1;
-    return 0;
-}
-
-static void nc_input_begin_drain(NcInputThread *ctx)
-{
-    char drain[64];
-
-    while (read(ctx->pipefd[0], drain, sizeof(drain)) > 0) {}
-    pthread_mutex_lock(&ctx->lock);
-    ctx->notified = 0;
-    pthread_mutex_unlock(&ctx->lock);
-}
-
-static void nc_input_stop(NcInputThread *ctx)
-{
-    if (!ctx->started) return;
-    ctx->running = 0;
-    pthread_cancel(ctx->tid);
-    pthread_join(ctx->tid, NULL);
-    close(ctx->pipefd[0]);
-    close(ctx->pipefd[1]);
-    ctx->pipefd[0] = ctx->pipefd[1] = -1;
-    pthread_mutex_destroy(&ctx->lock);
-    nc_input_queue_free(ctx);
-    ctx->started = 0;
-}
-
-static int nc_input_pop(NcInputThread *ctx, uint32_t *id, ncinput *ni)
-{
-    NcQueuedInput *q;
-
-    pthread_mutex_lock(&ctx->lock);
-    q = ctx->head;
-    if (q) {
-        ctx->head = q->next;
-        if (!ctx->head) ctx->tail = &ctx->head;
-    }
-    pthread_mutex_unlock(&ctx->lock);
-    if (!q) return 0;
-    if (id) *id = q->id;
-    if (ni) *ni = q->ni;
-    free(q);
-    return 1;
-}
-
-static void debug_log_bytes(DebugLog *log, const char *tag, const unsigned char *buf, size_t len)
-{
-    if (!log->enabled || !log->fp) return;
-    fprintf(log->fp, "%s len=%zu", tag, len);
-    for (size_t i = 0; i < len; i++) fprintf(log->fp, " %02x", buf[i]);
-    fputc('\n', log->fp);
-    fflush(log->fp);
-}
-
-static void debug_log_action(DebugLog *log, const char *tag, const DecodedInput *in)
-{
-    if (!log->enabled || !log->fp || !in) return;
-    fprintf(log->fp,
-            "%s action=%d mouse_press=%d mouse_release=%d mouse_button=%d x=%d y=%d\n",
-            tag, in->action, in->mouse_press, in->mouse_release,
-            in->mouse_button, in->mouse_x, in->mouse_y);
-    fflush(log->fp);
-}
-
-static void terminal_write_escape(const char *seq)
-{
-    if (!seq || !*seq) return;
-    (void)!write(STDOUT_FILENO, seq, strlen(seq));
-}
-
-static void terminal_mouse_enable(void)
-{
-    terminal_write_escape("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
-}
-
-static void terminal_mouse_disable(void)
-{
-    terminal_write_escape("\x1b[?1006l\x1b[?1002l\x1b[?1000l");
-}
-
-static int raw_input_enable(RawInput *in)
-{
-    struct termios raw;
-
-    memset(in, 0, sizeof(*in));
-    if (tcgetattr(STDIN_FILENO, &in->old_tc) < 0) return -1;
-    raw = in->old_tc;
-    cfmakeraw(&raw);
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0) return -1;
-    in->active = 1;
-    return 0;
-}
-
-static void raw_input_disable(RawInput *in)
-{
-    if (!in || !in->active) return;
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &in->old_tc);
-    in->active = 0;
-    in->len = 0;
-}
-
-static ssize_t raw_input_fill(RawInput *in)
-{
-    ssize_t total = 0;
-
-    if (!in || in->len >= sizeof(in->buf)) return 0;
-    for (;;) {
-        ssize_t n = read(STDIN_FILENO, in->buf + in->len, sizeof(in->buf) - in->len);
-        if (n > 0) {
-            if (in->len == 0) in->first_ms = mono_ms_now();
-            in->len += (size_t)n;
-            total += n;
-            if (in->len >= sizeof(in->buf)) break;
-            continue;
-        }
-        if (n == 0) break;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-        return total > 0 ? total : -1;
-    }
-    return total;
-}
-
-static void raw_input_consume(RawInput *in, size_t count)
-{
-    if (!in || count == 0) return;
-    if (count >= in->len) {
-        in->len = 0;
-        in->first_ms = 0;
-        return;
-    }
-    memmove(in->buf, in->buf + count, in->len - count);
-    in->len -= count;
-}
-
-static InputAction decode_key_byte(unsigned char ch)
-{
-    switch (ch) {
-    case 'q':
-    case 'Q':
-    case 0x1b:
-        return INPUT_QUIT;
-    case '+':
-    case '=':
-        return INPUT_SAMPLE_FASTER;
-    case '-':
-    case '_':
-        return INPUT_SAMPLE_SLOWER;
-    case 't':
-    case 'T':
-        return INPUT_TOGGLE_HEAT;
-    case 'p':
-    case 'P':
-        return INPUT_TOGGLE_PROC_CPU;
-    case 'r':
-    case 'R':
-        return INPUT_CYCLE_PROC_REFRESH;
-    case 'f':
-    case 'F':
-        return INPUT_TOGGLE_FOCUS;
-    case '\t':
-    case ']':
-        return INPUT_TAB_NEXT;
-    case '[':
-        return INPUT_TAB_PREV;
-    case '.':
-    case '>':
-        return INPUT_VIEW_NEXT;
-    case ',':
-    case '<':
-        return INPUT_VIEW_PREV;
-    case '\r':
-    case '\n':
-    case ' ':
-        return INPUT_TOGGLE_BRANCH;
-    case 'c':
-        return INPUT_COLLAPSE_ALL;
-    case 'e':
-    case 'E':
-        return INPUT_EXPAND_ALL;
-    case 'x':
-        return INPUT_SIGNAL_TERM;
-    case 'X':
-        return INPUT_SIGNAL_KILL;
-    case 'k':
-    case 'K':
-        return INPUT_SCROLL_UP;
-    case 'j':
-    case 'J':
-        return INPUT_SCROLL_DOWN;
-    case 'u':
-    case 'U':
-        return INPUT_PAGE_UP;
-    case 'd':
-    case 'D':
-        return INPUT_PAGE_DOWN;
-    case 'g':
-        return INPUT_HOME;
-    case 'G':
-        return INPUT_END;
-    default:
-        return INPUT_NONE;
-    }
-}
-
-static int parse_decimal_field(const unsigned char *buf, size_t len, size_t *pos, int *value)
-{
-    int out = 0;
-    int digits = 0;
-
-    while (*pos < len && isdigit(buf[*pos])) {
-        out = out * 10 + (buf[*pos] - '0');
-        (*pos)++;
-        digits = 1;
-    }
-    if (!digits) return 0;
-    *value = out;
-    return 1;
-}
-
-static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
-{
-    size_t pos;
-    int first = 0;
-
-    if (in->len < 3) return 0;
-    if (in->buf[2] == '<') {
-        int cb = 0;
-        int cx = 0;
-        int cy = 0;
-        char final;
-
-        pos = 3;
-        if (!parse_decimal_field(in->buf, in->len, &pos, &cb)) return 0;
-        if (pos >= in->len || in->buf[pos++] != ';') return 0;
-        if (!parse_decimal_field(in->buf, in->len, &pos, &cx)) return 0;
-        if (pos >= in->len || in->buf[pos++] != ';') return 0;
-        if (!parse_decimal_field(in->buf, in->len, &pos, &cy)) return 0;
-        if (pos >= in->len) return 0;
-        final = (char)in->buf[pos++];
-        if (final != 'M' && final != 'm') {
-            raw_input_consume(in, pos);
-            return 1;
-        }
-        raw_input_consume(in, pos);
-        out->mouse_x = cx;
-        out->mouse_y = cy;
-        out->mouse_button = (cb & 3) + 1;
-        if (cb & 64) {
-            out->mouse_wheel = 1;
-            out->action = (cb & 1) ? INPUT_SCROLL_DOWN : INPUT_SCROLL_UP;
-        } else if (final == 'M' && (cb & 3) == 0) {
-            out->mouse_press = 1;
-        } else if (final == 'm' && (cb & 3) == 0) {
-            out->mouse_release = 1;
-        }
-        return 1;
-    }
-
-    if (in->buf[2] == 'A' || in->buf[2] == 'B' || in->buf[2] == 'C' ||
-        in->buf[2] == 'D' || in->buf[2] == 'H' || in->buf[2] == 'F') {
-        switch (in->buf[2]) {
-        case 'A': out->action = INPUT_SCROLL_UP; break;
-        case 'B': out->action = INPUT_SCROLL_DOWN; break;
-        case 'C': out->action = INPUT_TAB_NEXT; break;
-        case 'D': out->action = INPUT_TAB_PREV; break;
-        case 'H': out->action = INPUT_HOME; break;
-        case 'F': out->action = INPUT_END; break;
-        }
-        raw_input_consume(in, 3);
-        return 1;
-    }
-
-    pos = 2;
-    if (!parse_decimal_field(in->buf, in->len, &pos, &first)) return 0;
-    while (pos < in->len && in->buf[pos] == ';') {
-        pos++;
-        while (pos < in->len && isdigit(in->buf[pos])) pos++;
-    }
-    if (pos >= in->len) return 0;
-    if (in->buf[pos] == '~') {
-        switch (first) {
-        case 1:
-        case 7:
-            out->action = INPUT_HOME;
-            break;
-        case 4:
-        case 8:
-            out->action = INPUT_END;
-            break;
-        case 5:
-            out->action = INPUT_PAGE_UP;
-            break;
-        case 6:
-            out->action = INPUT_PAGE_DOWN;
-            break;
-        }
-        raw_input_consume(in, pos + 1);
-        return 1;
-    }
-    if (in->buf[pos] == 'A' || in->buf[pos] == 'B' || in->buf[pos] == 'C' ||
-        in->buf[pos] == 'D' || in->buf[pos] == 'H' || in->buf[pos] == 'F') {
-        switch (in->buf[pos]) {
-        case 'A': out->action = INPUT_SCROLL_UP; break;
-        case 'B': out->action = INPUT_SCROLL_DOWN; break;
-        case 'C': out->action = INPUT_TAB_NEXT; break;
-        case 'D': out->action = INPUT_TAB_PREV; break;
-        case 'H': out->action = INPUT_HOME; break;
-        case 'F': out->action = INPUT_END; break;
-        }
-        raw_input_consume(in, pos + 1);
-        return 1;
-    }
-
-    raw_input_consume(in, pos + 1);
-    return 1;
-}
-
-static int raw_input_decode_one(RawInput *in, DecodedInput *out)
-{
-    memset(out, 0, sizeof(*out));
-    if (!in || in->len == 0) return 0;
-    if (in->buf[0] != 0x1b) {
-        out->action = decode_key_byte(in->buf[0]);
-        raw_input_consume(in, 1);
-        return 1;
-    }
-    if (in->len == 1) {
-        if (mono_ms_now() - in->first_ms < 25) return 0;
-        out->action = INPUT_QUIT;
-        raw_input_consume(in, 1);
-        return 1;
-    }
-    if (in->buf[1] == '[') return raw_input_decode_csi(in, out);
-    if (in->buf[1] == 'O') {
-        if (in->len < 3) return 0;
-        switch (in->buf[2]) {
-        case 'A': out->action = INPUT_SCROLL_UP; break;
-        case 'B': out->action = INPUT_SCROLL_DOWN; break;
-        case 'C': out->action = INPUT_TAB_NEXT; break;
-        case 'D': out->action = INPUT_TAB_PREV; break;
-        case 'H': out->action = INPUT_HOME; break;
-        case 'F': out->action = INPUT_END; break;
-        default: break;
-        }
-        raw_input_consume(in, 3);
-        return 1;
-    }
-    out->action = INPUT_QUIT;
-    raw_input_consume(in, 1);
-    return 1;
-}
-
-static Rgb heat_mode_accent(const Theme *theme, HeatMode mode)
-{
-    return mode == HEAT_MODE_TASK ? theme->green : theme->cyan;
-}
-
-static Rgb heat_cell_color(const Theme *theme, HeatMode mode, int pct)
+static Rgb heat_cell_color(const Theme *theme, int pct)
 {
     typedef struct {
         int p;
@@ -1093,18 +663,6 @@ static Rgb heat_cell_color(const Theme *theme, HeatMode mode, int pct)
         { 95, {200,  45,   0 } },
         {100, {210,  15,   0 } },
     };
-    static const Stop task_stops[] = {
-        {  1, { 20,  48,  30 } },
-        {  8, { 28,  86,  42 } },
-        { 15, { 32, 122,  54 } },
-        { 25, { 22, 158,  88 } },
-        { 35, { 42, 192, 112 } },
-        { 50, {120, 205,  70 } },
-        { 70, {178, 188,  46 } },
-        { 85, {210, 150,  38 } },
-        { 95, {225, 102,  28 } },
-        {100, {235,  55,  25 } },
-    };
     static const Stop mono_stops[] = {
         {  1, { 86,  86,  86 } },
         { 10, {110, 110, 110 } },
@@ -1121,9 +679,6 @@ static Rgb heat_cell_color(const Theme *theme, HeatMode mode, int pct)
     if (theme->mono) {
         stops = mono_stops;
         count = (int)(sizeof(mono_stops) / sizeof(mono_stops[0]));
-    } else if (mode == HEAT_MODE_TASK) {
-        stops = task_stops;
-        count = (int)(sizeof(task_stops) / sizeof(task_stops[0]));
     } else {
         stops = raw_stops;
         count = (int)(sizeof(raw_stops) / sizeof(raw_stops[0]));
@@ -1303,6 +858,7 @@ static void ui_destroy_planes(Ui *ui)
 {
     destroy_plane(&ui->footer);
     destroy_plane(&ui->load);
+    destroy_plane(&ui->tune);
     destroy_plane(&ui->systemd);
     destroy_plane(&ui->disk);
     destroy_plane(&ui->proc);
@@ -1345,6 +901,12 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
         if (disk_height > 0) {
             ui->disk = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1, disk_height, lo->top.width - 2, "disk");
         }
+    } else if (page == APP_PAGE_TUNE) {
+        int tune_height = lo->top.height - 3;
+        if (tune_height > 0) {
+            ui->tune = create_plane(ui->std, lo->top.row + 1, lo->top.col + 1,
+                                    tune_height, lo->top.width - 2, "tune");
+        }
     } else {
         int systemd_height = lo->top.height - 3;
         if (systemd_height > 0) {
@@ -1362,6 +924,9 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
     if (page == APP_PAGE_DIZK && !ui->disk) {
         return -1;
     }
+    if (page == APP_PAGE_TUNE && !ui->tune) {
+        return -1;
+    }
     if (page == APP_PAGE_SYSTEMD && !ui->systemd) {
         return -1;
     }
@@ -1370,6 +935,8 @@ static int ui_rebuild_planes(Ui *ui, const TopLayout *lo, AppPage page)
         if (ui->proc) draw_box_title(ui->proc, ui->theme, ui->theme->border_panel, " Process Tree ", ui->theme->white);
     } else if (ui->disk) {
         draw_box_title(ui->disk, ui->theme, ui->theme->border_panel, " Disk ", ui->theme->white);
+    } else if (ui->tune) {
+        draw_box_title(ui->tune, ui->theme, ui->theme->border_panel, " Tunables ", ui->theme->white);
     } else if (ui->systemd) {
         draw_box_title(ui->systemd, ui->theme, ui->theme->border_panel, " Systemd ", ui->theme->white);
     }
@@ -1385,20 +952,17 @@ static void render_header_widget(Ui *ui, const DashboardState *dash, const AppSt
 {
     char tb[32];
     char sample_buf[24];
-    char heat_buf[24];
     char proc_buf[32];
     char proc_cpu_buf[24];
     int row;
     int x;
     int remaining;
-    Rgb accent = heat_mode_accent(ui->theme, dash->heat_mode);
 
     draw_box_title(ui->header, ui->theme, ui->theme->border_header, NULL, ui->theme->fg);
     if (ui->lo.header.height < 3) return;
 
     strftime(tb, sizeof(tb), "%a %d %b %Y  %H:%M:%S", localtime(&(time_t){ time(NULL) }));
     snprintf(sample_buf, sizeof(sample_buf), "%dms", dash->sample_ms);
-    snprintf(heat_buf, sizeof(heat_buf), "heat %s", lulo_heat_mode_name(dash->heat_mode));
     snprintf(proc_buf, sizeof(proc_buf), "proc %dms",
              app ? effective_proc_refresh_ms(dash->sample_ms, app->proc_refresh_ms) : 1000);
     snprintf(proc_cpu_buf, sizeof(proc_cpu_buf), "cpu %s",
@@ -1407,7 +971,7 @@ static void render_header_widget(Ui *ui, const DashboardState *dash, const AppSt
     row = 1;
     x = 2;
     remaining = ui->lo.header.width - 4;
-    x += plane_segment_fit(ui->header, row, x, remaining, accent, ui->theme->bg, "LULO");
+    x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->cyan, ui->theme->bg, "LULO");
     remaining = ui->lo.header.width - 4 - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ");
     remaining = ui->lo.header.width - 4 - (x - 2);
@@ -1424,10 +988,6 @@ static void render_header_widget(Ui *ui, const DashboardState *dash, const AppSt
     remaining = ui->lo.header.width - 4 - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
     remaining = ui->lo.header.width - 4 - (x - 2);
-    x += plane_segment_fit(ui->header, row, x, remaining, accent, ui->theme->bg, heat_buf);
-    remaining = ui->lo.header.width - 4 - (x - 2);
-    x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
-    remaining = ui->lo.header.width - 4 - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->green, ui->theme->bg, proc_cpu_buf);
     remaining = ui->lo.header.width - 4 - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
@@ -1439,18 +999,17 @@ static void render_header_widget(Ui *ui, const DashboardState *dash, const AppSt
     plane_segment_fit(ui->header, row, x, remaining, ui->theme->white, ui->theme->bg, tb);
 }
 
-static void render_cpu_headers(Ui *ui, const DashboardState *dash)
+static void render_cpu_headers(Ui *ui)
 {
     char buf[64];
     int x = 0;
-    Rgb accent = heat_mode_accent(ui->theme, dash->heat_mode);
 
     plane_fill(ui->cpu, 0, 0, ui->lo.cpu.width, ui->theme->bg, ui->theme->bg);
     snprintf(buf, sizeof(buf), "%-*s", ui->lo.cpu_label_w, "CPU");
     plane_putn(ui->cpu, 0, x, ui->theme->white, ui->theme->bg, buf, ui->lo.cpu_label_w);
     x += ui->lo.cpu_label_w + 2;
     snprintf(buf, sizeof(buf), "%-*s", ui->lo.cpu_hist_w + 4, "HISTORY");
-    plane_putn(ui->cpu, 0, x, accent, ui->theme->bg, buf, ui->lo.cpu_hist_w + 4);
+    plane_putn(ui->cpu, 0, x, ui->theme->cyan, ui->theme->bg, buf, ui->lo.cpu_hist_w + 4);
     x += ui->lo.cpu_hist_w + 5;
     plane_putn(ui->cpu, 0, x, ui->theme->white, ui->theme->bg, "MHz", 6);
     x += 8;
@@ -1464,11 +1023,11 @@ static void render_cpu_headers(Ui *ui, const DashboardState *dash)
     }
 }
 
-static void render_heatmap(Ui *ui, int y, int x, const unsigned char *hist, int width, HeatMode mode)
+static void render_heatmap(Ui *ui, int y, int x, const unsigned char *hist, int width)
 {
     for (int i = 0; i < width; i++) {
         if (hist[i] <= 0) continue;
-        plane_color(ui->cpu, heat_cell_color(ui->theme, mode, hist[i]), ui->theme->bg);
+        plane_color(ui->cpu, heat_cell_color(ui->theme, hist[i]), ui->theme->bg);
         ncplane_putstr_yx(ui->cpu, y, x + i, "█");
     }
 }
@@ -1479,19 +1038,18 @@ static void render_cpu_widget(Ui *ui, const CpuInfo *ci, DashboardState *dash,
                               const double *cpu_temps, int ncpu_temp,
                               int append_sample)
 {
-    render_cpu_headers(ui, dash);
+    render_cpu_headers(ui);
     for (int i = 0; i < ui->lo.cpu_rows; i++) {
         char label[32];
         char buf[64];
         int y = i + 1;
         int x = 0;
         int pct = lulo_cpu_pct(&sa->cpu[i + 1], &sb->cpu[i + 1]);
-        int heat_raw = lulo_cpu_heat_pct(&sa->cpu[i + 1], &sb->cpu[i + 1], HEAT_MODE_RAW);
-        int heat_task = lulo_cpu_heat_pct(&sa->cpu[i + 1], &sb->cpu[i + 1], HEAT_MODE_TASK);
+        int heat = lulo_cpu_heat_pct(&sa->cpu[i + 1], &sb->cpu[i + 1]);
         long mhz = i < nfreq ? freqs[i].cur_khz / 1000 : 0;
         const unsigned char *hist;
 
-        if (append_sample) lulo_dashboard_append_heat(dash, i, heat_raw, heat_task);
+        if (append_sample) lulo_dashboard_append_heat(dash, i, heat);
         hist = lulo_dashboard_history(dash, i, ui->lo.cpu_hist_w);
 
         plane_fill(ui->cpu, y, 0, ui->lo.cpu.width, ui->theme->bg, ui->theme->bg);
@@ -1499,7 +1057,7 @@ static void render_cpu_widget(Ui *ui, const CpuInfo *ci, DashboardState *dash,
         snprintf(buf, sizeof(buf), "%-*s", ui->lo.cpu_label_w, label);
         plane_putn(ui->cpu, y, x, ui->theme->white, ui->theme->bg, buf, ui->lo.cpu_label_w);
         x += ui->lo.cpu_label_w + 2;
-        render_heatmap(ui, y, x, hist, ui->lo.cpu_hist_w, dash->heat_mode);
+        render_heatmap(ui, y, x, hist, ui->lo.cpu_hist_w);
         x += ui->lo.cpu_hist_w + 1;
 
         snprintf(buf, sizeof(buf), "%3d%%", pct);
@@ -2949,6 +2507,630 @@ static void render_systemd_status(Ui *ui, const LuloSystemdSnapshot *snap, const
     }
 }
 
+typedef struct {
+    int tabs_y;
+    int tabs_x;
+    LuloRect list;
+    LuloRect info;
+    LuloRect preview;
+    int show_info;
+} TuneWidgetLayout;
+
+static int tune_explore_selection_active(const LuloTuneState *state)
+{
+    return state && state->selected >= 0 && state->selected_path[0];
+}
+
+static int tune_snapshot_selection_active(const LuloTuneState *state)
+{
+    return state && state->snapshot_selected >= 0 && state->selected_snapshot_id[0];
+}
+
+static int tune_preset_selection_active(const LuloTuneState *state)
+{
+    return state && state->preset_selected >= 0 && state->selected_preset_id[0];
+}
+
+static int tune_preview_open(const LuloTuneState *state)
+{
+    if (!state) return 0;
+    switch (state->view) {
+    case LULO_TUNE_VIEW_SNAPSHOTS:
+        return tune_snapshot_selection_active(state);
+    case LULO_TUNE_VIEW_PRESETS:
+        return tune_preset_selection_active(state);
+    case LULO_TUNE_VIEW_EXPLORE:
+    default:
+        return tune_explore_selection_active(state);
+    }
+}
+
+static void build_tune_widget_layout(const Ui *ui, const LuloTuneState *state, TuneWidgetLayout *layout)
+{
+    unsigned rows = 0;
+    unsigned cols = 0;
+    int inner_w;
+    int content_h;
+    int info_h;
+
+    memset(layout, 0, sizeof(*layout));
+    if (!ui->tune) return;
+    ncplane_dim_yx(ui->tune, &rows, &cols);
+    if (rows < 8 || cols < 28) return;
+    layout->tabs_y = 1;
+    layout->tabs_x = 2;
+    inner_w = (int)cols - 2;
+    content_h = (int)rows - 4;
+    if (inner_w < 20 || content_h < 4) return;
+
+    info_h = 5;
+    layout->show_info = content_h >= info_h + 4;
+    if (!tune_preview_open(state)) {
+        layout->list.row = 2;
+        layout->list.col = 1;
+        layout->list.width = inner_w;
+        layout->list.height = content_h;
+        layout->show_info = 0;
+        return;
+    }
+
+    if (inner_w >= 104) {
+        int list_w = clamp_int(inner_w * 11 / 20, 42, inner_w - 34);
+        int right_w = inner_w - list_w - 1;
+
+        layout->list.row = 2;
+        layout->list.col = 1;
+        layout->list.width = list_w;
+        layout->list.height = content_h;
+        layout->info.row = 2;
+        layout->info.col = list_w + 2;
+        layout->info.width = right_w;
+        layout->info.height = layout->show_info ? info_h : 0;
+        layout->preview.col = list_w + 2;
+        layout->preview.width = right_w;
+        if (layout->show_info) {
+            layout->preview.row = 2 + info_h + 1;
+            layout->preview.height = content_h - info_h - 1;
+        } else {
+            layout->preview.row = 2;
+            layout->preview.height = content_h;
+        }
+        return;
+    }
+
+    {
+        int list_h = clamp_int(content_h / 3 + 1, 7, content_h - 4);
+
+        layout->list.row = 2;
+        layout->list.col = 1;
+        layout->list.width = inner_w;
+        layout->list.height = list_h;
+        layout->info.row = 2 + list_h + 1;
+        layout->info.col = 1;
+        layout->info.width = inner_w;
+        layout->info.height = layout->show_info ? info_h : 0;
+        layout->preview.col = 1;
+        layout->preview.width = inner_w;
+        if (layout->show_info) {
+            layout->preview.row = layout->info.row + info_h + 1;
+            layout->preview.height = content_h - list_h - info_h - 2;
+        } else {
+            layout->preview.row = 2 + list_h + 1;
+            layout->preview.height = content_h - list_h - 1;
+        }
+    }
+}
+
+static int tune_list_rows_visible(const Ui *ui, const LuloTuneState *state)
+{
+    TuneWidgetLayout layout;
+
+    if (!ui->tune || !state) return 1;
+    build_tune_widget_layout(ui, state, &layout);
+    return clamp_int(rect_inner_rows(&layout.list) - 1, 1, 4096);
+}
+
+static int tune_preview_rows_visible(const Ui *ui, const LuloTuneState *state)
+{
+    TuneWidgetLayout layout;
+
+    if (!ui->tune || !state) return 1;
+    build_tune_widget_layout(ui, state, &layout);
+    return clamp_int(rect_inner_rows(&layout.preview), 1, 4096);
+}
+
+static const LuloTuneRow *selected_tune_row(const LuloTuneSnapshot *snap, const LuloTuneState *state)
+{
+    if (!snap || !state || snap->count <= 0 || !tune_explore_selection_active(state)) return NULL;
+    if (state->selected >= 0 && state->selected < snap->count) return &snap->rows[state->selected];
+    return NULL;
+}
+
+static const LuloTuneRow *active_tune_explore_row(const LuloTuneSnapshot *snap, const LuloTuneState *state)
+{
+    const LuloTuneRow *row = selected_tune_row(snap, state);
+
+    if (row) return row;
+    if (!snap || !state || snap->count <= 0) return NULL;
+    if (state->cursor >= 0 && state->cursor < snap->count) return &snap->rows[state->cursor];
+    return NULL;
+}
+
+static int start_tune_edit(AppState *app, const LuloTuneSnapshot *snap, const LuloTuneState *state)
+{
+    const LuloTuneRow *row;
+
+    if (!app || !snap || !state) return 0;
+    if (state->view != LULO_TUNE_VIEW_EXPLORE) {
+        tune_status_set(app, "edit is available from Explore");
+        return 0;
+    }
+    row = active_tune_explore_row(snap, state);
+    if (!row) {
+        tune_status_set(app, "no tunable selected");
+        return 0;
+    }
+    if (row->is_dir) {
+        tune_status_set(app, "select a file to edit");
+        return 0;
+    }
+    app->tune_edit_active = 1;
+    snprintf(app->tune_edit_path, sizeof(app->tune_edit_path), "%s", row->path);
+    if (state->staged_path[0] && strcmp(state->staged_path, row->path) == 0) {
+        snprintf(app->tune_edit_value, sizeof(app->tune_edit_value), "%s", state->staged_value);
+    } else {
+        snprintf(app->tune_edit_value, sizeof(app->tune_edit_value), "%s", row->value);
+    }
+    app->tune_edit_len = (int)strlen(app->tune_edit_value);
+    tune_edit_prompt_refresh(app);
+    return 1;
+}
+
+static int active_tune_row_is_staged(const LuloTuneSnapshot *snap, const LuloTuneState *state)
+{
+    const LuloTuneRow *row = active_tune_explore_row(snap, state);
+
+    return row && state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0;
+}
+
+static int handle_tune_edit_input(AppState *app, const DecodedInput *in,
+                                  LuloTuneState *tune_state, RenderFlags *render)
+{
+    if (!app || !in || !tune_state || !app->tune_edit_active) return 0;
+
+    if (in->cancel) {
+        app->tune_edit_active = 0;
+        app->tune_edit_path[0] = '\0';
+        app->tune_edit_value[0] = '\0';
+        app->tune_edit_len = 0;
+        tune_status_set(app, "edit cancelled");
+        render->need_tune = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    if (in->submit) {
+        app->tune_edit_active = 0;
+        snprintf(tune_state->staged_path, sizeof(tune_state->staged_path), "%s", app->tune_edit_path);
+        snprintf(tune_state->staged_value, sizeof(tune_state->staged_value), "%s", app->tune_edit_value);
+        tune_status_set(app, "staged value for %s",
+                        tune_state->selected_path[0] ? tune_state->selected_path : app->tune_edit_path);
+        app->tune_edit_path[0] = '\0';
+        app->tune_edit_value[0] = '\0';
+        app->tune_edit_len = 0;
+        render->need_tune = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    if (in->backspace) {
+        if (app->tune_edit_len > 0) {
+            app->tune_edit_value[--app->tune_edit_len] = '\0';
+            tune_edit_prompt_refresh(app);
+            render->need_tune = 1;
+            render->need_render = 1;
+        }
+        return 1;
+    }
+    if (in->text_len > 0) {
+        int avail = (int)sizeof(app->tune_edit_value) - 1 - app->tune_edit_len;
+        if (avail > 0) {
+            int take = in->text_len < avail ? in->text_len : avail;
+            memcpy(app->tune_edit_value + app->tune_edit_len, in->text, (size_t)take);
+            app->tune_edit_len += take;
+            app->tune_edit_value[app->tune_edit_len] = '\0';
+            tune_edit_prompt_refresh(app);
+            render->need_tune = 1;
+            render->need_render = 1;
+        }
+        return 1;
+    }
+    return 1;
+}
+
+static void fill_decoded_input_from_nc(DecodedInput *out, uint32_t id, const ncinput *ni, InputAction action)
+{
+    memset(out, 0, sizeof(*out));
+    out->action = action;
+    out->key_repeat = ni && ni->evtype == NCTYPE_REPEAT;
+    if (id == 27) {
+        out->cancel = 1;
+        return;
+    }
+    if (id == NCKEY_ENTER) {
+        out->submit = 1;
+        return;
+    }
+    if (id == NCKEY_BACKSPACE) {
+        out->backspace = 1;
+        return;
+    }
+    if (id < 0x80 && isprint((int)id)) {
+        out->text[0] = (char)id;
+        out->text[1] = '\0';
+        out->text_len = 1;
+    } else if (ni && ni->utf8[0]) {
+        snprintf(out->text, sizeof(out->text), "%s", ni->utf8);
+        out->text_len = (int)strlen(out->text);
+    }
+}
+
+static const LuloTuneBundleMeta *selected_tune_bundle(const LuloTuneSnapshot *snap, const LuloTuneState *state, int preset)
+{
+    if (!snap || !state) return NULL;
+    if (preset) {
+        if (!tune_preset_selection_active(state) || snap->preset_count <= 0) return NULL;
+        if (state->preset_selected >= 0 && state->preset_selected < snap->preset_count) {
+            return &snap->presets[state->preset_selected];
+        }
+    } else {
+        if (!tune_snapshot_selection_active(state) || snap->snapshot_count <= 0) return NULL;
+        if (state->snapshot_selected >= 0 && state->snapshot_selected < snap->snapshot_count) {
+            return &snap->snapshots[state->snapshot_selected];
+        }
+    }
+    return NULL;
+}
+
+static Rgb tune_source_color(const Theme *theme, LuloTuneSource source)
+{
+    switch (source) {
+    case LULO_TUNE_SOURCE_SYS:
+        return theme->green;
+    case LULO_TUNE_SOURCE_CGROUP:
+        return theme->orange;
+    case LULO_TUNE_SOURCE_PROC:
+    default:
+        return theme->cyan;
+    }
+}
+
+static void render_tune_view_tabs(struct ncplane *p, const Theme *theme, const TuneWidgetLayout *layout,
+                                  const LuloTuneState *state)
+{
+    unsigned cols = 0;
+    int x = layout->tabs_x;
+
+    ncplane_dim_yx(p, NULL, &cols);
+    plane_fill(p, layout->tabs_y, 1, (int)cols - 2, theme->bg, theme->bg);
+    for (int i = 0; i < LULO_TUNE_VIEW_COUNT; i++) {
+        char label[32];
+        int active = state && state->view == (LuloTuneView)i;
+        int width;
+        Rgb fg = active ? theme->bg : theme->white;
+        Rgb bg = active ? theme->border_header : theme->bg;
+
+        snprintf(label, sizeof(label), " %s ", lulo_tune_view_name((LuloTuneView)i));
+        width = (int)strlen(label);
+        plane_putn(p, layout->tabs_y, x, fg, bg, label, width);
+        x += width + 1;
+    }
+}
+
+static void render_tune_explore_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                                     const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                                     const AppState *app)
+{
+    int visible_rows;
+    int start;
+    int src_w = 4;
+    int rw_w = 2;
+    int type_w = 3;
+    int name_w;
+    int value_w;
+    const char *path_meta;
+
+    if (!rect_valid(rect)) return;
+    draw_inner_box(p, theme, rect, theme->border_panel, " Explorer ", theme->white);
+    path_meta = state && state->browse_path[0] ? state->browse_path : "roots";
+    draw_inner_meta(p, theme, rect, path_meta, state && !state->focus_preview ? theme->green : theme->cyan);
+    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
+    start = state ? clamp_int(state->list_scroll, 0, snap && snap->count > visible_rows ? snap->count - visible_rows : 0) : 0;
+    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "src", src_w);
+    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1, theme->dim, theme->bg, "rw", rw_w);
+    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1 + rw_w + 1, theme->dim, theme->bg, "typ", type_w);
+    name_w = rect->width >= 78 ? 22 : rect->width >= 64 ? 18 : 14;
+    value_w = rect_inner_cols(rect) - src_w - rw_w - type_w - name_w - 4;
+    if (value_w < 10) value_w = 10;
+    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1 + rw_w + 1 + type_w + 1, theme->dim, theme->bg, "name", name_w);
+    plane_putn(p, rect->row + 1, rect->col + 1 + src_w + 1 + rw_w + 1 + type_w + 1 + name_w + 1,
+               theme->dim, theme->bg, "value / path", value_w);
+    if (!snap || snap->count <= 0) {
+        plane_putn(p, rect->row + 2, rect->col + 2, theme->white, theme->bg, "empty directory", rect->width - 4);
+        return;
+    }
+    for (int i = 0; i < visible_rows; i++) {
+        int idx = start + i;
+        int y = rect->row + 2 + i;
+        int x = rect->col + 1;
+        int selected = state && idx == state->cursor;
+        int editing = 0;
+        Rgb row_bg = selected ? theme->select_bg : theme->bg;
+        const LuloTuneRow *row;
+        char edit_buf[224];
+        const char *type_text;
+        const char *value_text;
+        Rgb type_fg;
+        Rgb value_fg;
+
+        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
+        if (idx >= snap->count) continue;
+        row = &snap->rows[idx];
+        editing = app && app->tune_edit_active && strcmp(app->tune_edit_path, row->path) == 0;
+        type_text = row->is_dir ? "dir" :
+                    (editing ? "edt" :
+                     (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? "stg" : "val"));
+        if (editing && !row->is_dir) {
+            snprintf(edit_buf, sizeof(edit_buf), "%s|", app->tune_edit_value);
+            value_text = edit_buf;
+        } else {
+            value_text = row->is_dir ? row->path :
+                         (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? state->staged_value : row->value);
+        }
+        type_fg = selected ? theme->select_fg :
+                  (row->is_dir ? theme->orange :
+                   (editing ? theme->yellow :
+                    (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? theme->green : theme->white)));
+        value_fg = selected ? theme->select_fg :
+                   (editing ? theme->yellow :
+                    (state && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0 ? theme->green : theme->dim));
+        plane_putn(p, y, x, selected ? theme->select_fg : tune_source_color(theme, row->source),
+                   row_bg, lulo_tune_source_name(row->source), src_w);
+        x += src_w + 1;
+        plane_putn(p, y, x, selected ? theme->select_fg : (row->writable ? theme->green : theme->dim),
+                   row_bg, row->is_dir ? "--" : (row->writable ? "rw" : "ro"), rw_w);
+        x += rw_w + 1;
+        plane_putn(p, y, x, type_fg, row_bg, type_text, type_w);
+        x += type_w + 1;
+        plane_putn(p, y, x, selected ? theme->select_fg : (row->is_dir ? theme->yellow : theme->white),
+                   row_bg, row->name, name_w);
+        x += name_w + 1;
+        plane_putn(p, y, x, value_fg, row_bg, value_text, value_w);
+    }
+}
+
+static void render_tune_bundle_list(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                                    const LuloTuneSnapshot *snap, const LuloTuneState *state, int preset)
+{
+    char meta[48];
+    int visible_rows;
+    int start;
+    int created_w = 19;
+    int items_w = 5;
+    int name_w;
+    const LuloTuneBundleMeta *items = preset ? snap->presets : snap->snapshots;
+    int count = preset ? snap->preset_count : snap->snapshot_count;
+    int cursor = preset ? state->preset_cursor : state->snapshot_cursor;
+    int scroll = preset ? state->preset_list_scroll : state->snapshot_list_scroll;
+
+    if (!rect_valid(rect)) return;
+    draw_inner_box(p, theme, rect, theme->border_panel, preset ? " Presets " : " Snapshots ", theme->white);
+    visible_rows = clamp_int(rect_inner_rows(rect) - 1, 1, 4096);
+    start = clamp_int(scroll, 0, count > visible_rows ? count - visible_rows : 0);
+    if (count > 0) {
+        snprintf(meta, sizeof(meta), "%d-%d/%d",
+                 start + 1, clamp_int(start + visible_rows, 1, count), count);
+        draw_inner_meta(p, theme, rect, meta, state && !state->focus_preview ? theme->green : theme->cyan);
+    }
+    plane_putn(p, rect->row + 1, rect->col + 1, theme->dim, theme->bg, "created", created_w);
+    plane_putn(p, rect->row + 1, rect->col + 1 + created_w + 1, theme->dim, theme->bg, "itms", items_w);
+    name_w = rect_inner_cols(rect) - created_w - items_w - 2;
+    if (name_w < 12) name_w = 12;
+    plane_putn(p, rect->row + 1, rect->col + 1 + created_w + 1 + items_w + 1, theme->dim, theme->bg, "name", name_w);
+    if (count <= 0) {
+        plane_putn(p, rect->row + 2, rect->col + 2, theme->white, theme->bg, "no saved configs", rect->width - 4);
+        return;
+    }
+    for (int i = 0; i < visible_rows; i++) {
+        int idx = start + i;
+        int y = rect->row + 2 + i;
+        int x = rect->col + 1;
+        int selected = idx == cursor;
+        Rgb row_bg = selected ? theme->select_bg : theme->bg;
+        char items_buf[8];
+
+        plane_fill(p, y, rect->col + 1, rect_inner_cols(rect), row_bg, row_bg);
+        if (idx >= count) continue;
+        snprintf(items_buf, sizeof(items_buf), "%d", items[idx].item_count);
+        plane_putn(p, y, x, selected ? theme->select_fg : theme->cyan, row_bg, items[idx].created, created_w);
+        x += created_w + 1;
+        plane_putn(p, y, x, selected ? theme->select_fg : theme->green, row_bg, items_buf, items_w);
+        x += items_w + 1;
+        plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, items[idx].name, name_w);
+    }
+}
+
+static void render_tune_info(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                             const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                             const AppState *app)
+{
+    char buf[512];
+
+    if (!rect_valid(rect) || !state) return;
+    draw_inner_box(p, theme, rect, theme->border_panel, " Details ", theme->white);
+    if (state->view == LULO_TUNE_VIEW_EXPLORE) {
+        const LuloTuneRow *row = selected_tune_row(snap, state);
+
+        if (!row) {
+            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no file selected", rect->width - 4);
+            return;
+        }
+        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, row->name, rect->width - 4);
+        plane_putn(p, rect->row + 2, rect->col + 2, theme->dim, theme->bg, row->path, rect->width - 4);
+        snprintf(buf, sizeof(buf), "%s  %s  %s",
+                 lulo_tune_source_name(row->source), row->group,
+                 row->is_dir ? "directory" : (row->writable ? "writable" : "read-only"));
+        plane_putn(p, rect->row + 3, rect->col + 2,
+                   row->is_dir ? theme->orange : tune_source_color(theme, row->source),
+                   theme->bg, buf, rect->width - 4);
+        if (!row->is_dir && app && app->tune_edit_active && strcmp(app->tune_edit_path, row->path) == 0) {
+            snprintf(buf, sizeof(buf), "editing: %s|", app->tune_edit_value);
+            plane_putn(p, rect->row + 4, rect->col + 2, theme->yellow, theme->bg, buf, rect->width - 4);
+        } else if (!row->is_dir && state->staged_path[0] && strcmp(state->staged_path, row->path) == 0) {
+            snprintf(buf, sizeof(buf), "staged: %s", state->staged_value[0] ? state->staged_value : "(empty)");
+            plane_putn(p, rect->row + 4, rect->col + 2, theme->green, theme->bg, buf, rect->width - 4);
+        } else {
+            plane_putn(p, rect->row + 4, rect->col + 2,
+                       row->is_dir ? theme->dim : theme->green, theme->bg,
+                       row->is_dir ? "<directory>" : row->value, rect->width - 4);
+        }
+        return;
+    }
+
+    {
+        const LuloTuneBundleMeta *bundle = selected_tune_bundle(snap, state, state->view == LULO_TUNE_VIEW_PRESETS);
+
+        if (!bundle) {
+            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, "no saved config selected", rect->width - 4);
+            return;
+        }
+        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, bundle->name, rect->width - 4);
+        plane_putn(p, rect->row + 2, rect->col + 2, theme->dim, theme->bg, bundle->id, rect->width - 4);
+        snprintf(buf, sizeof(buf), "created %s", bundle->created);
+        plane_putn(p, rect->row + 3, rect->col + 2, theme->cyan, theme->bg, buf, rect->width - 4);
+        snprintf(buf, sizeof(buf), "items %d", bundle->item_count);
+        plane_putn(p, rect->row + 4, rect->col + 2, theme->green, theme->bg, buf, rect->width - 4);
+    }
+}
+
+static Rgb tune_preview_line_color(const Theme *theme, const char *line)
+{
+    if (!line || !*line) return theme->dim;
+    if (!strncmp(line, "path:", 5) || !strncmp(line, "id:", 3) || !strncmp(line, "created:", 8)) return theme->cyan;
+    if (!strncmp(line, "note:", 5)) return theme->yellow;
+    if (!strncmp(line, "current value", 13) || !strncmp(line, "raw file", 8)) return theme->white;
+    if (line[0] == '[') return theme->green;
+    if (strchr(line, '=')) return theme->green;
+    return theme->white;
+}
+
+static void render_tune_preview(struct ncplane *p, const Theme *theme, const LuloRect *rect,
+                                const LuloTuneSnapshot *snap, const LuloTuneState *state)
+{
+    char meta[48];
+    const char *title = " Preview ";
+    int visible_rows;
+    int start;
+    int scroll = 0;
+
+    if (!rect_valid(rect) || !state) return;
+    if (state->view == LULO_TUNE_VIEW_SNAPSHOTS) title = " Snapshot ";
+    else if (state->view == LULO_TUNE_VIEW_PRESETS) title = " Preset ";
+    draw_inner_box(p, theme, rect, theme->border_panel, title, theme->white);
+    visible_rows = rect_inner_rows(rect);
+    switch (state->view) {
+    case LULO_TUNE_VIEW_SNAPSHOTS: scroll = state->snapshot_detail_scroll; break;
+    case LULO_TUNE_VIEW_PRESETS: scroll = state->preset_detail_scroll; break;
+    case LULO_TUNE_VIEW_EXPLORE:
+    default: scroll = state->detail_scroll; break;
+    }
+    start = clamp_int(scroll, 0, snap->detail_line_count > visible_rows ? snap->detail_line_count - visible_rows : 0);
+    if (snap->detail_line_count > 0) {
+        snprintf(meta, sizeof(meta), "%d-%d/%d",
+                 start + 1, clamp_int(start + visible_rows, 1, snap->detail_line_count), snap->detail_line_count);
+        draw_inner_meta(p, theme, rect, meta, state->focus_preview ? theme->green : theme->cyan);
+    }
+    if (!snap->detail_lines || snap->detail_line_count <= 0) {
+        plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, snap->detail_status, rect->width - 4);
+        return;
+    }
+    for (int i = 0; i < visible_rows; i++) {
+        int idx = start + i;
+        int y = rect->row + 1 + i;
+        const char *line;
+
+        if (idx >= snap->detail_line_count) break;
+        line = snap->detail_lines[idx];
+        if (!line) line = "";
+        plane_putn(p, y, rect->col + 1, tune_preview_line_color(theme, line), theme->bg,
+                   line, rect_inner_cols(rect));
+    }
+}
+
+static void render_tune_widget(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                               const AppState *app)
+{
+    TuneWidgetLayout layout;
+    unsigned rows = 0;
+    unsigned cols = 0;
+
+    if (!ui->tune || !state) return;
+    ncplane_dim_yx(ui->tune, &rows, &cols);
+    plane_clear_inner(ui->tune, ui->theme, (int)rows, (int)cols);
+    build_tune_widget_layout(ui, state, &layout);
+    render_tune_view_tabs(ui->tune, ui->theme, &layout, state);
+    if (state->view == LULO_TUNE_VIEW_EXPLORE) render_tune_explore_list(ui->tune, ui->theme, &layout.list, snap, state, app);
+    else render_tune_bundle_list(ui->tune, ui->theme, &layout.list, snap, state, state->view == LULO_TUNE_VIEW_PRESETS);
+    if (layout.show_info) render_tune_info(ui->tune, ui->theme, &layout.info, snap, state, app);
+    render_tune_preview(ui->tune, ui->theme, &layout.preview, snap, state);
+}
+
+static void render_tune_status(Ui *ui, const LuloTuneSnapshot *snap, const LuloTuneState *state,
+                               const LuloTuneBackendStatus *backend_status, AppState *app)
+{
+    char buf[512];
+    char prompt[320];
+
+    if (!ui->load || !state) return;
+    plane_reset(ui->load, ui->theme);
+    if (backend_status && !backend_status->have_snapshot && backend_status->busy) {
+        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg,
+                   "view Tune  loading explorer...", ui->lo.load.width - 2);
+        return;
+    }
+    if (backend_status && backend_status->error[0]) {
+        plane_putn(ui->load, 0, 0, ui->theme->red, ui->theme->bg,
+                   backend_status->error, ui->lo.load.width - 2);
+        return;
+    }
+    if (app && app->tune_edit_active) {
+        tune_edit_prompt_format(app, prompt, sizeof(prompt));
+        snprintf(buf, sizeof(buf), "editing  %s  Enter stage  Esc cancel",
+                 prompt[0] ? prompt : "value");
+        plane_putn(ui->load, 0, 0, ui->theme->yellow, ui->theme->bg, buf, ui->lo.load.width - 2);
+        return;
+    }
+    if (app && tune_status_current(app)) {
+        plane_putn(ui->load, 0, 0, ui->theme->green, ui->theme->bg,
+                   app->tune_status, ui->lo.load.width - 2);
+        return;
+    }
+    snprintf(buf, sizeof(buf), "view %s  path %s  items %d  snapshots %d  presets %d  focus %s",
+             lulo_tune_view_name(state->view),
+             state->browse_path[0] ? state->browse_path : "roots",
+             snap ? snap->count : 0,
+             snap ? snap->snapshot_count : 0,
+             snap ? snap->preset_count : 0,
+             state->focus_preview ? "preview" : "list");
+    if (backend_status) {
+        if (backend_status->saving_snapshot) strncat(buf, "  saving snapshot", sizeof(buf) - strlen(buf) - 1);
+        else if (backend_status->saving_preset) strncat(buf, "  saving preset", sizeof(buf) - strlen(buf) - 1);
+        else if (backend_status->applying_selected) strncat(buf, "  applying", sizeof(buf) - strlen(buf) - 1);
+        else if (backend_status->loading_active) strncat(buf, "  loading", sizeof(buf) - strlen(buf) - 1);
+        else if (backend_status->loading_full) strncat(buf, "  refreshing", sizeof(buf) - strlen(buf) - 1);
+    }
+    if (state->staged_path[0]) strncat(buf, "  staged", sizeof(buf) - strlen(buf) - 1);
+    plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, buf, ui->lo.load.width - 2);
+}
+
 static void render_static(Ui *ui, AppPage page, AppState *app)
 {
     render_top_frame(ui);
@@ -2988,6 +3170,15 @@ static void render_systemd_page(Ui *ui, const AppState *app, const DashboardStat
     render_systemd_status(ui, systemd_snap, systemd_state, systemd_backend_status);
 }
 
+static void render_tune_page(Ui *ui, AppState *app, const DashboardState *dash,
+                             const LuloTuneSnapshot *tune_snap, const LuloTuneState *tune_state,
+                             const LuloTuneBackendStatus *tune_backend_status)
+{
+    render_header_widget(ui, dash, app);
+    render_tune_widget(ui, tune_snap, tune_state, app);
+    render_tune_status(ui, tune_snap, tune_state, tune_backend_status, app);
+}
+
 static void render_process_only(Ui *ui, const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state)
 {
     render_process_widget(ui, proc_snap, proc_state);
@@ -3005,6 +3196,15 @@ static void render_systemd_only(Ui *ui, const LuloSystemdSnapshot *systemd_snap,
 {
     render_systemd_widget(ui, systemd_snap, systemd_state);
     render_systemd_status(ui, systemd_snap, systemd_state, systemd_backend_status);
+}
+
+static void render_tune_only(Ui *ui, const LuloTuneSnapshot *tune_snap,
+                             const LuloTuneState *tune_state,
+                             AppState *app,
+                             const LuloTuneBackendStatus *tune_backend_status)
+{
+    render_tune_widget(ui, tune_snap, tune_state, app);
+    render_tune_status(ui, tune_snap, tune_state, tune_backend_status, app);
 }
 
 static int systemd_backend_status_changed(const LuloSystemdBackendStatus *a,
@@ -3043,6 +3243,52 @@ static int poll_systemd_backend(Ui *ui, AppState *app, LuloSystemdBackend *backe
     return changed;
 }
 
+static int tune_backend_status_changed(const LuloTuneBackendStatus *a,
+                                       const LuloTuneBackendStatus *b)
+{
+    if (!a || !b) return 0;
+    return a->busy != b->busy ||
+           a->have_snapshot != b->have_snapshot ||
+           a->loading_full != b->loading_full ||
+           a->loading_active != b->loading_active ||
+           a->saving_snapshot != b->saving_snapshot ||
+           a->saving_preset != b->saving_preset ||
+           a->applying_selected != b->applying_selected ||
+           a->generation != b->generation ||
+           strcmp(a->error, b->error) != 0;
+}
+
+static int poll_tune_backend(Ui *ui, AppState *app, LuloTuneBackend *backend,
+                             LuloTuneSnapshot *snap, LuloTuneState *state,
+                             LuloTuneBackendStatus *status, unsigned *generation,
+                             RenderFlags *render)
+{
+    LuloTuneBackendStatus prev_status = *status;
+    int changed = lulo_tune_backend_consume(backend, snap, generation, status);
+
+    if (changed < 0) return -1;
+    if (changed > 0) {
+        if (prev_status.saving_snapshot && !status->saving_snapshot && !status->error[0]) {
+            tune_status_set(app, "snapshot saved");
+        } else if (prev_status.saving_preset && !status->saving_preset && !status->error[0]) {
+            tune_status_set(app, "preset saved");
+        } else if (prev_status.applying_selected && !status->applying_selected && !status->error[0]) {
+            tune_status_set(app, "saved config applied");
+        }
+        lulo_tune_view_sync(state, snap,
+                            tune_list_rows_visible(ui, state),
+                            tune_preview_rows_visible(ui, state));
+        if (app->active_page == APP_PAGE_TUNE) {
+            render->need_tune = 1;
+            render->need_render = 1;
+        }
+    } else if (app->active_page == APP_PAGE_TUNE && tune_backend_status_changed(&prev_status, status)) {
+        render->need_tune = 1;
+        render->need_render = 1;
+    }
+    return changed;
+}
+
 static void render_header_only(Ui *ui, const DashboardState *dash, const AppState *app)
 {
     render_header_widget(ui, dash, app);
@@ -3055,91 +3301,6 @@ static void render_header_cpu(Ui *ui, const AppState *app, const CpuInfo *ci, Da
 {
     render_header_widget(ui, dash, app);
     render_cpu_widget(ui, ci, dash, sa, sb, freqs, nfreq, cpu_temps, ncpu_temp, 0);
-}
-
-static InputAction decode_notcurses_input(uint32_t id)
-{
-    switch (id) {
-    case 'q':
-    case 'Q':
-    case NCKEY_ESC:
-        return INPUT_QUIT;
-    case '+':
-    case '=':
-        return INPUT_SAMPLE_FASTER;
-    case '-':
-    case '_':
-        return INPUT_SAMPLE_SLOWER;
-    case 't':
-    case 'T':
-        return INPUT_TOGGLE_HEAT;
-    case 'p':
-    case 'P':
-        return INPUT_TOGGLE_PROC_CPU;
-    case 'r':
-    case 'R':
-        return INPUT_CYCLE_PROC_REFRESH;
-    case 'f':
-    case 'F':
-        return INPUT_TOGGLE_FOCUS;
-    case '\t':
-    case ']':
-        return INPUT_TAB_NEXT;
-    case '[':
-        return INPUT_TAB_PREV;
-    case '.':
-    case '>':
-        return INPUT_VIEW_NEXT;
-    case ',':
-    case '<':
-        return INPUT_VIEW_PREV;
-    case NCKEY_ENTER:
-    case '\r':
-    case '\n':
-    case ' ':
-        return INPUT_TOGGLE_BRANCH;
-    case 'c':
-        return INPUT_COLLAPSE_ALL;
-    case 'e':
-    case 'E':
-        return INPUT_EXPAND_ALL;
-    case 'x':
-        return INPUT_SIGNAL_TERM;
-    case 'X':
-        return INPUT_SIGNAL_KILL;
-    case 'k':
-    case 'K':
-    case NCKEY_UP:
-    case NCKEY_SCROLL_UP:
-        return INPUT_SCROLL_UP;
-    case 'j':
-    case 'J':
-    case NCKEY_DOWN:
-    case NCKEY_SCROLL_DOWN:
-        return INPUT_SCROLL_DOWN;
-    case 'u':
-    case 'U':
-    case NCKEY_PGUP:
-        return INPUT_PAGE_UP;
-    case 'd':
-    case 'D':
-    case NCKEY_PGDOWN:
-        return INPUT_PAGE_DOWN;
-    case 'g':
-    case NCKEY_HOME:
-        return INPUT_HOME;
-    case 'G':
-    case NCKEY_END:
-        return INPUT_END;
-    case NCKEY_LEFT:
-        return INPUT_TAB_PREV;
-    case NCKEY_RIGHT:
-        return INPUT_TAB_NEXT;
-    case NCKEY_RESIZE:
-        return INPUT_RESIZE;
-    default:
-        return INPUT_NONE;
-    }
 }
 
 static const LuloProcRow *selected_proc_row(const LuloProcSnapshot *snap, const LuloProcState *state)
@@ -3190,9 +3351,23 @@ static int handle_tab_click(Ui *ui, int global_y, int global_x, AppState *app, R
             if (app->active_page != (AppPage)i) {
                 app->active_page = (AppPage)i;
                 if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
+                else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
                 render->need_rebuild = 1;
                 render->need_render = 1;
             }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int point_on_page_tabs(Ui *ui, int global_y, int global_x)
+{
+    int tab_row = ui->lo.header.row + ui->lo.header.height;
+
+    if (global_y != tab_row) return 0;
+    for (int i = 0; i < APP_PAGE_COUNT; i++) {
+        if (global_x >= ui->tab_hits[i].x && global_x < ui->tab_hits[i].x + ui->tab_hits[i].width) {
             return 1;
         }
     }
@@ -3364,14 +3539,210 @@ static int handle_systemd_click(Ui *ui, int global_y, int global_x,
     return 0;
 }
 
+static LuloTuneView tune_view_from_point(Ui *ui, const TuneWidgetLayout *layout,
+                                         int global_y, int global_x)
+{
+    int row = ui->lo.top.row + 1 + layout->tabs_y;
+    int x = ui->lo.top.col + 1 + layout->tabs_x;
+
+    if (global_y != row) return LULO_TUNE_VIEW_COUNT;
+    for (int i = 0; i < LULO_TUNE_VIEW_COUNT; i++) {
+        char label[32];
+        int width;
+
+        snprintf(label, sizeof(label), " %s ", lulo_tune_view_name((LuloTuneView)i));
+        width = (int)strlen(label);
+        if (global_x >= x && global_x < x + width) return (LuloTuneView)i;
+        x += width + 1;
+    }
+    return LULO_TUNE_VIEW_COUNT;
+}
+
+static int point_on_inner_tabs(Ui *ui, AppPage page,
+                               const LuloTuneState *tune_state,
+                               const LuloSystemdState *systemd_state,
+                               int global_y, int global_x)
+{
+    if (page == APP_PAGE_TUNE && ui->tune && tune_state) {
+        TuneWidgetLayout layout;
+
+        build_tune_widget_layout(ui, tune_state, &layout);
+        return tune_view_from_point(ui, &layout, global_y, global_x) != LULO_TUNE_VIEW_COUNT;
+    }
+    if (page == APP_PAGE_SYSTEMD && ui->systemd && systemd_state) {
+        SystemdWidgetLayout layout;
+
+        build_systemd_widget_layout(ui, systemd_state, &layout);
+        return systemd_view_from_point(ui, &layout, global_y, global_x) != LULO_SYSTEMD_VIEW_COUNT;
+    }
+    return 0;
+}
+
+static int handle_mouse_wheel_target(Ui *ui, AppState *app,
+                                     LuloTuneState *tune_state,
+                                     LuloSystemdState *systemd_state,
+                                     RenderFlags *render,
+                                     int global_y, int global_x)
+{
+    if (!ui || !app) return 0;
+    if (point_on_page_tabs(ui, global_y, global_x)) return 0;
+    if (point_on_inner_tabs(ui, app->active_page, tune_state, systemd_state, global_y, global_x)) return 0;
+    switch (app->active_page) {
+    case APP_PAGE_CPU:
+        return global_y >= ui->lo.proc.row + 2 &&
+               global_y < ui->lo.proc.row + ui->lo.proc.height - 1 &&
+               global_x >= ui->lo.proc.col + 1 &&
+               global_x < ui->lo.proc.col + ui->lo.proc.width - 1;
+    case APP_PAGE_DIZK:
+        return ui->disk &&
+               global_y >= ui->lo.top.row + 1 &&
+               global_y < ui->lo.top.row + ui->lo.top.height - 2 &&
+               global_x >= ui->lo.top.col + 1 &&
+               global_x < ui->lo.top.col + ui->lo.top.width - 1;
+    case APP_PAGE_SYSTEMD:
+        if (ui->systemd && systemd_state) {
+            SystemdWidgetLayout layout;
+
+            build_systemd_widget_layout(ui, systemd_state, &layout);
+            if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
+                int local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
+
+                if (local_y < 2) return 0;
+                if (systemd_state->focus_preview) {
+                    systemd_state->focus_preview = 0;
+                    if (render) render->need_systemd = 1;
+                }
+                return 1;
+            }
+            if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
+                int local_y = global_y - (ui->lo.top.row + 1 + layout.preview.row);
+
+                if (local_y < 1) return 0;
+                if (!systemd_state->focus_preview) {
+                    systemd_state->focus_preview = 1;
+                    if (render) render->need_systemd = 1;
+                }
+                return 1;
+            }
+        }
+        return 0;
+    case APP_PAGE_TUNE:
+        if (ui->tune && tune_state) {
+            TuneWidgetLayout layout;
+
+            build_tune_widget_layout(ui, tune_state, &layout);
+            if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
+                int local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
+
+                if (local_y < 2) return 0;
+                if (tune_state->focus_preview) {
+                    tune_state->focus_preview = 0;
+                    if (render) render->need_tune = 1;
+                }
+                return 1;
+            }
+            if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
+                int local_y = global_y - (ui->lo.top.row + 1 + layout.preview.row);
+
+                if (local_y < 1) return 0;
+                if (!tune_state->focus_preview) {
+                    tune_state->focus_preview = 1;
+                    if (render) render->need_tune = 1;
+                }
+                return 1;
+            }
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+static int handle_tune_click(Ui *ui, int global_y, int global_x,
+                             const LuloTuneSnapshot *snap, LuloTuneState *state,
+                             RenderFlags *render)
+{
+    TuneWidgetLayout layout;
+    LuloTuneView hit_view;
+    int local_y;
+
+    if (!ui->tune || !state || !snap) return 0;
+    build_tune_widget_layout(ui, state, &layout);
+    hit_view = tune_view_from_point(ui, &layout, global_y, global_x);
+    if (hit_view != LULO_TUNE_VIEW_COUNT) {
+        if (state->view != hit_view) {
+            state->view = hit_view;
+            state->focus_preview = 0;
+            render->need_tune_refresh = 1;
+        } else {
+            render->need_tune = 1;
+        }
+        render->need_render = 1;
+        return 1;
+    }
+    if (point_in_rect_global(&ui->lo.top, &layout.list, global_y, global_x)) {
+        int list_rows = tune_list_rows_visible(ui, state);
+        int preview_rows = tune_preview_rows_visible(ui, state);
+        int rc = 0;
+
+        state->focus_preview = 0;
+        local_y = global_y - (ui->lo.top.row + 1 + layout.list.row);
+        if (local_y >= 2) {
+            if (state->view == LULO_TUNE_VIEW_EXPLORE) {
+                int row_index = state->list_scroll + (local_y - 2);
+                if (row_index >= 0 && row_index < snap->count) {
+                    lulo_tune_set_cursor(state, snap, list_rows, preview_rows, row_index);
+                    rc = lulo_tune_open_current(state, snap, list_rows, preview_rows);
+                }
+            } else if (state->view == LULO_TUNE_VIEW_SNAPSHOTS) {
+                int row_index = state->snapshot_list_scroll + (local_y - 2);
+                if (row_index >= 0 && row_index < snap->snapshot_count) {
+                    lulo_tune_set_cursor(state, snap, list_rows, preview_rows, row_index);
+                    rc = lulo_tune_open_current(state, snap, list_rows, preview_rows);
+                }
+            } else {
+                int row_index = state->preset_list_scroll + (local_y - 2);
+                if (row_index >= 0 && row_index < snap->preset_count) {
+                    lulo_tune_set_cursor(state, snap, list_rows, preview_rows, row_index);
+                    rc = lulo_tune_open_current(state, snap, list_rows, preview_rows);
+                }
+            }
+        }
+        if (rc == 2) render->need_tune_refresh_full = 1;
+        else if (rc == 1) render->need_tune_refresh = 1;
+        else render->need_tune = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    if (point_in_rect_global(&ui->lo.top, &layout.preview, global_y, global_x)) {
+        if (!state->focus_preview) {
+            state->focus_preview = 1;
+            render->need_tune = 1;
+            render->need_render = 1;
+        }
+        return 1;
+    }
+    if (layout.show_info && point_in_rect_global(&ui->lo.top, &layout.info, global_y, global_x)) {
+        render->need_tune = 1;
+        render->need_render = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
                               const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
+                              const LuloTuneSnapshot *tune_snap, LuloTuneState *tune_state,
                               const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                               RenderFlags *render)
 {
     if (handle_tab_click(ui, global_y, global_x, app, render)) return 1;
     if (app->active_page == APP_PAGE_CPU &&
         handle_proc_click(ui, global_y, global_x, proc_snap, proc_state, render)) {
+        return 1;
+    }
+    if (app->active_page == APP_PAGE_TUNE &&
+        handle_tune_click(ui, global_y, global_x, tune_snap, tune_state, render)) {
         return 1;
     }
     if (app->active_page == APP_PAGE_SYSTEMD &&
@@ -3425,9 +3796,55 @@ static void update_systemd_render_flags(RenderFlags *render, const LuloSystemdSt
     }
 }
 
+static void update_tune_render_flags(RenderFlags *render, const LuloTuneState *state,
+                                     int prev_view, const char *prev_browse_path,
+                                     int prev_cursor, int prev_selected,
+                                     int prev_list_scroll, int prev_detail_scroll,
+                                     int prev_snapshot_cursor, int prev_snapshot_selected,
+                                     int prev_snapshot_list_scroll, int prev_snapshot_detail_scroll,
+                                     int prev_preset_cursor, int prev_preset_selected,
+                                     int prev_preset_list_scroll, int prev_preset_detail_scroll,
+                                     int prev_focus)
+{
+    if (!render || !state) return;
+    if (strcmp(state->browse_path, prev_browse_path) != 0) {
+        render->need_tune_refresh_full = 1;
+        return;
+    }
+    if ((int)state->view != prev_view) {
+        render->need_tune_refresh = 1;
+        return;
+    }
+    switch (state->view) {
+    case LULO_TUNE_VIEW_SNAPSHOTS:
+        if (state->snapshot_selected != prev_snapshot_selected) render->need_tune_refresh = 1;
+        else if (state->snapshot_cursor != prev_snapshot_cursor ||
+                 state->snapshot_list_scroll != prev_snapshot_list_scroll ||
+                 state->snapshot_detail_scroll != prev_snapshot_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_tune = 1;
+        break;
+    case LULO_TUNE_VIEW_PRESETS:
+        if (state->preset_selected != prev_preset_selected) render->need_tune_refresh = 1;
+        else if (state->preset_cursor != prev_preset_cursor ||
+                 state->preset_list_scroll != prev_preset_list_scroll ||
+                 state->preset_detail_scroll != prev_preset_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_tune = 1;
+        break;
+    case LULO_TUNE_VIEW_EXPLORE:
+    default:
+        if (state->selected != prev_selected) render->need_tune_refresh = 1;
+        else if (state->cursor != prev_cursor ||
+                 state->list_scroll != prev_list_scroll ||
+                 state->detail_scroll != prev_detail_scroll ||
+                 state->focus_preview != prev_focus) render->need_tune = 1;
+        break;
+    }
+}
+
 static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                const LuloProcSnapshot *proc_snap, LuloProcState *proc_state,
                                const LuloDizkSnapshot *dizk_snap, LuloDizkState *dizk_state,
+                               const LuloTuneSnapshot *tune_snap, LuloTuneState *tune_state,
                                const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
                                DashboardState *dash, int *sample_ms, long long *deadline,
                                int *exit_requested, int *need_resize, RenderFlags *render,
@@ -3444,6 +3861,23 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     int prev_systemd_config_list_scroll = systemd_state ? systemd_state->config_list_scroll : 0;
     int prev_systemd_config_file_scroll = systemd_state ? systemd_state->config_file_scroll : 0;
     int prev_systemd_focus = systemd_state ? systemd_state->focus_preview : 0;
+    int prev_tune_view = tune_state ? (int)tune_state->view : 0;
+    char prev_tune_browse_path[320] = {0};
+    int prev_tune_cursor = tune_state ? tune_state->cursor : -1;
+    int prev_tune_selected = tune_state ? tune_state->selected : -1;
+    int prev_tune_list_scroll = tune_state ? tune_state->list_scroll : 0;
+    int prev_tune_detail_scroll = tune_state ? tune_state->detail_scroll : 0;
+    int prev_tune_snapshot_cursor = tune_state ? tune_state->snapshot_cursor : -1;
+    int prev_tune_snapshot_selected = tune_state ? tune_state->snapshot_selected : -1;
+    int prev_tune_snapshot_list_scroll = tune_state ? tune_state->snapshot_list_scroll : 0;
+    int prev_tune_snapshot_detail_scroll = tune_state ? tune_state->snapshot_detail_scroll : 0;
+    int prev_tune_preset_cursor = tune_state ? tune_state->preset_cursor : -1;
+    int prev_tune_preset_selected = tune_state ? tune_state->preset_selected : -1;
+    int prev_tune_preset_list_scroll = tune_state ? tune_state->preset_list_scroll : 0;
+    int prev_tune_preset_detail_scroll = tune_state ? tune_state->preset_detail_scroll : 0;
+    int prev_tune_focus = tune_state ? tune_state->focus_preview : 0;
+
+    if (tune_state) snprintf(prev_tune_browse_path, sizeof(prev_tune_browse_path), "%s", tune_state->browse_path);
 
     switch (action) {
     case INPUT_QUIT:
@@ -3461,12 +3895,6 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         dash->sample_ms = *sample_ms;
         *deadline = mono_ms_now() + *sample_ms;
         render->need_header = 1;
-        render->need_render = 1;
-        break;
-    case INPUT_TOGGLE_HEAT:
-        dash->heat_mode = lulo_next_heat_mode(dash->heat_mode);
-        if (app->active_page == APP_PAGE_CPU) render->need_cpu = 1;
-        else render->need_header = 1;
         render->need_render = 1;
         break;
     case INPUT_TOGGLE_PROC_CPU:
@@ -3493,6 +3921,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                       systemd_preview_rows_visible(ui, systemd_state));
             render->need_systemd = 1;
             render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            lulo_tune_toggle_focus(tune_state, tune_snap,
+                                   tune_list_rows_visible(ui, tune_state),
+                                   tune_preview_rows_visible(ui, tune_state));
+            render->need_tune = 1;
+            render->need_render = 1;
         }
         break;
     case INPUT_SCROLL_UP:
@@ -3507,6 +3941,21 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
 
             lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), -delta);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_tune_view_move(tune_state, tune_snap,
+                                tune_list_rows_visible(ui, tune_state),
+                                tune_preview_rows_visible(ui, tune_state), -delta);
+            update_tune_render_flags(render, tune_state,
+                                     prev_tune_view, prev_tune_browse_path,
+                                     prev_tune_cursor, prev_tune_selected,
+                                     prev_tune_list_scroll, prev_tune_detail_scroll,
+                                     prev_tune_snapshot_cursor, prev_tune_snapshot_selected,
+                                     prev_tune_snapshot_list_scroll, prev_tune_snapshot_detail_scroll,
+                                     prev_tune_preset_cursor, prev_tune_preset_selected,
+                                     prev_tune_preset_list_scroll, prev_tune_preset_detail_scroll,
+                                     prev_tune_focus);
         } else {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -3534,6 +3983,21 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
 
             lulo_dizk_view_move(dizk_state, dizk_snap, disk_visible_rows(ui), +delta);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            int delta = scroll_units > 0 ? scroll_units : 1;
+
+            lulo_tune_view_move(tune_state, tune_snap,
+                                tune_list_rows_visible(ui, tune_state),
+                                tune_preview_rows_visible(ui, tune_state), +delta);
+            update_tune_render_flags(render, tune_state,
+                                     prev_tune_view, prev_tune_browse_path,
+                                     prev_tune_cursor, prev_tune_selected,
+                                     prev_tune_list_scroll, prev_tune_detail_scroll,
+                                     prev_tune_snapshot_cursor, prev_tune_snapshot_selected,
+                                     prev_tune_snapshot_list_scroll, prev_tune_snapshot_detail_scroll,
+                                     prev_tune_preset_cursor, prev_tune_preset_selected,
+                                     prev_tune_preset_list_scroll, prev_tune_preset_detail_scroll,
+                                     prev_tune_focus);
         } else {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -3557,6 +4021,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), -1);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            lulo_tune_view_page(tune_state, tune_snap,
+                                tune_list_rows_visible(ui, tune_state),
+                                tune_preview_rows_visible(ui, tune_state), -1);
+            update_tune_render_flags(render, tune_state,
+                                     prev_tune_view, prev_tune_browse_path,
+                                     prev_tune_cursor, prev_tune_selected,
+                                     prev_tune_list_scroll, prev_tune_detail_scroll,
+                                     prev_tune_snapshot_cursor, prev_tune_snapshot_selected,
+                                     prev_tune_snapshot_list_scroll, prev_tune_snapshot_detail_scroll,
+                                     prev_tune_preset_cursor, prev_tune_preset_selected,
+                                     prev_tune_preset_list_scroll, prev_tune_preset_detail_scroll,
+                                     prev_tune_focus);
         } else {
             lulo_systemd_view_page(systemd_state, systemd_snap,
                                    systemd_list_rows_visible(ui, systemd_state),
@@ -3578,6 +4055,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), +1);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            lulo_tune_view_page(tune_state, tune_snap,
+                                tune_list_rows_visible(ui, tune_state),
+                                tune_preview_rows_visible(ui, tune_state), +1);
+            update_tune_render_flags(render, tune_state,
+                                     prev_tune_view, prev_tune_browse_path,
+                                     prev_tune_cursor, prev_tune_selected,
+                                     prev_tune_list_scroll, prev_tune_detail_scroll,
+                                     prev_tune_snapshot_cursor, prev_tune_snapshot_selected,
+                                     prev_tune_snapshot_list_scroll, prev_tune_snapshot_detail_scroll,
+                                     prev_tune_preset_cursor, prev_tune_preset_selected,
+                                     prev_tune_preset_list_scroll, prev_tune_preset_detail_scroll,
+                                     prev_tune_focus);
         } else {
             lulo_systemd_view_page(systemd_state, systemd_snap,
                                    systemd_list_rows_visible(ui, systemd_state),
@@ -3599,6 +4089,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_home(dizk_state);
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            lulo_tune_view_home(tune_state, tune_snap,
+                                tune_list_rows_visible(ui, tune_state),
+                                tune_preview_rows_visible(ui, tune_state));
+            update_tune_render_flags(render, tune_state,
+                                     prev_tune_view, prev_tune_browse_path,
+                                     prev_tune_cursor, prev_tune_selected,
+                                     prev_tune_list_scroll, prev_tune_detail_scroll,
+                                     prev_tune_snapshot_cursor, prev_tune_snapshot_selected,
+                                     prev_tune_snapshot_list_scroll, prev_tune_snapshot_detail_scroll,
+                                     prev_tune_preset_cursor, prev_tune_preset_selected,
+                                     prev_tune_preset_list_scroll, prev_tune_preset_detail_scroll,
+                                     prev_tune_focus);
         } else {
             lulo_systemd_view_home(systemd_state, systemd_snap,
                                    systemd_list_rows_visible(ui, systemd_state),
@@ -3620,6 +4123,19 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_end(dizk_state, dizk_snap, disk_visible_rows(ui));
             render->need_disk = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            lulo_tune_view_end(tune_state, tune_snap,
+                               tune_list_rows_visible(ui, tune_state),
+                               tune_preview_rows_visible(ui, tune_state));
+            update_tune_render_flags(render, tune_state,
+                                     prev_tune_view, prev_tune_browse_path,
+                                     prev_tune_cursor, prev_tune_selected,
+                                     prev_tune_list_scroll, prev_tune_detail_scroll,
+                                     prev_tune_snapshot_cursor, prev_tune_snapshot_selected,
+                                     prev_tune_snapshot_list_scroll, prev_tune_snapshot_detail_scroll,
+                                     prev_tune_preset_cursor, prev_tune_preset_selected,
+                                     prev_tune_preset_list_scroll, prev_tune_preset_detail_scroll,
+                                     prev_tune_focus);
         } else {
             lulo_systemd_view_end(systemd_state, systemd_snap,
                                   systemd_list_rows_visible(ui, systemd_state),
@@ -3636,12 +4152,14 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     case INPUT_TAB_NEXT:
         app->active_page = (AppPage)((app->active_page + 1) % APP_PAGE_COUNT);
         if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
+        else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
         render->need_rebuild = 1;
         render->need_render = 1;
         break;
     case INPUT_TAB_PREV:
         app->active_page = (AppPage)((app->active_page + APP_PAGE_COUNT - 1) % APP_PAGE_COUNT);
         if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
+        else if (app->active_page == APP_PAGE_TUNE) render->need_tune_refresh_full = 1;
         render->need_rebuild = 1;
         render->need_render = 1;
         break;
@@ -3650,12 +4168,20 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_systemd_next_view(systemd_state);
             render->need_systemd_refresh = 1;
             render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            lulo_tune_next_view(tune_state);
+            render->need_tune_refresh = 1;
+            render->need_render = 1;
         }
         break;
     case INPUT_VIEW_PREV:
         if (app->active_page == APP_PAGE_SYSTEMD) {
             lulo_systemd_prev_view(systemd_state);
             render->need_systemd_refresh = 1;
+            render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            lulo_tune_prev_view(tune_state);
+            render->need_tune_refresh = 1;
             render->need_render = 1;
         }
         break;
@@ -3664,12 +4190,79 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_proc_toggle_row(proc_state, proc_snap, proc_state->selected) > 0) {
             render->need_proc_refresh = 1;
             render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_TUNE) {
+            int rc = lulo_tune_open_current(tune_state, tune_snap,
+                                            tune_list_rows_visible(ui, tune_state),
+                                            tune_preview_rows_visible(ui, tune_state));
+            if (rc == 2) render->need_tune_refresh_full = 1;
+            else if (rc == 1) render->need_tune_refresh = 1;
+            if (rc > 0) render->need_render = 1;
         } else if (app->active_page == APP_PAGE_SYSTEMD &&
                    lulo_systemd_open_current(systemd_state, systemd_snap,
                                              systemd_list_rows_visible(ui, systemd_state),
                                              systemd_preview_rows_visible(ui, systemd_state))) {
             render->need_systemd_refresh = 1;
             render->need_render = 1;
+        }
+        break;
+    case INPUT_SAVE_SNAPSHOT:
+        if (app->active_page == APP_PAGE_TUNE) {
+            if (tune_state->view == LULO_TUNE_VIEW_EXPLORE && active_tune_explore_row(tune_snap, tune_state)) {
+                render->need_tune_save_snapshot = 1;
+                render->need_tune = 1;
+                render->need_render = 1;
+            } else {
+                tune_status_set(app, "save snapshots from Explore");
+                render->need_tune = 1;
+                render->need_render = 1;
+            }
+        }
+        break;
+    case INPUT_SAVE_PRESET:
+        if (app->active_page == APP_PAGE_TUNE) {
+            if (tune_state->view == LULO_TUNE_VIEW_EXPLORE && active_tune_explore_row(tune_snap, tune_state)) {
+                render->need_tune_save_preset = 1;
+                render->need_tune = 1;
+                render->need_render = 1;
+            } else {
+                tune_status_set(app, "save presets from Explore");
+                render->need_tune = 1;
+                render->need_render = 1;
+            }
+        }
+        break;
+    case INPUT_EDIT_SELECTED:
+        if (app->active_page == APP_PAGE_TUNE) {
+            if (start_tune_edit(app, tune_snap, tune_state)) {
+                render->need_tune = 1;
+                render->need_render = 1;
+            } else {
+                render->need_tune = 1;
+                render->need_render = 1;
+            }
+        }
+        break;
+    case INPUT_APPLY_SELECTED:
+        if (app->active_page == APP_PAGE_TUNE) {
+            if (tune_state->view == LULO_TUNE_VIEW_EXPLORE) {
+                if (active_tune_row_is_staged(tune_snap, tune_state)) {
+                    render->need_tune_apply_selected = 1;
+                    render->need_tune = 1;
+                    render->need_render = 1;
+                } else {
+                    tune_status_set(app, "stage a value first with i");
+                    render->need_tune = 1;
+                    render->need_render = 1;
+                }
+            } else if (tune_state->view == LULO_TUNE_VIEW_SNAPSHOTS || tune_state->view == LULO_TUNE_VIEW_PRESETS) {
+                render->need_tune_apply_selected = 1;
+                render->need_tune = 1;
+                render->need_render = 1;
+            } else {
+                tune_status_set(app, "apply uses the Snapshots or Presets views");
+                render->need_tune = 1;
+                render->need_render = 1;
+            }
         }
         break;
     case INPUT_COLLAPSE_ALL:
@@ -3716,6 +4309,8 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
                            const double *cpu_temps, int ncpu_temp,
                            const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state,
                            const LuloDizkSnapshot *dizk_snap, const LuloDizkState *dizk_state,
+                           const LuloTuneSnapshot *tune_snap, const LuloTuneState *tune_state,
+                           const LuloTuneBackendStatus *tune_backend_status,
                            const LuloSystemdSnapshot *systemd_snap, const LuloSystemdState *systemd_state,
                            const LuloSystemdBackendStatus *systemd_backend_status,
                            const RenderFlags *render)
@@ -3735,6 +4330,9 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
     } else if (app->active_page == APP_PAGE_DIZK) {
         if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_disk || render->need_load) render_disk_only(ui, dizk_snap, dizk_state);
+    } else if (app->active_page == APP_PAGE_TUNE) {
+        if (render->need_header) render_header_only(ui, dash, app);
+        if (render->need_tune || render->need_load) render_tune_only(ui, tune_snap, tune_state, app, tune_backend_status);
     } else {
         if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_systemd || render->need_load) {
@@ -3763,9 +4361,13 @@ int main(int argc, char *argv[])
     DashboardState dash;
     LuloProcState proc_state;
     LuloDizkState dizk_state;
+    LuloTuneState tune_state;
+    LuloTuneBackend tune_backend;
     LuloSystemdState systemd_state;
     LuloSystemdBackend systemd_backend;
     LuloProcSnapshot proc_snap = {0};
+    LuloTuneSnapshot tune_snap = {0};
+    LuloTuneBackendStatus tune_backend_status = {0};
     LuloSystemdSnapshot systemd_snap = {0};
     LuloSystemdBackendStatus systemd_backend_status = {0};
     AppState app = {
@@ -3782,9 +4384,12 @@ int main(int argc, char *argv[])
     unsigned long long proc_cpu_accum_delta = 0;
     unsigned long long proc_last_total_delta = 0;
     long long proc_due_ms = 0;
+    long long tune_due_ms = 0;
     long long systemd_due_ms = 0;
     int proc_snapshot_valid = 0;
+    int tune_snapshot_valid = 0;
     int systemd_snapshot_valid = 0;
+    unsigned tune_generation = 0;
     unsigned systemd_generation = 0;
     LuloProcCpuMode proc_snapshot_mode = LULO_PROC_CPU_PER_CORE;
 
@@ -3845,23 +4450,41 @@ int main(int argc, char *argv[])
     lulo_dashboard_init(&dash, &ci, sample_ms);
     lulo_proc_state_init(&proc_state);
     lulo_dizk_state_init(&dizk_state);
+    lulo_tune_state_init(&tune_state);
     lulo_systemd_state_init(&systemd_state);
-    if (lulo_systemd_backend_start(&systemd_backend) < 0) {
-        fprintf(stderr, "failed to start systemd backend\n");
+    if (lulo_tune_backend_start(&tune_backend) < 0) {
+        fprintf(stderr, "failed to start tune backend\n");
+        lulo_systemd_state_cleanup(&systemd_state);
+        lulo_tune_state_cleanup(&tune_state);
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_proc_state_cleanup(&proc_state);
+        notcurses_stop(ui.nc);
+        debug_log_close(&dlog);
+        return 1;
+    }
+    if (lulo_systemd_backend_start(&systemd_backend) < 0) {
+        fprintf(stderr, "failed to start systemd backend\n");
+        lulo_tune_backend_stop(&tune_backend);
+        lulo_dizk_state_cleanup(&dizk_state);
+        lulo_proc_state_cleanup(&proc_state);
+        lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
         notcurses_stop(ui.nc);
         debug_log_close(&dlog);
         return 1;
     }
+    lulo_tune_backend_request_full(&tune_backend, &tune_state);
+    lulo_tune_backend_status(&tune_backend, &tune_backend_status);
+    tune_due_ms = mono_ms_now() + 5000;
     lulo_systemd_backend_request_full(&systemd_backend, &systemd_state);
     lulo_systemd_backend_status(&systemd_backend, &systemd_backend_status);
     systemd_due_ms = mono_ms_now() + 5000;
     if (lulo_read_cpu_stat(&stat_a) < 0) {
         fprintf(stderr, "failed to read /proc/stat\n");
+        lulo_tune_backend_stop(&tune_backend);
         lulo_dizk_state_cleanup(&dizk_state);
         lulo_proc_state_cleanup(&proc_state);
+        lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
         lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
@@ -3873,7 +4496,9 @@ int main(int argc, char *argv[])
         fprintf(stderr, "failed to read /proc/stat\n");
         lulo_proc_state_cleanup(&proc_state);
         lulo_dizk_state_cleanup(&dizk_state);
+        lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
+        lulo_tune_backend_stop(&tune_backend);
         lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
         debug_log_close(&dlog);
@@ -3884,7 +4509,9 @@ int main(int argc, char *argv[])
             fprintf(stderr, "failed to switch terminal to raw input mode\n");
             lulo_proc_state_cleanup(&proc_state);
             lulo_dizk_state_cleanup(&dizk_state);
+            lulo_tune_state_cleanup(&tune_state);
             lulo_systemd_state_cleanup(&systemd_state);
+            lulo_tune_backend_stop(&tune_backend);
             lulo_systemd_backend_stop(&systemd_backend);
             notcurses_stop(ui.nc);
             debug_log_close(&dlog);
@@ -3895,7 +4522,9 @@ int main(int argc, char *argv[])
         fprintf(stderr, "failed to start Notcurses input thread\n");
         lulo_proc_state_cleanup(&proc_state);
         lulo_dizk_state_cleanup(&dizk_state);
+        lulo_tune_state_cleanup(&tune_state);
         lulo_systemd_state_cleanup(&systemd_state);
+        lulo_tune_backend_stop(&tune_backend);
         lulo_systemd_backend_stop(&systemd_backend);
         notcurses_stop(ui.nc);
         debug_log_close(&dlog);
@@ -3918,6 +4547,12 @@ int main(int argc, char *argv[])
         int proc_refreshed = 0;
         unsigned long long total_delta;
 
+        if (poll_tune_backend(&ui, &app, &tune_backend, &tune_snap, &tune_state,
+                              &tune_backend_status, &tune_generation, &(RenderFlags){0}) < 0) {
+            fprintf(stderr, "failed to consume tune backend snapshot\n");
+            break;
+        }
+        tune_snapshot_valid = tune_backend_status.have_snapshot;
         if (poll_systemd_backend(&ui, &app, &systemd_backend, &systemd_snap, &systemd_state,
                                  &systemd_backend_status, &systemd_generation, &(RenderFlags){0}) < 0) {
             fprintf(stderr, "failed to consume systemd backend snapshot\n");
@@ -3962,9 +4597,8 @@ int main(int argc, char *argv[])
         if (append_sample) proc_cpu_accum_delta += total_delta;
         if (append_sample && app.active_page != APP_PAGE_CPU) {
             for (int i = 0; i < stat_b.ncpu; i++) {
-                int heat_raw = lulo_cpu_heat_pct(&stat_a.cpu[i + 1], &stat_b.cpu[i + 1], HEAT_MODE_RAW);
-                int heat_task = lulo_cpu_heat_pct(&stat_a.cpu[i + 1], &stat_b.cpu[i + 1], HEAT_MODE_TASK);
-                lulo_dashboard_append_heat(&dash, i, heat_raw, heat_task);
+                int heat = lulo_cpu_heat_pct(&stat_a.cpu[i + 1], &stat_b.cpu[i + 1]);
+                lulo_dashboard_append_heat(&dash, i, heat);
             }
         }
 
@@ -3995,6 +4629,16 @@ int main(int argc, char *argv[])
                 break;
             }
             lulo_dizk_view_sync(&dizk_state, &dizk_snap, disk_visible_rows(&ui));
+        } else if (app.active_page == APP_PAGE_TUNE) {
+            if ((!tune_snapshot_valid || mono_ms_now() >= tune_due_ms) &&
+                !tune_backend_status.busy) {
+                lulo_tune_backend_request_full(&tune_backend, &tune_state);
+                lulo_tune_backend_status(&tune_backend, &tune_backend_status);
+                tune_due_ms = mono_ms_now() + 5000;
+            }
+            lulo_tune_view_sync(&tune_state, &tune_snap,
+                                tune_list_rows_visible(&ui, &tune_state),
+                                tune_preview_rows_visible(&ui, &tune_state));
         } else {
             if ((!systemd_snapshot_valid || mono_ms_now() >= systemd_due_ms) &&
                 !systemd_backend_status.busy) {
@@ -4014,6 +4658,8 @@ int main(int argc, char *argv[])
                             full_redraw || proc_refreshed);
         } else if (app.active_page == APP_PAGE_DIZK) {
             render_disk_page(&ui, &app, &dash, &dizk_snap, &dizk_state);
+        } else if (app.active_page == APP_PAGE_TUNE) {
+            render_tune_page(&ui, &app, &dash, &tune_snap, &tune_state, &tune_backend_status);
         } else {
             render_systemd_page(&ui, &app, &dash, &systemd_snap, &systemd_state, &systemd_backend_status);
         }
@@ -4092,13 +4738,25 @@ int main(int argc, char *argv[])
 
                     while (raw_input_decode_one(&rawin, &in)) {
                         debug_log_action(&dlog, "dispatch", &in);
+                        if (app.tune_edit_active && !in.mouse_press && !in.mouse_release && !in.mouse_wheel) {
+                            if (handle_tune_edit_input(&app, &in, &tune_state, &render)) {
+                                if (need_resize || render.need_rebuild || exit_requested) break;
+                                continue;
+                            }
+                        }
+                        if (in.mouse_wheel &&
+                            !handle_mouse_wheel_target(&ui, &app, &tune_state, &systemd_state, &render,
+                                                       in.mouse_y, in.mouse_x)) {
+                            continue;
+                        }
                         if (in.mouse_press && in.mouse_button == 1) {
                             handle_mouse_click(&ui, in.mouse_y, in.mouse_x, &app, &proc_snap, &proc_state,
-                                               &systemd_snap, &systemd_state, &render);
+                                               &tune_snap, &tune_state, &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, in.action, in.mouse_wheel, in.key_repeat);
 
                             apply_input_action(&ui, in.action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
+                                               &tune_snap, &tune_state,
                                                &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
                                                &exit_requested, &need_resize, &render, scroll_units);
                         }
@@ -4146,19 +4804,36 @@ int main(int argc, char *argv[])
                         ncinput ni;
                         uint32_t id;
                         InputAction action;
+                        DecodedInput in;
 
                         if (!nc_input_pop(&ncin, &id, &ni)) break;
                         action = decode_notcurses_input(id);
+                        fill_decoded_input_from_nc(&in, id, &ni, action);
                         debug_log_nc_event(&dlog, "dispatch-nc", id, &ni);
+                        if (app.tune_edit_active &&
+                            id != NCKEY_BUTTON1 &&
+                            id != NCKEY_SCROLL_UP &&
+                            id != NCKEY_SCROLL_DOWN) {
+                            if (handle_tune_edit_input(&app, &in, &tune_state, &render)) {
+                                if (need_resize || render.need_rebuild || exit_requested) break;
+                                continue;
+                            }
+                        }
+                        if ((id == NCKEY_SCROLL_UP || id == NCKEY_SCROLL_DOWN) &&
+                            !handle_mouse_wheel_target(&ui, &app, &tune_state, &systemd_state, &render,
+                                                       ni.y + 1, ni.x + 1)) {
+                            continue;
+                        }
                         if (id == NCKEY_BUTTON1 && ni.evtype != NCTYPE_RELEASE) {
                             handle_mouse_click(&ui, ni.y + 1, ni.x + 1, &app, &proc_snap, &proc_state,
-                                               &systemd_snap, &systemd_state, &render);
+                                               &tune_snap, &tune_state, &systemd_snap, &systemd_state, &render);
                         } else {
                             int scroll_units = scroll_units_for_input(&app, action,
                                                                        id == NCKEY_SCROLL_UP || id == NCKEY_SCROLL_DOWN,
                                                                        ni.evtype == NCTYPE_REPEAT);
 
                             apply_input_action(&ui, action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
+                                               &tune_snap, &tune_state,
                                                &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
                                                &exit_requested, &need_resize, &render, scroll_units);
                         }
@@ -4166,6 +4841,12 @@ int main(int argc, char *argv[])
                     }
                 }
 
+                if (poll_tune_backend(&ui, &app, &tune_backend, &tune_snap, &tune_state,
+                                      &tune_backend_status, &tune_generation, &render) < 0) {
+                    exit_requested = 1;
+                    break;
+                }
+                tune_snapshot_valid = tune_backend_status.have_snapshot;
                 if (poll_systemd_backend(&ui, &app, &systemd_backend, &systemd_snap, &systemd_state,
                                          &systemd_backend_status, &systemd_generation, &render) < 0) {
                     exit_requested = 1;
@@ -4181,6 +4862,37 @@ int main(int argc, char *argv[])
                     }
                     lulo_dizk_view_sync(&dizk_state, &dizk_snap, disk_visible_rows(&ui));
                     render.need_disk = 1;
+                }
+                if (render.need_tune_refresh_full && app.active_page == APP_PAGE_TUNE) {
+                    if (tune_snapshot_valid) lulo_tune_snapshot_mark_loading(&tune_snap, &tune_state);
+                    lulo_tune_backend_request_full(&tune_backend, &tune_state);
+                    lulo_tune_backend_status(&tune_backend, &tune_backend_status);
+                    tune_due_ms = mono_ms_now() + 5000;
+                    render.need_tune = 1;
+                } else if (render.need_tune_refresh && app.active_page == APP_PAGE_TUNE) {
+                    if (tune_snapshot_valid) lulo_tune_snapshot_mark_loading(&tune_snap, &tune_state);
+                    lulo_tune_backend_request_active(&tune_backend, &tune_state);
+                    lulo_tune_backend_status(&tune_backend, &tune_backend_status);
+                    render.need_tune = 1;
+                }
+                if (render.need_tune_save_snapshot && app.active_page == APP_PAGE_TUNE) {
+                    lulo_tune_backend_request_save_snapshot(&tune_backend, &tune_state);
+                    lulo_tune_backend_status(&tune_backend, &tune_backend_status);
+                    tune_due_ms = mono_ms_now() + 5000;
+                    render.need_tune = 1;
+                }
+                if (render.need_tune_save_preset && app.active_page == APP_PAGE_TUNE) {
+                    lulo_tune_backend_request_save_preset(&tune_backend, &tune_state);
+                    lulo_tune_backend_status(&tune_backend, &tune_backend_status);
+                    tune_due_ms = mono_ms_now() + 5000;
+                    render.need_tune = 1;
+                }
+                if (render.need_tune_apply_selected && app.active_page == APP_PAGE_TUNE) {
+                    if (tune_snapshot_valid) lulo_tune_snapshot_mark_loading(&tune_snap, &tune_state);
+                    lulo_tune_backend_request_apply_selected(&tune_backend, &tune_state);
+                    lulo_tune_backend_status(&tune_backend, &tune_backend_status);
+                    tune_due_ms = mono_ms_now() + 5000;
+                    render.need_tune = 1;
                 }
                 if (render.need_systemd_refresh && app.active_page == APP_PAGE_SYSTEMD) {
                     if (systemd_snapshot_valid) lulo_systemd_snapshot_mark_loading(&systemd_snap, &systemd_state);
@@ -4200,7 +4912,8 @@ int main(int argc, char *argv[])
                     if (!need_resize && !exit_requested) {
                         render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
                                        cpu_temps, ncpu_temp, &proc_snap, &proc_state,
-                                       &dizk_snap, &dizk_state, &systemd_snap, &systemd_state,
+                                       &dizk_snap, &dizk_state, &tune_snap, &tune_state,
+                                       &tune_backend_status, &systemd_snap, &systemd_state,
                                        &systemd_backend_status, &render);
                     }
                     resample = 1;
@@ -4215,7 +4928,8 @@ int main(int argc, char *argv[])
                 if (!need_resize && !exit_requested) {
                     render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
                                    cpu_temps, ncpu_temp, &proc_snap, &proc_state,
-                                   &dizk_snap, &dizk_state, &systemd_snap, &systemd_state,
+                                   &dizk_snap, &dizk_state, &tune_snap, &tune_state,
+                                   &tune_backend_status, &systemd_snap, &systemd_state,
                                    &systemd_backend_status, &render);
                 }
                 if (ms_until_deadline(deadline) == 0) resample = 1;
@@ -4238,10 +4952,13 @@ int main(int argc, char *argv[])
         nc_input_stop(&ncin);
     }
     lulo_proc_snapshot_free(&proc_snap);
+    lulo_tune_snapshot_free(&tune_snap);
     lulo_systemd_snapshot_free(&systemd_snap);
+    lulo_tune_backend_stop(&tune_backend);
     lulo_systemd_backend_stop(&systemd_backend);
     lulo_proc_state_cleanup(&proc_state);
     lulo_dizk_state_cleanup(&dizk_state);
+    lulo_tune_state_cleanup(&tune_state);
     lulo_systemd_state_cleanup(&systemd_state);
     notcurses_stop(ui.nc);
     debug_log_close(&dlog);

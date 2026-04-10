@@ -13,12 +13,6 @@ typedef struct {
     int height;
 } LuloRect;
 
-typedef enum {
-    HEAT_MODE_RAW = 0,
-    HEAT_MODE_TASK,
-    HEAT_MODE_COUNT
-} HeatMode;
-
 typedef struct {
     char model[128];
     char vendor[32];
@@ -119,23 +113,19 @@ typedef struct {
     char model_short[64];
     char hostname[128];
     int sample_ms;
-    HeatMode heat_mode;
-    unsigned char timeline[HEAT_MODE_COUNT][LULO_MAX_CPUS + 1][LULO_MAX_TIMELINE];
+    unsigned char timeline[LULO_MAX_CPUS + 1][LULO_MAX_TIMELINE];
 } DashboardState;
 
 void lulo_dashboard_init(DashboardState *dash, const CpuInfo *ci, int sample_ms);
-void lulo_dashboard_append_heat(DashboardState *dash, int cpu_idx, int heat_raw_pct, int heat_task_pct);
+void lulo_dashboard_append_heat(DashboardState *dash, int cpu_idx, int heat_pct);
 const unsigned char *lulo_dashboard_history(const DashboardState *dash, int cpu_idx, int width);
-
-const char *lulo_heat_mode_name(HeatMode mode);
-HeatMode lulo_next_heat_mode(HeatMode mode);
 
 int lulo_adjust_sample_ms(int current, int delta);
 
 void lulo_gather_cpu_info(CpuInfo *ci);
 int lulo_read_cpu_stat(CpuStat *s);
 int lulo_cpu_pct(const CpuTick *a, const CpuTick *b);
-int lulo_cpu_heat_pct(const CpuTick *a, const CpuTick *b, HeatMode mode);
+int lulo_cpu_heat_pct(const CpuTick *a, const CpuTick *b);
 unsigned long long lulo_cpu_total_delta(const CpuStat *a, const CpuStat *b);
 int lulo_gather_cpu_freq(CpuFreq *freqs, int max);
 void lulo_gather_meminfo(MemInfo *m);

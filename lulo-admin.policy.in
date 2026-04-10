@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD polkit Policy Configuration 1.0//EN" "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <vendor>Lulo</vendor>
+  <vendor_url>https://local.invalid/lulo</vendor_url>
+  <action id="io.lulo.admin.pkexec.apply-tune">
+    <description>Apply Lulo tunable changes</description>
+    <message>Authentication is required to apply Lulo tunable changes</message>
+    <icon_name>preferences-system</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@EXEC_START@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply-tune</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

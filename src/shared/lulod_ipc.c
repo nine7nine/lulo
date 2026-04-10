@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_MAGIC 0x4c554c4fU
-#define LULOD_VERSION 2U
+#define LULOD_VERSION 4U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -143,6 +143,38 @@ static int serialize_state(int fd, const LuloSystemdState *state)
     return 0;
 }
 
+static int serialize_tune_state(int fd, const LuloTuneState *state)
+{
+    int32_t value = 0;
+
+    if (!state) {
+        LuloTuneState empty = {0};
+        return serialize_tune_state(fd, &empty);
+    }
+    value = (int32_t)state->view;
+    if (write_i32(fd, value) < 0) return -1;
+    if (write_i32(fd, state->cursor) < 0) return -1;
+    if (write_i32(fd, state->selected) < 0) return -1;
+    if (write_i32(fd, state->list_scroll) < 0) return -1;
+    if (write_i32(fd, state->detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->focus_preview) < 0) return -1;
+    if (write_i32(fd, state->snapshot_cursor) < 0) return -1;
+    if (write_i32(fd, state->snapshot_selected) < 0) return -1;
+    if (write_i32(fd, state->snapshot_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->snapshot_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->preset_cursor) < 0) return -1;
+    if (write_i32(fd, state->preset_selected) < 0) return -1;
+    if (write_i32(fd, state->preset_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->preset_detail_scroll) < 0) return -1;
+    if (write_string(fd, state->browse_path) < 0) return -1;
+    if (write_string(fd, state->selected_path) < 0) return -1;
+    if (write_string(fd, state->selected_snapshot_id) < 0) return -1;
+    if (write_string(fd, state->selected_preset_id) < 0) return -1;
+    if (write_string(fd, state->staged_path) < 0) return -1;
+    if (write_string(fd, state->staged_value) < 0) return -1;
+    return 0;
+}
+
 static int deserialize_state(int fd, LuloSystemdState *state)
 {
     int32_t value = 0;
@@ -173,6 +205,49 @@ static int deserialize_state(int fd, LuloSystemdState *state)
     state->selected_user_scope = value;
     if (read_string_fixed(fd, state->selected_unit, sizeof(state->selected_unit)) < 0) return -1;
     if (read_string_fixed(fd, state->selected_config, sizeof(state->selected_config)) < 0) return -1;
+    return 0;
+}
+
+static int deserialize_tune_state(int fd, LuloTuneState *state)
+{
+    int32_t value = 0;
+
+    if (!state) return -1;
+    memset(state, 0, sizeof(*state));
+    if (read_i32(fd, &value) < 0) return -1;
+    state->view = (LuloTuneView)value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->focus_preview = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->snapshot_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->snapshot_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->snapshot_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->snapshot_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_detail_scroll = value;
+    if (read_string_fixed(fd, state->browse_path, sizeof(state->browse_path)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_path, sizeof(state->selected_path)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_snapshot_id, sizeof(state->selected_snapshot_id)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_preset_id, sizeof(state->selected_preset_id)) < 0) return -1;
+    if (read_string_fixed(fd, state->staged_path, sizeof(state->staged_path)) < 0) return -1;
+    if (read_string_fixed(fd, state->staged_value, sizeof(state->staged_value)) < 0) return -1;
     return 0;
 }
 
@@ -226,6 +301,50 @@ static int serialize_snapshot(int fd, const LuloSystemdSnapshot *snap)
     if (write_u32(fd, count) < 0) return -1;
     for (uint32_t i = 0; i < count; i++) {
         if (write_string(fd, snap->config_lines[i]) < 0) return -1;
+    }
+    return 0;
+}
+
+static int serialize_tune_snapshot(int fd, const LuloTuneSnapshot *snap)
+{
+    uint32_t count = 0;
+
+    if (!snap) return -1;
+    if (write_i32(fd, snap->count) < 0) return -1;
+    for (int i = 0; i < snap->count; i++) {
+        const LuloTuneRow *row = &snap->rows[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->group) < 0) return -1;
+        if (write_string(fd, row->value) < 0) return -1;
+        if (write_i32(fd, row->writable) < 0) return -1;
+        if (write_i32(fd, row->is_dir) < 0) return -1;
+        if (write_i32(fd, (int32_t)row->source) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->snapshot_count) < 0) return -1;
+    for (int i = 0; i < snap->snapshot_count; i++) {
+        if (write_string(fd, snap->snapshots[i].id) < 0) return -1;
+        if (write_string(fd, snap->snapshots[i].name) < 0) return -1;
+        if (write_string(fd, snap->snapshots[i].created) < 0) return -1;
+        if (write_i32(fd, snap->snapshots[i].item_count) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->preset_count) < 0) return -1;
+    for (int i = 0; i < snap->preset_count; i++) {
+        if (write_string(fd, snap->presets[i].id) < 0) return -1;
+        if (write_string(fd, snap->presets[i].name) < 0) return -1;
+        if (write_string(fd, snap->presets[i].created) < 0) return -1;
+        if (write_i32(fd, snap->presets[i].item_count) < 0) return -1;
+    }
+
+    if (write_string(fd, snap->detail_title) < 0) return -1;
+    if (write_string(fd, snap->detail_status) < 0) return -1;
+    count = (uint32_t)snap->detail_line_count;
+    if (write_u32(fd, count) < 0) return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (write_string(fd, snap->detail_lines[i]) < 0) return -1;
     }
     return 0;
 }
@@ -320,6 +439,83 @@ fail:
     return -1;
 }
 
+static int deserialize_tune_snapshot(int fd, LuloTuneSnapshot *snap)
+{
+    int32_t count = 0;
+    uint32_t lines = 0;
+
+    if (!snap) return -1;
+    memset(snap, 0, sizeof(*snap));
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->rows = calloc((size_t)count, sizeof(*snap->rows));
+        if (!snap->rows) goto fail;
+    }
+    snap->count = count;
+    for (int i = 0; i < snap->count; i++) {
+        if (read_string_fixed(fd, snap->rows[i].path, sizeof(snap->rows[i].path)) < 0) goto fail;
+        if (read_string_fixed(fd, snap->rows[i].name, sizeof(snap->rows[i].name)) < 0) goto fail;
+        if (read_string_fixed(fd, snap->rows[i].group, sizeof(snap->rows[i].group)) < 0) goto fail;
+        if (read_string_fixed(fd, snap->rows[i].value, sizeof(snap->rows[i].value)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        snap->rows[i].writable = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        snap->rows[i].is_dir = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        snap->rows[i].source = (LuloTuneSource)count;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->snapshots = calloc((size_t)count, sizeof(*snap->snapshots));
+        if (!snap->snapshots) goto fail;
+    }
+    snap->snapshot_count = count;
+    for (int i = 0; i < snap->snapshot_count; i++) {
+        if (read_string_fixed(fd, snap->snapshots[i].id, sizeof(snap->snapshots[i].id)) < 0) goto fail;
+        if (read_string_fixed(fd, snap->snapshots[i].name, sizeof(snap->snapshots[i].name)) < 0) goto fail;
+        if (read_string_fixed(fd, snap->snapshots[i].created, sizeof(snap->snapshots[i].created)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        snap->snapshots[i].item_count = count;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->presets = calloc((size_t)count, sizeof(*snap->presets));
+        if (!snap->presets) goto fail;
+    }
+    snap->preset_count = count;
+    for (int i = 0; i < snap->preset_count; i++) {
+        if (read_string_fixed(fd, snap->presets[i].id, sizeof(snap->presets[i].id)) < 0) goto fail;
+        if (read_string_fixed(fd, snap->presets[i].name, sizeof(snap->presets[i].name)) < 0) goto fail;
+        if (read_string_fixed(fd, snap->presets[i].created, sizeof(snap->presets[i].created)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        snap->presets[i].item_count = count;
+    }
+
+    if (read_string_fixed(fd, snap->detail_title, sizeof(snap->detail_title)) < 0) goto fail;
+    if (read_string_fixed(fd, snap->detail_status, sizeof(snap->detail_status)) < 0) goto fail;
+    if (read_u32(fd, &lines) < 0) goto fail;
+    for (uint32_t i = 0; i < lines; i++) {
+        char *line = NULL;
+        if (read_string_dyn(fd, &line) < 0) goto fail;
+        if (append_owned_line(&snap->detail_lines, &snap->detail_line_count, line) < 0) {
+            free(line);
+            goto fail;
+        }
+        free(line);
+    }
+    return 0;
+
+fail:
+    lulo_tune_snapshot_free(snap);
+    return -1;
+}
+
 int lulod_socket_path(char *buf, size_t len)
 {
     const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
@@ -392,15 +588,7 @@ int lulod_connect_socket(const char *path)
     return fd;
 }
 
-int lulod_send_systemd_request(int fd, uint32_t type, const LuloSystemdState *state)
-{
-    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
-    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
-    if (write_u32(fd, type) < 0) return -1;
-    return serialize_state(fd, state);
-}
-
-int lulod_recv_systemd_request(int fd, uint32_t *type, LuloSystemdState *state)
+int lulod_recv_request_header(int fd, uint32_t *type)
 {
     uint32_t magic = 0;
     uint32_t version = 0;
@@ -409,6 +597,25 @@ int lulod_recv_systemd_request(int fd, uint32_t *type, LuloSystemdState *state)
     if (read_u32(fd, &version) < 0) return -1;
     if (magic != LULOD_MAGIC || version != LULOD_VERSION) return -1;
     if (read_u32(fd, type) < 0) return -1;
+    return 0;
+}
+
+int lulod_send_systemd_request(int fd, uint32_t type, const LuloSystemdState *state)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_u32(fd, type) < 0) return -1;
+    return serialize_state(fd, state);
+}
+
+int lulod_recv_systemd_state(int fd, LuloSystemdState *state)
+{
+    return deserialize_state(fd, state);
+}
+
+int lulod_recv_systemd_request(int fd, uint32_t *type, LuloSystemdState *state)
+{
+    if (lulod_recv_request_header(fd, type) < 0) return -1;
     return deserialize_state(fd, state);
 }
 
@@ -440,4 +647,53 @@ int lulod_recv_systemd_response(int fd, LuloSystemdSnapshot *snap, char *err, si
         return -1;
     }
     return deserialize_snapshot(fd, snap);
+}
+
+int lulod_send_tune_request(int fd, uint32_t type, const LuloTuneState *state)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_u32(fd, type) < 0) return -1;
+    return serialize_tune_state(fd, state);
+}
+
+int lulod_recv_tune_state(int fd, LuloTuneState *state)
+{
+    return deserialize_tune_state(fd, state);
+}
+
+int lulod_recv_tune_request(int fd, uint32_t *type, LuloTuneState *state)
+{
+    if (lulod_recv_request_header(fd, type) < 0) return -1;
+    return deserialize_tune_state(fd, state);
+}
+
+int lulod_send_tune_response(int fd, int status, const char *err, const LuloTuneSnapshot *snap)
+{
+    if (write_u32(fd, LULOD_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_VERSION) < 0) return -1;
+    if (write_i32(fd, status) < 0) return -1;
+    if (status < 0) return write_string(fd, err ? err : "request failed");
+    return serialize_tune_snapshot(fd, snap);
+}
+
+int lulod_recv_tune_response(int fd, LuloTuneSnapshot *snap, char *err, size_t errlen)
+{
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    int32_t status = 0;
+    char *msg = NULL;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (read_u32(fd, &magic) < 0) return -1;
+    if (read_u32(fd, &version) < 0) return -1;
+    if (read_i32(fd, &status) < 0) return -1;
+    if (magic != LULOD_MAGIC || version != LULOD_VERSION) return -1;
+    if (status < 0) {
+        if (read_string_dyn(fd, &msg) < 0) return -1;
+        if (err && errlen > 0) snprintf(err, errlen, "%s", msg ? msg : "request failed");
+        free(msg);
+        return -1;
+    }
+    return deserialize_tune_snapshot(fd, snap);
 }

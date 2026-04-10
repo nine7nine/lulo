@@ -89,14 +89,12 @@ void lulo_dashboard_init(DashboardState *dash, const CpuInfo *ci, int sample_ms)
     abbrev_cpu_model(ci->model, dash->model_short, sizeof(dash->model_short));
     gethostname(dash->hostname, sizeof(dash->hostname));
     dash->sample_ms = sample_ms;
-    dash->heat_mode = HEAT_MODE_RAW;
 }
 
-void lulo_dashboard_append_heat(DashboardState *dash, int cpu_idx, int heat_raw_pct, int heat_task_pct)
+void lulo_dashboard_append_heat(DashboardState *dash, int cpu_idx, int heat_pct)
 {
     if (cpu_idx < 0 || cpu_idx >= LULO_MAX_CPUS) return;
-    timeline_append(dash->timeline[HEAT_MODE_RAW][cpu_idx + 1], LULO_MAX_TIMELINE, heat_raw_pct);
-    timeline_append(dash->timeline[HEAT_MODE_TASK][cpu_idx + 1], LULO_MAX_TIMELINE, heat_task_pct);
+    timeline_append(dash->timeline[cpu_idx + 1], LULO_MAX_TIMELINE, heat_pct);
 }
 
 const unsigned char *lulo_dashboard_history(const DashboardState *dash, int cpu_idx, int width)
@@ -104,17 +102,7 @@ const unsigned char *lulo_dashboard_history(const DashboardState *dash, int cpu_
     if (cpu_idx < 0 || cpu_idx >= LULO_MAX_CPUS) return NULL;
     if (width < 0) width = 0;
     if (width > LULO_MAX_TIMELINE) width = LULO_MAX_TIMELINE;
-    return dash->timeline[dash->heat_mode][cpu_idx + 1] + (LULO_MAX_TIMELINE - width);
-}
-
-const char *lulo_heat_mode_name(HeatMode mode)
-{
-    return mode == HEAT_MODE_TASK ? "task" : "raw";
-}
-
-HeatMode lulo_next_heat_mode(HeatMode mode)
-{
-    return mode == HEAT_MODE_TASK ? HEAT_MODE_RAW : HEAT_MODE_TASK;
+    return dash->timeline[cpu_idx + 1] + (LULO_MAX_TIMELINE - width);
 }
 
 int lulo_adjust_sample_ms(int current, int delta)
@@ -254,25 +242,18 @@ int lulo_cpu_pct(const CpuTick *a, const CpuTick *b)
     return dt == 0 ? 0 : (int)(100ULL * (dt - di) / dt);
 }
 
-int lulo_cpu_heat_pct(const CpuTick *a, const CpuTick *b, HeatMode mode)
+int lulo_cpu_heat_pct(const CpuTick *a, const CpuTick *b)
 {
     unsigned long long ia = a->idle + a->iowait;
     unsigned long long ib = b->idle + b->iowait;
     unsigned long long ta = a->user + a->nice + a->sys + ia + a->irq + a->softirq + a->steal;
     unsigned long long tb = b->user + b->nice + b->sys + ib + b->irq + b->softirq + b->steal;
     unsigned long long dt = tb > ta ? tb - ta : 0;
-    unsigned long long work_a;
-    unsigned long long work_b;
+    unsigned long long work_a = a->user + a->nice + a->sys + a->irq + a->softirq + a->steal;
+    unsigned long long work_b = b->user + b->nice + b->sys + b->irq + b->softirq + b->steal;
     unsigned long long dw;
 
     if (dt == 0) return 0;
-    if (mode == HEAT_MODE_TASK) {
-        work_a = a->user + a->nice + a->sys;
-        work_b = b->user + b->nice + b->sys;
-    } else {
-        work_a = a->user + a->nice + a->sys + a->irq + a->softirq + a->steal;
-        work_b = b->user + b->nice + b->sys + b->irq + b->softirq + b->steal;
-    }
     dw = work_b > work_a ? work_b - work_a : 0;
     return (int)(100ULL * dw / dt);
 }

@@ -19,6 +19,7 @@ Current areas include:
 
 - [INSTALL.md](INSTALL.md): build, install, update, and packaging flow
 - [ARCHITECTURE.md](ARCHITECTURE.md): process split, source layout, and design notes
+- [SCHED.md](SCHED.md): scheduler model, config layout, and focused-app behavior
 
 ## Build
 

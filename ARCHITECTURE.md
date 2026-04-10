@@ -4,25 +4,18 @@
 
 ## Process Model
 
-- `lulo`
-  - Notcurses TUI frontend.
-  - Renders pages, handles input, launches external editors, and talks to the backends.
-- `lulod`
-  - Unprivileged user daemon.
-  - Owns session-facing cache/state, focus integration, and frontend IPC.
-  - Maintains the user-facing snapshots for `SCHED`, `SYSTEMD`, `TUNE`, `CGROUPS`, and `UDEV`.
-  - Proxies privileged or system-wide operations toward `lulod-system`.
-- `lulod-system`
-  - Privileged system daemon.
-  - Owns root-level scheduling enforcement, privileged edit/apply operations, and long-lived system policy.
+| Process | Scope | Responsibilities |
+| --- | --- | --- |
+| `lulo` | UI | Notcurses rendering, input handling, editor handoff, page orchestration |
+| `lulod` | User/session | Session-facing cache/state, focus integration, frontend IPC, page snapshots |
+| `lulod-system` | Privileged/system | Scheduler enforcement, privileged edit/apply operations, long-lived system policy |
 
-Related helper binaries:
+### Related Helpers
 
-- `lulo-admin`
-  - Narrow privileged helper used by the current polkit/pkexec path.
-  - Still present for specific privileged operations, but the long-term system-management role belongs to `lulod-system`.
-- `lulod-focus-kde`
-  - KDE/Qt focus helper used by `lulod` to detect the currently focused window and report its PID.
+| Helper | Purpose |
+| --- | --- |
+| `lulo-admin` | Narrow privileged helper used by the current polkit/pkexec path |
+| `lulod-focus-kde` | KDE/Qt focus helper that reports the currently focused window PID |
 
 ## High-Level Data Flow
 
@@ -40,40 +33,28 @@ lulo <-> lulod <-> lulod-system
   +-> external editor handoff
 ```
 
-General model:
-
-- `lulo` should stay UI-only.
-- `lulod` should stay unprivileged and session-oriented.
-- `lulod-system` should own privileged and long-running system behavior.
-
 ## IPC Boundaries
 
-- `lulo <-> lulod`
-  - Unix socket under the user runtime dir.
-  - Used for `SYSTEMD`, `TUNE`, `CGROUPS`, `UDEV`, scheduler snapshots, and focus/session-facing state.
-- `lulod <-> lulod-system`
-  - Unix socket under `/run`.
-  - Used for scheduler reload/scan state, focus updates, privileged edits, and file apply/delete operations.
+| Boundary | Transport | Used For |
+| --- | --- | --- |
+| `lulo <-> lulod` | Unix socket under the user runtime dir | `SYSTEMD`, `TUNE`, `CGROUPS`, `UDEV`, scheduler snapshots, focus/session-facing state |
+| `lulod <-> lulod-system` | Unix socket under `/run` | Scheduler reload/scan state, focus updates, privileged edits, file apply/delete operations |
 
-Shared IPC code lives in:
+Shared IPC code:
 
 - `src/shared/lulod_ipc.c`
 - `src/shared/lulod_system_ipc.c`
 
 ## Source Layout
 
-- `src/app`
-  - TUI shell, input handling, page rendering, widget drawing, help overlay.
-- `src/core`
-  - Shared page models and user-daemon client backends for scheduler, systemd, tune, cgroups, and udev.
-- `src/daemon`
-  - `lulod`, `lulod-system`, focus helpers, privileged edit/scheduler code.
-- `src/shared`
-  - IPC, proc metadata, and helper code shared across binaries.
-- `src/admin`
-  - Narrow admin helper entrypoint.
-- `include`
-  - Public/internal headers for all modules.
+| Path | Purpose |
+| --- | --- |
+| `src/app` | TUI shell, input handling, page rendering, widget drawing, help overlay |
+| `src/core` | Shared page models and user-daemon client backends |
+| `src/daemon` | `lulod`, `lulod-system`, focus helpers, privileged edit/scheduler code |
+| `src/shared` | IPC, proc metadata, and shared helpers |
+| `src/admin` | Narrow admin helper entrypoint |
+| `include` | Public/internal headers |
 
 ## Frontend Structure
 
@@ -81,45 +62,24 @@ Main frontend entrypoint:
 
 - `src/app/lulo.c`
 
-Page modules:
+### Page Modules
 
-- CPU / proc view
-  - main app shell + `src/core/lulo_model.c` + `src/core/lulo_proc.c`
-- DISK
-  - `src/app/lulo_widgets.c` + `src/core/lulo_dizk.c`
-- SCHED
-  - `src/app/lulo_sched_page.c`
-  - `src/core/lulo_sched.c`
-  - `src/core/lulo_sched_backend.c`
-  - subviews: `Profiles`, `Rules`, `Live`
-- CGROUPS
-  - `src/app/lulo_cgroups_page.c`
-  - `src/core/lulo_cgroups.c`
-  - `src/core/lulo_cgroups_backend.c`
-  - subviews: `Tree`, `Files`, `Config`
-- SYSTEMD
-  - `src/app/lulo_systemd_page.c`
-  - `src/core/lulo_systemd.c`
-  - `src/core/lulo_systemd_backend.c`
-  - subviews: `Services`, `Deps`, `Config`
-- UDEV
-  - `src/app/lulo_udev_page.c`
-  - `src/core/lulo_udev.c`
-  - `src/core/lulo_udev_backend.c`
-  - subviews: `Rules`, `Hwdb`, `Devices`
-- TUNE
-  - `src/app/lulo_tune_page.c`
-  - `src/core/lulo_tune.c`
-  - `src/core/lulo_tune_backend.c`
-  - subviews: `Explore`, `Snapshots`, `Presets`
+| Page | App Module(s) | Core Module(s) | Subviews |
+| --- | --- | --- | --- |
+| CPU / proc | main app shell | `src/core/lulo_model.c`, `src/core/lulo_proc.c` | main CPU + proc tree |
+| DISK | `src/app/lulo_widgets.c` | `src/core/lulo_dizk.c` | n/a |
+| SCHED | `src/app/lulo_sched_page.c` | `src/core/lulo_sched.c`, `src/core/lulo_sched_backend.c` | `Profiles`, `Rules`, `Live` |
+| CGROUPS | `src/app/lulo_cgroups_page.c` | `src/core/lulo_cgroups.c`, `src/core/lulo_cgroups_backend.c` | `Tree`, `Files`, `Config` |
+| SYSTEMD | `src/app/lulo_systemd_page.c` | `src/core/lulo_systemd.c`, `src/core/lulo_systemd_backend.c` | `Services`, `Deps`, `Config` |
+| UDEV | `src/app/lulo_udev_page.c` | `src/core/lulo_udev.c`, `src/core/lulo_udev_backend.c` | `Rules`, `Hwdb`, `Devices` |
+| TUNE | `src/app/lulo_tune_page.c` | `src/core/lulo_tune.c`, `src/core/lulo_tune_backend.c` | `Explore`, `Snapshots`, `Presets` |
 
-Input handling:
+Additional frontend files:
 
-- `src/app/lulo_input.c`
-
-Shared frontend types:
-
-- `include/lulo_app.h`
+| File | Purpose |
+| --- | --- |
+| `src/app/lulo_input.c` | Input decoding and input-mode-specific handling |
+| `include/lulo_app.h` | Shared frontend types and app state |
 
 ## Daemon Responsibilities
 
@@ -137,11 +97,13 @@ Key files:
 
 Responsibilities:
 
-- maintain user-facing snapshots for `SCHED`, `SYSTEMD`, `TUNE`, `CGROUPS`, and `UDEV`
-- integrate with KDE focus reporting
-- proxy scheduler/focus requests to `lulod-system`
-- back external-editor flows for file-backed pages before privileged commit happens
-- keep the frontend responsive by moving blocking work out of `lulo`
+| Responsibility | Notes |
+| --- | --- |
+| Maintain user-facing snapshots | Covers `SCHED`, `SYSTEMD`, `TUNE`, `CGROUPS`, and `UDEV` |
+| Focus integration | Currently KDE focus reporting |
+| Proxy system work | For scheduler/focus requests and privileged operations |
+| Support editor flows | Handles file-backed page editing before privileged commit |
+| Keep the UI responsive | Moves blocking work out of `lulo` |
 
 ### `lulod-system`
 
@@ -153,33 +115,32 @@ Key files:
 
 Responsibilities:
 
-- load scheduler config from `/etc/lulo/scheduler`
-- continuously scan and enforce scheduler policy
-- receive focused-PID updates and apply the `focused` profile dynamically
-- perform privileged edit sessions and direct file writes/deletes
-- handle privileged edits for systemd, cgroup, udev, and other system-managed files
+| Responsibility | Notes |
+| --- | --- |
+| Load scheduler config | Reads `/etc/lulo/scheduler` |
+| Enforce scheduler policy | Continuous `/proc` scan and policy application |
+| Apply focused profile | Consumes focused PID updates from `lulod` |
+| Perform privileged edit sessions | Direct writes, deletes, and commit back to system files |
+| Handle system-managed files | Covers systemd, cgroup, udev, and related system config |
 
 ## Scheduler Design
 
-The scheduler is intentionally split into:
+The scheduler intentionally mixes file-backed policy with dynamic built-ins.
 
-- file-backed profiles and rules
-- dynamic built-ins
+### File-Backed State
 
-File-backed state:
+| Path | Purpose |
+| --- | --- |
+| `/etc/lulo/scheduler/profiles.d` | Profile definitions |
+| `/etc/lulo/scheduler/rules.d` | Rule definitions |
+| `/etc/lulo/scheduler/scheduler.conf` | Global scheduler settings |
 
-- profiles in `/etc/lulo/scheduler/profiles.d`
-- rules in `/etc/lulo/scheduler/rules.d`
-- globals in `/etc/lulo/scheduler/scheduler.conf`
+### Dynamic Behavior
 
-Dynamic behavior:
-
-- `focused`
-  - always runtime-detected
-  - target is whichever app currently owns focus
-- `background`
-  - runtime-applied fallback
-  - classifier is configurable and exposed in the UI/config
+| Built-In | Purpose |
+| --- | --- |
+| `focused` | Runtime-detected focused app override |
+| `background` | Runtime-applied fallback for unhandled app-scope processes |
 
 Current scheduler state includes:
 
@@ -191,30 +152,26 @@ Current scheduler state includes:
 
 ## Editing Model
 
-There are two editing patterns:
+| Pattern | Used For |
+| --- | --- |
+| Inline value editing | Mainly `TUNE -> Explore` and pseudo-files that are not normal config documents |
+| External editor handoff | Scheduler config, systemd config, service files, udev rules, hwdb files, tune snapshots/presets, and other file-backed content |
 
-- inline value editing
-  - mainly for `TUNE -> Explore`
-  - used for pseudo-files that are not normal config documents
-- external editor handoff
-  - used for scheduler config, systemd config, service files, udev rules, hwdb files, tune snapshots/presets, and other file-backed content
-  - honors `$VISUAL` / `$EDITOR`
-
-Privileged file edits go through `lulod-system` so the TUI never writes system files directly.
+Privileged file edits go through `lulod-system`, so the TUI never writes system files directly.
 
 ## Runtime and Installed Paths
 
-Installed `/usr` layout:
+| Path | Contents |
+| --- | --- |
+| `/usr/bin` | `lulo`, `lulod`, `lulod-system` |
+| `/usr/libexec/lulo` | Helper binaries |
+| `/usr/share/lulo` | Shipped data and examples |
+| `/usr/lib/systemd/user` | `lulod.service` |
+| `/usr/lib/systemd/system` | `lulod-system.service` |
+| `/usr/share/polkit-1/actions` | `lulo` policy files |
+| `/etc/lulo` | System config |
 
-- `/usr/bin`: `lulo`, `lulod`, `lulod-system`
-- `/usr/libexec/lulo`: helper binaries
-- `/usr/share/lulo`: shipped data and examples
-- `/usr/lib/systemd/user`: `lulod.service`
-- `/usr/lib/systemd/system`: `lulod-system.service`
-- `/usr/share/polkit-1/actions`: `lulo` policy files
-- `/etc/lulo`: system config
-
-The build also still supports running from the repo checkout for development.
+The build also supports running directly from the repo checkout for development.
 
 ## Design Rules
 

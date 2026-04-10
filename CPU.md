@@ -1,87 +1,73 @@
 # Lulo CPU and Process View
 
-The `CPU` page combines machine-level CPU monitoring with a live process tree.
-It is the main runtime observability view in `lulo`.
+The `CPU` page combines machine-level CPU monitoring with a live process tree. It is the main runtime observability view in `lulo`.
 
 ## Scope
 
-The page covers:
-
-- per-CPU history and current load
-- CPU frequency, governor, and temperature summary
-- a process tree with scheduler-relevant process metadata
-- direct process inspection and signaling
+| Area | What it shows |
+| --- | --- |
+| CPU history | Per-CPU history and current load |
+| CPU metadata | Frequency, governor, and temperature summary |
+| Process tree | Scheduler-relevant process metadata in tree form |
+| Process actions | Direct process inspection and signaling |
 
 ## CPU Sampling Model
 
-The top bar sample interval controls the main CPU sampling cadence.
-
-The CPU page uses that to drive:
-
-- machine CPU history
-- per-core usage snapshots
-- current CPU metadata shown alongside the history view
-
-Process refresh is tracked separately from the top-level CPU heat graph so the
-process tree can be tuned independently.
+| Item | Behavior |
+| --- | --- |
+| Top bar sample interval | Controls the main CPU sampling cadence |
+| Machine CPU history | Driven by the main CPU sample cadence |
+| Per-core snapshots | Updated from the same CPU sampling path |
+| Process refresh | Tracked separately so the proc tree can be tuned independently |
 
 ## Process Tree
 
-The lower half of the page is a live process tree.
-It preserves parent/child structure and exposes scheduling-relevant fields.
+The lower half of the page is a live process tree. It preserves parent/child structure and exposes runtime process state.
 
-Current process data includes:
+### Current Process Data
 
-- PID
-- user
-- scheduling policy
-- priority / nice
-- CPU usage
-- memory usage
-- CPU time
-- Linux I/O priority
-- command line
+| Field | Meaning |
+| --- | --- |
+| PID | Process id |
+| user | Owning user |
+| policy | Linux scheduling policy |
+| priority / nice | Current scheduling priority |
+| CPU | Current CPU usage |
+| memory | Memory usage |
+| time | Accumulated CPU time |
+| I/O | Linux I/O priority |
+| command | Command line |
 
-Long command lines can be horizontally panned so tree structure and command text
-remain usable without collapsing the entire row layout.
+Long command lines can be horizontally panned so tree structure stays readable while still allowing full command inspection.
 
 ## CPU Percentage Modes
 
-Process CPU can be shown in two normalization modes:
+| Mode | Meaning |
+| --- | --- |
+| `total` | Default; percent of total machine CPU capacity |
+| `per-core` | htop-style percent of one CPU |
 
-- `total`
-  - default
-  - percent of total machine CPU capacity
-- `per-core`
-  - htop-style percent of one CPU
-
-This affects the process tree CPU column only; it does not change the machine
-CPU history graphs.
+This affects the process tree CPU column only. It does not change the machine CPU history graphs.
 
 ## Process Actions
 
-The CPU page also acts as the process-management surface.
+| Action | Purpose |
+| --- | --- |
+| Selection / navigation | Move through the process tree |
+| Collapse / expand | Control tree visibility |
+| `SIGTERM` | Graceful process termination |
+| `SIGKILL` | Forced process termination |
 
-Current actions include:
+The page is intentionally conservative about privileged inspection helpers. When future process-debug actions are added, they should follow the same explicit model used elsewhere in the app.
 
-- selecting and navigating the process tree
-- collapsing or expanding branches
-- sending `SIGTERM`
-- sending `SIGKILL`
+## Relation to Scheduler
 
-The page is intentionally conservative about privileged inspection helpers.
-When future process-debug actions are added, they should follow the same
-explicit, context-aware model used elsewhere in the app.
+| Page | Role |
+| --- | --- |
+| `CPU` | Live process-centric inspection surface |
+| `SCHED` | Scheduler policy and configuration surface |
 
-## Scheduler Context
-
-The CPU page and `SCHED` page are related but separate:
-
-- `CPU` is the live process-centric inspection surface
-- `SCHED` is the scheduler policy/configuration surface
-
-That means the process tree is where you confirm how a process looks right now,
-while `SCHED -> Live` explains why a process is being treated that way.
+That means the process tree is where you confirm how a process looks right now, while `SCHED -> Live` explains why a process is being treated that way.
 
 ## See Also
 

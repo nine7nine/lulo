@@ -1,31 +1,40 @@
 # lulo
 
-`lulo` is a terminal-based Linux management and observability tool built around three processes:
+`lulo` is a terminal-based Linux management and observability tool built around a three-process architecture: a Notcurses frontend, a user/session daemon, and a privileged system daemon.
 
-- `lulo`: the Notcurses TUI frontend
-- `lulod`: the user/session daemon
-- `lulod-system`: the privileged system daemon
+## Components
 
-Current areas include:
+| Component | Role |
+| --- | --- |
+| `lulo` | Notcurses TUI frontend |
+| `lulod` | User/session daemon for cached snapshots, focus integration, and frontend IPC |
+| `lulod-system` | Privileged system daemon for scheduler enforcement and privileged file/apply operations |
 
-- CPU, process, and disk inspection
-- scheduler policy management
-- systemd inspection and editing
-- tunables management
-- cgroup inspection and editing
-- udev inspection and editing
+## Feature Areas
+
+| Area | What it covers |
+| --- | --- |
+| CPU | CPU history, per-core state, process tree, process signaling |
+| DISK | Mounted filesystem usage dashboard |
+| SCHED | Scheduler profiles, rules, live state, focused/background policy |
+| CGROUPS | Cgroup hierarchy, control files, related config |
+| SYSTEMD | Units, reverse dependencies, config and unit editing |
+| TUNE | Tunables explorer, snapshots, presets, privileged apply |
+| UDEV | Rules, hwdb, live device data, config editing |
 
 ## Docs
 
-- [INSTALL.md](INSTALL.md): build, install, update, and packaging flow
-- [ARCHITECTURE.md](ARCHITECTURE.md): process split, source layout, and design notes
-- [CPU.md](CPU.md): CPU sampling and process-tree behavior
-- [DISK.md](DISK.md): filesystem usage view
-- [SCHED.md](SCHED.md): scheduler model, config layout, and focused-app behavior
-- [CGROUPS.md](CGROUPS.md): cgroup hierarchy, files, and related config
-- [SYSTEMD.md](SYSTEMD.md): service, dependency, and config inspection
-- [TUNE.md](TUNE.md): tunables explorer, snapshots, and presets
-- [UDEV.md](UDEV.md): udev rules, hwdb, and live device inspection
+| Doc | Purpose |
+| --- | --- |
+| [INSTALL.md](INSTALL.md) | Build, install, update, and packaging flow |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Process split, source layout, IPC, and design rules |
+| [CPU.md](CPU.md) | CPU sampling and process-tree behavior |
+| [DISK.md](DISK.md) | Filesystem usage view |
+| [SCHED.md](SCHED.md) | Scheduler model, config layout, and focused-app behavior |
+| [CGROUPS.md](CGROUPS.md) | Cgroup hierarchy, files, and related config |
+| [SYSTEMD.md](SYSTEMD.md) | Service, dependency, and config inspection |
+| [TUNE.md](TUNE.md) | Tunables explorer, snapshots, and presets |
+| [UDEV.md](UDEV.md) | Udev rules, hwdb, and live device inspection |
 
 ## Build
 
@@ -33,24 +42,21 @@ Current areas include:
 make PREFIX=/usr
 ```
 
-Useful build variants:
+Useful variants:
 
-- `make strict PREFIX=/usr`
-- `make analyze PREFIX=/usr`
-- `make asan PREFIX=/usr`
+| Target | Purpose |
+| --- | --- |
+| `make strict PREFIX=/usr` | Build with stricter warnings |
+| `make analyze PREFIX=/usr` | Static analysis pass |
+| `make asan PREFIX=/usr` | Sanitizer build |
 
 ## Install
 
 ```bash
 sudo make install PREFIX=/usr
-```
-
-Then start or restart the daemons and run the UI:
-
-```bash
 sudo systemctl restart lulod-system.service
 systemctl --user restart lulod.service
 /usr/bin/lulo -i nc
 ```
 
-See [INSTALL.md](INSTALL.md) for the full setup and migration steps.
+For full setup, migration, and packaging details, see [INSTALL.md](INSTALL.md).

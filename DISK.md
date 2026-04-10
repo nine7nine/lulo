@@ -1,47 +1,42 @@
 # Lulo Disk View
 
-The `DISK` page is a compact filesystem usage dashboard.
-It is intentionally simpler than the scheduler, systemd, or tune pages.
+The `DISK` page is a compact filesystem usage dashboard. It is intentionally simpler than the scheduler, systemd, or tune pages.
 
 ## Scope
 
-The page shows mounted filesystem usage with a fast, glanceable layout.
-
-Current data includes:
-
-- device / filesystem source
-- mount point
-- used vs total space
-- percentage used
-- an aggregate total row
+| Item | What it shows |
+| --- | --- |
+| Filesystem source | Device or mount source |
+| Mount point | Where it is mounted |
+| Usage bar | Used vs available space |
+| Percentage | Percent used |
+| Aggregate row | Combined total summary |
 
 ## Layout Model
 
-Each mounted filesystem is rendered as its own row with:
+Each mounted filesystem is rendered as its own row.
 
-- a stable per-filesystem color
-- a usage bar
-- percentage used
-- used / total size text
+| Element | Purpose |
+| --- | --- |
+| Stable per-filesystem color | Makes rows easy to track visually |
+| Usage bar | Quick at-a-glance capacity view |
+| Percentage | Immediate utilization reading |
+| Used / total text | Exact capacity values |
 
-The top `total` row provides a combined filesystem summary using its own color
-so it reads as an aggregate rather than as one of the component mounts.
+The top `total` row uses its own aggregate color so it reads as a summary rather than as one of the component mounts.
 
 ## Intended Use
 
-The disk page is designed for:
-
-- quick capacity checks
-- spotting heavily used mounts
-- seeing total usage without leaving the TUI
-
-It is not currently a filesystem editor or block-device management surface.
+| Good For | Not Intended For |
+| --- | --- |
+| Quick capacity checks | Full filesystem administration |
+| Spotting heavily used mounts | Block-device partitioning |
+| Total-usage awareness without leaving the TUI | Storage provisioning workflows |
 
 ## Relation to Other Pages
 
-`DISK` is deliberately read-only and lightweight.
-More detailed system-management surfaces live elsewhere:
-
-- [SYSTEMD.md](SYSTEMD.md)
-- [CGROUPS.md](CGROUPS.md)
-- [TUNE.md](TUNE.md)
+| Related Page | Why it matters |
+| --- | --- |
+| [SYSTEMD.md](SYSTEMD.md) | Service-side storage consumers and config |
+| [CGROUPS.md](CGROUPS.md) | Control-oriented system resource views |
+| [TUNE.md](TUNE.md) | Tunables and low-level kernel/system settings |

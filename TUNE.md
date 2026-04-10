@@ -1,81 +1,72 @@
 # Lulo Tune View
 
-The `TUNE` page is the tunables explorer and preset/snapshot surface.
-It is designed around browsing real kernel/sysfs/procfs state, editing values,
-and saving reusable bundles.
+The `TUNE` page is the tunables explorer and preset/snapshot surface. It is designed around browsing real kernel/sysfs/procfs state, editing values, and saving reusable bundles.
 
 ## Subviews
 
-The page has three subviews:
-
-- `Explore`
-  - live filesystem-style browser for tunable sources
-- `Snapshots`
-  - saved point-in-time bundles
-- `Presets`
-  - named reusable bundles intended for repeated application
+| Subview | Purpose |
+| --- | --- |
+| `Explore` | Live filesystem-style browser for tunable sources |
+| `Snapshots` | Saved point-in-time bundles |
+| `Presets` | Named reusable bundles intended for repeated application |
 
 ## Explore View
 
 `Explore` is the live browser for tunable paths.
-It is used for sources such as:
 
-- `/proc/sys`
-- `/sys`
-- `/sys/fs/cgroup`
+| Source | Why it matters |
+| --- | --- |
+| `/proc/sys` | Kernel sysctl-style settings |
+| `/sys` | Kernel and device-facing tunables |
+| `/sys/fs/cgroup` | Cgroup-related tunables and controls |
 
-The page shows path-oriented state rather than a hardcoded list of known keys,
-which keeps it useful even as the kernel and local system layout vary.
+The page is path-oriented rather than hardcoded around a fixed list of known knobs.
 
 ## Editing Model
 
-`TUNE` uses two different edit styles depending on the kind of item:
+`TUNE` uses two different editing styles depending on the type of item.
 
-- inline value editing
-  - for pseudo-files and direct tunable values
-- external editor handoff
-  - for file-backed snapshot and preset bundles
+| Edit Style | Used For |
+| --- | --- |
+| Inline value editing | Pseudo-files and direct tunable values |
+| External editor handoff | File-backed snapshot and preset bundles |
 
-That split is intentional: kernel pseudo-files are not normal config documents,
-so inline editing is the right UX there.
+This split is intentional: kernel pseudo-files are not normal config documents, so inline editing is the right UX there.
 
 ## Snapshots and Presets
 
 Tune bundles are file-backed and manageable from the TUI.
 
-Current bundle operations include:
+| Operation | Supported |
+| --- | --- |
+| Create | Yes |
+| Edit in `$VISUAL` / `$EDITOR` | Yes |
+| Rename displayed metadata | Yes |
+| Delete | Yes |
+| Apply | Yes |
 
-- create
-- edit in `$VISUAL` / `$EDITOR`
-- rename displayed bundle metadata
-- delete
-- apply
+### Bundle Roles
 
-The distinction is conceptual:
-
-- `Snapshots`
-  - capture a saved state from exploration work
-- `Presets`
-  - reusable named bundles intended for repeated application
+| Bundle Type | Purpose |
+| --- | --- |
+| `Snapshots` | Saved state captured from exploration work |
+| `Presets` | Named reusable bundles intended for repeated application |
 
 ## Privileged Apply Model
 
-Applying tunables is not done directly by the TUI.
-When privileged writes are required, they are committed through the backend
-privileged path.
-
-That keeps:
-
-- editing and staging in the TUI
-- privileged mutation in `lulod-system`
+| Layer | Responsibility |
+| --- | --- |
+| `lulo` | Editing, staging, and invoking apply |
+| `lulod` | Snapshot and bundle-facing state |
+| `lulod-system` | Privileged mutation when writes require elevated access |
 
 ## Relation to Other Pages
 
-`TUNE` overlaps with several other system-management surfaces:
-
-- `CGROUPS` for cgroup filesystem and config-level work
-- `SCHED` for process scheduling policy
-- `SYSTEMD` and `UDEV` for service/device-related config editing
+| Related Page | Why it matters |
+| --- | --- |
+| [CGROUPS.md](CGROUPS.md) | Cgroup filesystem and config-level work |
+| [SCHED.md](SCHED.md) | Process scheduling policy |
+| [SYSTEMD.md](SYSTEMD.md) / [UDEV.md](UDEV.md) | Service/device-related config editing |
 
 ## See Also
 

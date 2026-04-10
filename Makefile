@@ -90,6 +90,7 @@ LULOD_SYSTEM_SRCS := \
 	$(SRC_DAEMON)/lulod_system.c \
 	$(SRC_DAEMON)/lulod_system_edit.c \
 	$(SRC_DAEMON)/lulod_system_sched.c \
+	$(SRC_DAEMON)/lulod_system_trace.c \
 	$(SRC_CORE)/lulo_sched.c \
 	$(SRC_SHARED)/lulo_proc_meta.c \
 	$(SRC_SHARED)/lulod_system_ipc.c
@@ -116,7 +117,7 @@ lulo: $(LULO_SRCS) include/lulo_edit.h include/lulo_model.h include/lulo_proc.h 
 lulod: $(LULOD_SRCS) include/lulo_cgroups.h include/lulo_sched.h include/lulo_systemd.h include/lulo_tune.h include/lulo_udev.h include/lulod_cgroups.h include/lulod_sched.h include/lulod_systemd.h include/lulod_tune.h include/lulod_udev.h include/lulod_system_ipc.h include/lulod_ipc.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CFLAGS) -o $@ $(LULOD_SRCS) $(SYSTEMD_LIBS) -lm
 
-lulod-system: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h
+lulod-system: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h include/lulod_system_trace.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CFLAGS) -o $@ $(LULOD_SYSTEM_SRCS) -lm
 
 lulo-admin: $(LULO_ADMIN_SRCS) include/lulo_admin.h
@@ -137,7 +138,7 @@ lulo-asan: $(LULO_SRCS) include/lulo_edit.h include/lulo_model.h include/lulo_pr
 lulod-asan: $(LULOD_SRCS) include/lulo_cgroups.h include/lulo_sched.h include/lulo_systemd.h include/lulo_tune.h include/lulo_udev.h include/lulod_cgroups.h include/lulod_sched.h include/lulod_systemd.h include/lulod_tune.h include/lulod_udev.h include/lulod_system_ipc.h include/lulod_ipc.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) -o $@ $(LULOD_SRCS) $(SYSTEMD_LIBS) -lm
 
-lulod-system-asan: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h
+lulod-system-asan: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h include/lulod_system_trace.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) -o $@ $(LULOD_SYSTEM_SRCS) -lm
 
 lulo-admin-asan: $(LULO_ADMIN_SRCS) include/lulo_admin.h
@@ -169,7 +170,8 @@ install-bin: all
 install-data:
 	install -d "$(DESTDIR)$(LULO_DATADIR)/kwin" \
 		"$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/profiles.d" \
-		"$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/rules.d"
+		"$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/rules.d" \
+		"$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/tunables-presets.d"
 	install -m644 share/lulo/kwin/lulod_focus_kde.js "$(DESTDIR)$(LULO_DATADIR)/kwin/"
 	install -m644 examples/scheduler/README.md "$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/"
 	install -m644 examples/scheduler/scheduler.conf "$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/"
@@ -193,7 +195,8 @@ install-policy:
 		lulo-admin.policy.in >"$(DESTDIR)$(POLKIT_ACTIONSDIR)/io.lulo.admin.policy"
 
 install-config:
-	install -d "$(DESTDIR)$(SCHED_CONFIG_DIR)/profiles.d" "$(DESTDIR)$(SCHED_CONFIG_DIR)/rules.d"
+	install -d "$(DESTDIR)$(SCHED_CONFIG_DIR)/profiles.d" "$(DESTDIR)$(SCHED_CONFIG_DIR)/rules.d" \
+		"$(DESTDIR)$(SCHED_CONFIG_DIR)/tunables-presets.d"
 	@if [ ! -e "$(DESTDIR)$(SCHED_CONFIG_DIR)/scheduler.conf" ]; then \
 		install -m644 examples/scheduler/scheduler.conf "$(DESTDIR)$(SCHED_CONFIG_DIR)/scheduler.conf"; \
 	fi

@@ -2,6 +2,7 @@
 #define LULO_APP_H
 
 #include <notcurses/notcurses.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -129,7 +130,15 @@ typedef struct {
 
 typedef struct {
     AppPage active_page;
+    int rw_mode;
     int help_visible;
+    int strace_active;
+    int strace_scroll;
+    int strace_x_scroll;
+    int strace_target_pid;
+    char strace_session_id[128];
+    char strace_output_path[PATH_MAX];
+    char strace_target_label[128];
     int proc_refresh_ms;
     LuloProcCpuMode proc_cpu_mode;
     int last_scroll_action;
@@ -199,6 +208,7 @@ typedef enum {
     INPUT_SAVE_PRESET,
     INPUT_EDIT_SELECTED,
     INPUT_APPLY_SELECTED,
+    INPUT_TOGGLE_RW_MODE,
     INPUT_RELOAD_PAGE,
     INPUT_NEW_ITEM,
     INPUT_DELETE_SELECTED,

@@ -17,6 +17,8 @@ enum {
     LULOD_SYSTEM_REQ_FILE_WRITE = 7,
     LULOD_SYSTEM_REQ_FILE_DELETE = 8,
     LULOD_SYSTEM_REQ_SCHED_APPLY_PRESET = 9,
+    LULOD_SYSTEM_REQ_TRACE_BEGIN = 10,
+    LULOD_SYSTEM_REQ_TRACE_END = 11,
 };
 
 int lulod_system_socket_path(char *buf, size_t len);
@@ -31,6 +33,15 @@ int lulod_system_recv_focus_update_request(int fd, pid_t *pid, unsigned long lon
                                            char *provider, size_t provider_len);
 int lulod_system_send_sched_apply_preset_request(int fd, const char *preset_id);
 int lulod_system_recv_sched_apply_preset_request(int fd, char *preset_id, size_t preset_id_len);
+int lulod_system_send_trace_begin_request(int fd, pid_t target_pid);
+int lulod_system_recv_trace_begin_request(int fd, pid_t *target_pid);
+int lulod_system_send_trace_end_request(int fd, const char *session_id);
+int lulod_system_recv_trace_end_request(int fd, char *session_id, size_t session_id_len);
+int lulod_system_send_trace_begin_response(int fd, int status, const char *err,
+                                           const char *session_id, const char *output_path);
+int lulod_system_recv_trace_begin_response(int fd, char *session_id, size_t session_id_len,
+                                           char *output_path, size_t output_path_len,
+                                           char *err, size_t errlen);
 int lulod_system_send_edit_begin_request(int fd, const char *path);
 int lulod_system_recv_edit_begin_request(int fd, char *path, size_t path_len);
 int lulod_system_send_edit_session_request(int fd, uint32_t type, const char *session_id);

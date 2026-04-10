@@ -265,11 +265,11 @@ static const char *footer_hint(AppPage page)
     case APP_PAGE_UDEV:
     case APP_PAGE_SYSTEMD:
     case APP_PAGE_TUNE:
-        return "q exit   Tab page   Shift-Tab subview   ? help";
+        return "q exit   Tab page   Shift-Tab subview   W mode   ? help";
     case APP_PAGE_DIZK:
     case APP_PAGE_CPU:
     default:
-        return "q exit   Tab page   ? help";
+        return "q exit   Tab page   W mode   ? help";
     }
 }
 
@@ -303,11 +303,13 @@ static const HelpEntry *help_entries(AppPage page, int *count)
 {
     static const HelpEntry cpu_lines[] = {
         {"Tab", "switch top-level pages"},
+        {"W", "toggle RO/RW guard for system writes"},
         {"j/k or up/down", "move the process selection"},
         {"left/right", "scroll long commands horizontally"},
         {"PgUp/PgDn, Home/End", "jump the process list"},
         {"space", "toggle the selected branch"},
         {"c / e", "collapse or expand all branches"},
+        {"s", "start or stop strace on the selected process (RW)"},
         {"x / X", "send TERM or KILL to selected process"},
         {"+ / -", "change sample interval"},
         {"p / r", "change proc CPU mode and proc refresh"},
@@ -315,6 +317,7 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     };
     static const HelpEntry disk_lines[] = {
         {"Tab", "switch top-level pages"},
+        {"W", "toggle RO/RW guard for system writes"},
         {"j/k or arrows", "scroll filesystems"},
         {"PgUp/PgDn, Home/End", "jump the filesystem list"},
         {"? / Esc / click", "close help"},
@@ -322,6 +325,7 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     static const HelpEntry sched_lines[] = {
         {"Tab", "switch top-level pages"},
         {"Shift-Tab", "change scheduler subview"},
+        {"W", "toggle RO/RW guard for system writes"},
         {"click sub-tabs", "change scheduler view"},
         {"j/k or arrows", "move the active pane"},
         {"PgUp/PgDn, Home/End", "jump the active pane"},
@@ -337,6 +341,7 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     static const HelpEntry cgroups_lines[] = {
         {"Tab", "switch top-level pages"},
         {"Shift-Tab", "change cgroups subview"},
+        {"W", "toggle RO/RW guard for system writes"},
         {"click Tree/Files/Config", "change cgroups view"},
         {"j/k or arrows", "move the active pane"},
         {"PgUp/PgDn, Home/End", "jump the active pane"},
@@ -349,6 +354,7 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     static const HelpEntry udev_lines[] = {
         {"Tab", "switch top-level pages"},
         {"Shift-Tab", "change udev subview"},
+        {"W", "toggle RO/RW guard for system writes"},
         {"click Rules/Hwdb/Devices", "change udev view"},
         {"j/k or arrows", "move the active pane"},
         {"PgUp/PgDn, Home/End", "jump the active pane"},
@@ -361,6 +367,7 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     static const HelpEntry systemd_lines[] = {
         {"Tab", "switch top-level pages"},
         {"Shift-Tab", "change systemd subview"},
+        {"W", "toggle RO/RW guard for system writes"},
         {"click Services/Deps/Config", "change systemd view"},
         {"j/k or arrows", "move the active pane"},
         {"PgUp/PgDn, Home/End", "jump the active pane"},
@@ -372,6 +379,7 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     static const HelpEntry tune_lines[] = {
         {"Tab", "switch top-level pages"},
         {"Shift-Tab", "change tunables subview"},
+        {"W", "toggle RO/RW guard for system writes"},
         {"click Explore/Snapshots/Presets", "change tune view"},
         {"j/k or arrows", "move the active pane"},
         {"PgUp/PgDn, Home/End", "jump the active pane"},
@@ -589,6 +597,23 @@ static const char *app_status_current(AppState *app)
     return app->status;
 }
 
+static int path_requires_rw(const char *path)
+{
+    if (!path || !*path) return 0;
+    return strncmp(path, "/etc/", 5) == 0 ||
+           strncmp(path, "/usr/", 5) == 0 ||
+           strncmp(path, "/lib/", 5) == 0 ||
+           strncmp(path, "/proc/", 6) == 0 ||
+           strncmp(path, "/sys/", 5) == 0 ||
+           strncmp(path, "/run/udev/", 10) == 0 ||
+           strncmp(path, "/run/systemd/", 13) == 0;
+}
+
+static void rw_mode_block(AppState *app)
+{
+    app_status_set(app, "RO mode: Shift+W for root/RW");
+}
+
 static const char *path_basename_local(const char *path)
 {
     const char *slash;
@@ -731,6 +756,143 @@ static int run_external_edit(Ui *ui, InputBackend input_backend, RawInput *rawin
     }
     if (lulo_edit_session_commit(&session, err, errlen) < 0) return -1;
     return 1;
+}
+
+#define LULO_TRACE_TAIL_BYTES (256 * 1024)
+
+static void proc_trace_reset(AppState *app)
+{
+    if (!app) return;
+    app->strace_active = 0;
+    app->strace_scroll = 0;
+    app->strace_x_scroll = 0;
+    app->strace_target_pid = 0;
+    app->strace_session_id[0] = '\0';
+    app->strace_output_path[0] = '\0';
+    app->strace_target_label[0] = '\0';
+}
+
+static int proc_trace_read_tail(const char *path,
+                                char **buf_out, size_t **offsets_out,
+                                int *line_count_out, int *max_width_out,
+                                char *err, size_t errlen)
+{
+    char *buf = NULL;
+    size_t *offsets = NULL;
+    size_t start = 0;
+    size_t used = 0;
+    size_t cap = 0;
+    int fd = -1;
+    int line_count = 0;
+    int line_cap = 0;
+    int max_width = 0;
+    off_t end_pos;
+
+    if (buf_out) *buf_out = NULL;
+    if (offsets_out) *offsets_out = NULL;
+    if (line_count_out) *line_count_out = 0;
+    if (max_width_out) *max_width_out = 0;
+    if (err && errlen > 0) err[0] = '\0';
+    if (!path || !*path || !buf_out || !offsets_out || !line_count_out || !max_width_out) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "open trace: %s", strerror(errno));
+        return -1;
+    }
+    end_pos = lseek(fd, 0, SEEK_END);
+    if (end_pos < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "seek trace: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if ((size_t)end_pos > LULO_TRACE_TAIL_BYTES) start = (size_t)end_pos - LULO_TRACE_TAIL_BYTES;
+    cap = (size_t)end_pos - start;
+    buf = calloc(cap + 1, 1);
+    if (!buf) {
+        close(fd);
+        return -1;
+    }
+    if (lseek(fd, (off_t)start, SEEK_SET) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "seek trace: %s", strerror(errno));
+        close(fd);
+        free(buf);
+        return -1;
+    }
+    while (used < cap) {
+        ssize_t nr = read(fd, buf + used, cap - used);
+
+        if (nr < 0) {
+            if (errno == EINTR) continue;
+            if (err && errlen > 0) snprintf(err, errlen, "read trace: %s", strerror(errno));
+            close(fd);
+            free(buf);
+            return -1;
+        }
+        if (nr == 0) break;
+        used += (size_t)nr;
+    }
+    close(fd);
+    buf[used] = '\0';
+    if (start > 0) {
+        char *nl = memchr(buf, '\n', used);
+
+        if (nl) {
+            size_t skip = (size_t)(nl - buf) + 1;
+            memmove(buf, buf + skip, used - skip + 1);
+            used -= skip;
+        } else {
+            used = 0;
+            buf[0] = '\0';
+        }
+    }
+    if (used == 0) {
+        *buf_out = buf;
+        *offsets_out = NULL;
+        *line_count_out = 0;
+        *max_width_out = 0;
+        return 0;
+    }
+
+    for (size_t i = 0; i < used;) {
+        size_t line_start = i;
+        size_t line_len = 0;
+        size_t j;
+
+        if (line_count >= line_cap) {
+            int next_cap = line_cap > 0 ? line_cap * 2 : 64;
+            size_t *next = realloc(offsets, (size_t)next_cap * sizeof(*offsets));
+
+            if (!next) {
+                free(offsets);
+                free(buf);
+                return -1;
+            }
+            offsets = next;
+            line_cap = next_cap;
+        }
+        offsets[line_count++] = line_start;
+        for (j = i; j < used && buf[j] != '\n'; j++) {
+            if (buf[j] != '\r') line_len++;
+        }
+        if ((int)line_len > max_width) max_width = (int)line_len;
+        for (; i < j; i++) {
+            if (buf[i] == '\r') buf[i] = '\0';
+        }
+        if (j < used && buf[j] == '\n') {
+            buf[j] = '\0';
+            i = j + 1;
+        }
+    }
+
+    *buf_out = buf;
+    *offsets_out = offsets;
+    *line_count_out = line_count;
+    *max_width_out = max_width;
+    return 0;
 }
 
 static void reset_scroll_repeat(AppState *app)
@@ -1199,6 +1361,13 @@ static void render_header_widget(Ui *ui, const DashboardState *dash, const AppSt
     char sample_buf[24];
     char proc_buf[32];
     char proc_cpu_buf[24];
+    const char *mode_label;
+    Rgb mode_color;
+    int mode_x;
+    int time_x;
+    int right_reserved;
+    int mode_w;
+    int time_w;
     int row;
     int x;
     int remaining;
@@ -1212,36 +1381,44 @@ static void render_header_widget(Ui *ui, const DashboardState *dash, const AppSt
              app ? effective_proc_refresh_ms(dash->sample_ms, app->proc_refresh_ms) : 1000);
     snprintf(proc_cpu_buf, sizeof(proc_cpu_buf), "cpu %s",
              app ? lulo_proc_cpu_mode_name(app->proc_cpu_mode) : lulo_proc_cpu_mode_name(LULO_PROC_CPU_TOTAL));
+    mode_label = app && app->rw_mode ? "root/RW" : "user/RO";
+    mode_color = app && app->rw_mode ? ui->theme->red : ui->theme->green;
+    mode_w = (int)strlen(mode_label);
+    time_w = (int)strlen(tb);
+    right_reserved = mode_w + 3 + time_w;
+    mode_x = ui->lo.header.width - 2 - mode_w;
+    time_x = mode_x - 3 - time_w;
 
     row = 1;
     x = 2;
-    remaining = ui->lo.header.width - 4;
+    remaining = ui->lo.header.width - 4 - right_reserved;
+    if (remaining < 0) remaining = 0;
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->cyan, ui->theme->bg, "LULO");
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ");
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->white, ui->theme->bg,
                            dash->model_short[0] ? dash->model_short : "CPU");
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->white, ui->theme->bg, dash->hostname);
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->cyan, ui->theme->bg, sample_buf);
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->green, ui->theme->bg, proc_cpu_buf);
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
-    remaining = ui->lo.header.width - 4 - (x - 2);
+    remaining = ui->lo.header.width - 4 - right_reserved - (x - 2);
     x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->cyan, ui->theme->bg, proc_buf);
-    remaining = ui->lo.header.width - 4 - (x - 2);
-    x += plane_segment_fit(ui->header, row, x, remaining, ui->theme->dim, ui->theme->bg, "  ·  ");
-    remaining = ui->lo.header.width - 4 - (x - 2);
-    plane_segment_fit(ui->header, row, x, remaining, ui->theme->white, ui->theme->bg, tb);
+    if (time_x > 2) {
+        plane_putn(ui->header, row, time_x, ui->theme->white, ui->theme->bg, tb, time_w);
+        plane_putn(ui->header, row, mode_x, mode_color, ui->theme->bg, mode_label, mode_w);
+    }
 }
 
 static void render_cpu_headers(Ui *ui)
@@ -1657,11 +1834,21 @@ static void render_process_count(Ui *ui, const LuloProcSnapshot *snap, const Lul
     plane_putn(ui->proc, 0, rows_x, ui->theme->dim, ui->theme->bg, rows_buf, field_w);
 }
 
-static void render_process_title(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
+static void render_proc_panel_title(Ui *ui, const AppState *app)
+{
+    if (!ui || !ui->proc) return;
+    draw_box_title(ui->proc, ui->theme, ui->theme->border_panel,
+                   app && app->strace_active ? " Strace " : " Process Tree ",
+                   ui->theme->white);
+}
+
+static void render_process_title(Ui *ui, AppState *app,
+                                 const LuloProcSnapshot *snap, const LuloProcState *state)
 {
     ProcTableLayout *pt = &ui->proc_table;
 
     if (!ui->proc) return;
+    render_proc_panel_title(ui, app);
     if (snap && snap->count > 0 && state) {
         int rows_x;
         int count_digits = digits_int(snap->count);
@@ -1687,6 +1874,97 @@ static void render_process_title(Ui *ui, const LuloProcSnapshot *snap, const Lul
         }
         render_process_count(ui, snap, state);
     }
+}
+
+static void render_trace_widget(Ui *ui, AppState *app)
+{
+    ProcTableLayout *pt = &ui->proc_table;
+    char *buf = NULL;
+    size_t *offsets = NULL;
+    int line_count = 0;
+    int max_width = 0;
+    int body_rows;
+    int inner_w;
+    int max_scroll;
+    int max_x_scroll;
+    char left_buf[256];
+    char right_buf[64];
+    char err[160];
+
+    if (!ui || !ui->proc || !app || !app->strace_active) return;
+    build_proc_table_layout(ui);
+    render_proc_panel_title(ui, app);
+    body_rows = pt->body_rows;
+    inner_w = pt->inner_w;
+    plane_fill(ui->proc, 0, 1, inner_w, ui->theme->bg, ui->theme->bg);
+    plane_fill(ui->proc, 1, 1, inner_w, ui->theme->bg, ui->theme->bg);
+
+    if (proc_trace_read_tail(app->strace_output_path, &buf, &offsets,
+                             &line_count, &max_width, err, sizeof(err)) < 0) {
+        snprintf(left_buf, sizeof(left_buf), "pid %d  %s", app->strace_target_pid,
+                 app->strace_target_label[0] ? app->strace_target_label : "trace");
+        plane_putn(ui->proc, 0, 1, ui->theme->green, ui->theme->bg, left_buf, inner_w);
+        plane_putn(ui->proc, 1, 1, ui->theme->red, ui->theme->bg,
+                   err[0] ? err : "trace output unavailable", inner_w);
+        for (int i = 0; i < body_rows; i++) {
+            plane_fill(ui->proc, pt->body_y + i, 1, inner_w, ui->theme->bg, ui->theme->bg);
+        }
+        return;
+    }
+
+    max_scroll = line_count > body_rows ? line_count - body_rows : 0;
+    max_x_scroll = max_width > inner_w ? max_width - inner_w : 0;
+    if (app->strace_scroll < 0) app->strace_scroll = 0;
+    if (app->strace_scroll > max_scroll) app->strace_scroll = max_scroll;
+    if (app->strace_x_scroll < 0) app->strace_x_scroll = 0;
+    if (app->strace_x_scroll > max_x_scroll) app->strace_x_scroll = max_x_scroll;
+
+    snprintf(left_buf, sizeof(left_buf), "pid %d  %s",
+             app->strace_target_pid,
+             app->strace_target_label[0] ? app->strace_target_label : "trace");
+    if (line_count > 0) {
+        snprintf(right_buf, sizeof(right_buf), "%d-%d/%d",
+                 app->strace_scroll + 1,
+                 app->strace_scroll + body_rows < line_count ? app->strace_scroll + body_rows : line_count,
+                 line_count);
+    } else {
+        snprintf(right_buf, sizeof(right_buf), "0/0");
+    }
+    plane_putn(ui->proc, 0, 1, ui->theme->green, ui->theme->bg, left_buf, inner_w);
+    {
+        int right_x = ui->lo.proc.width - (int)strlen(right_buf) - 2;
+
+        if (right_x < 1) right_x = 1;
+        plane_putn(ui->proc, 0, right_x, ui->theme->dim, ui->theme->bg,
+                   right_buf, (int)strlen(right_buf));
+    }
+    plane_putn(ui->proc, 1, 1, ui->theme->dim, ui->theme->bg,
+               "s stop   j/k scroll   left/right hscroll   PgUp/PgDn jump", inner_w);
+
+    for (int slot = 0; slot < body_rows; slot++) {
+        int y = pt->body_y + slot;
+        int line_index = app->strace_scroll + slot;
+
+        plane_fill(ui->proc, y, 1, inner_w, ui->theme->bg, ui->theme->bg);
+        if (line_index >= line_count) continue;
+        if (buf) {
+            const char *line = buf + offsets[line_index];
+            int line_len = (int)strlen(line);
+            const char *view = line;
+
+            if (app->strace_x_scroll > line_len) view = line + line_len;
+            else view = line + app->strace_x_scroll;
+            plane_putn(ui->proc, y, 1, ui->theme->fg, ui->theme->bg, view, inner_w);
+        }
+    }
+
+    if (line_count == 0) {
+        plane_putn(ui->proc, pt->body_y, 1, ui->theme->dim, ui->theme->bg,
+                   "waiting for strace output...", inner_w);
+    }
+
+    free(offsets);
+    free(buf);
 }
 
 static void render_process_columns(Ui *ui, const LuloProcState *state)
@@ -1866,37 +2144,52 @@ static void render_process_rows(Ui *ui, const LuloProcSnapshot *snap, const Lulo
     for (int i = first_slot; i < end; i++) render_process_row(ui, snap, state, i);
 }
 
-static void render_process_widget(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
+static void render_process_widget(Ui *ui, AppState *app,
+                                  const LuloProcSnapshot *snap, const LuloProcState *state)
 {
     unsigned rows = 0;
     unsigned cols = 0;
 
     if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
     build_proc_table_layout(ui);
+    if (app && app->strace_active) {
+        render_trace_widget(ui, app);
+        return;
+    }
     ui->proc_table.cmd_scroll = proc_command_scroll(snap, &ui->proc_table, state);
     ncplane_dim_yx(ui->proc, &rows, &cols);
     plane_fill(ui->proc, 1, 1, ui->proc_table.inner_w, ui->theme->bg, ui->theme->bg);
-    render_process_title(ui, snap, state);
+    render_process_title(ui, app, snap, state);
     render_process_columns(ui, state);
     render_process_rows(ui, snap, state, 0, ui->proc_table.body_rows);
 }
 
-static void render_process_body_only(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state)
+static void render_process_body_only(Ui *ui, AppState *app,
+                                     const LuloProcSnapshot *snap, const LuloProcState *state)
 {
     if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
+    if (app && app->strace_active) {
+        render_trace_widget(ui, app);
+        return;
+    }
     build_proc_table_layout(ui);
     ui->proc_table.cmd_scroll = proc_command_scroll(snap, &ui->proc_table, state);
     render_process_count(ui, snap, state);
     render_process_rows(ui, snap, state, 0, ui->proc_table.body_rows);
 }
 
-static void render_process_cursor_only(Ui *ui, const LuloProcSnapshot *snap, const LuloProcState *state,
+static void render_process_cursor_only(Ui *ui, AppState *app,
+                                       const LuloProcSnapshot *snap, const LuloProcState *state,
                                        int prev_selected, int prev_scroll)
 {
     int old_slot;
     int new_slot;
 
     if (!ui->proc || !snap || !state) return;
+    if (app && app->strace_active) {
+        render_trace_widget(ui, app);
+        return;
+    }
     build_proc_table_layout(ui);
     ui->proc_table.cmd_scroll = proc_command_scroll(snap, &ui->proc_table, state);
     render_process_count(ui, snap, state);
@@ -1944,7 +2237,7 @@ static void render_static(Ui *ui, AppPage page, AppState *app)
     render_footer(ui, page, app_status_current(app));
 }
 
-static void render_cpu_page(Ui *ui, const AppState *app, const CpuInfo *ci, DashboardState *dash,
+static void render_cpu_page(Ui *ui, AppState *app, const CpuInfo *ci, DashboardState *dash,
                             const CpuStat *sa, const CpuStat *sb,
                             const CpuFreq *freqs, int nfreq,
                             const MemInfo *mi, const LoadInfo *li,
@@ -1955,7 +2248,7 @@ static void render_cpu_page(Ui *ui, const AppState *app, const CpuInfo *ci, Dash
     render_header_widget(ui, dash, app);
     render_cpu_widget(ui, ci, dash, sa, sb, freqs, nfreq, cpu_temps, ncpu_temp, append_sample);
     render_memory_widget(ui, mi);
-    if (render_proc) render_process_widget(ui, proc_snap, proc_state);
+    if (render_proc) render_process_widget(ui, app, proc_snap, proc_state);
     render_load_widget(ui, li, sb->ncpu);
 }
 
@@ -2012,9 +2305,10 @@ static void render_tune_page(Ui *ui, AppState *app, const DashboardState *dash,
     render_tune_status(ui, tune_snap, tune_state, tune_backend_status, app);
 }
 
-static void render_process_only(Ui *ui, const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state)
+static void render_process_only(Ui *ui, AppState *app,
+                                const LuloProcSnapshot *proc_snap, const LuloProcState *proc_state)
 {
-    render_process_widget(ui, proc_snap, proc_state);
+    render_process_widget(ui, app, proc_snap, proc_state);
 }
 
 static void render_disk_only(Ui *ui, const LuloDizkSnapshot *dizk_snap, const LuloDizkState *dizk_state)
@@ -2288,6 +2582,56 @@ static const LuloProcRow *selected_proc_row(const LuloProcSnapshot *snap, const 
     return &snap->rows[0];
 }
 
+static int stop_proc_trace(AppState *app, int quiet)
+{
+    LuloTraceSession session;
+    char err[192];
+
+    if (!app || !app->strace_active) return 0;
+    lulo_trace_session_init(&session);
+    snprintf(session.session_id, sizeof(session.session_id), "%s", app->strace_session_id);
+    snprintf(session.output_path, sizeof(session.output_path), "%s", app->strace_output_path);
+    if (lulo_trace_session_end(&session, err, sizeof(err)) < 0) {
+        if (!quiet) app_status_set(app, "%s", err[0] ? err : "failed to stop trace");
+        return -1;
+    }
+    proc_trace_reset(app);
+    if (!quiet) app_status_set(app, "trace stopped");
+    return 0;
+}
+
+static int start_proc_trace(const LuloProcSnapshot *snap, const LuloProcState *state, AppState *app)
+{
+    const LuloProcRow *row = selected_proc_row(snap, state);
+    LuloTraceSession session;
+    char err[192];
+
+    if (!app) return -1;
+    if (!row) {
+        app_status_set(app, "no process selected");
+        return -1;
+    }
+    if (row->is_kernel) {
+        app_status_set(app, "kernel threads are not supported");
+        return -1;
+    }
+    lulo_trace_session_init(&session);
+    if (lulo_trace_session_begin(row->pid, &session, err, sizeof(err)) < 0) {
+        app_status_set(app, "%s", err[0] ? err : "failed to start trace");
+        return -1;
+    }
+    app->strace_active = 1;
+    app->strace_scroll = 0;
+    app->strace_x_scroll = 0;
+    app->strace_target_pid = row->pid;
+    snprintf(app->strace_session_id, sizeof(app->strace_session_id), "%s", session.session_id);
+    snprintf(app->strace_output_path, sizeof(app->strace_output_path), "%s", session.output_path);
+    snprintf(app->strace_target_label, sizeof(app->strace_target_label), "%.*s",
+             (int)sizeof(app->strace_target_label) - 1, row->label);
+    app_status_set(app, "tracing %d", row->pid);
+    return 0;
+}
+
 static int signal_selected_process(const LuloProcSnapshot *snap, const LuloProcState *state,
                                    int sig, AppState *app)
 {
@@ -2320,6 +2664,12 @@ static int handle_tab_click(Ui *ui, int global_y, int global_x, AppState *app, R
     for (int i = 0; i < APP_PAGE_COUNT; i++) {
         if (global_x >= ui->tab_hits[i].x && global_x < ui->tab_hits[i].x + ui->tab_hits[i].width) {
             if (app->active_page != (AppPage)i) {
+                if (app->active_page == APP_PAGE_CPU && app->strace_active &&
+                    stop_proc_trace(app, 0) < 0) {
+                    render->need_footer = 1;
+                    render->need_render = 1;
+                    return 1;
+                }
                 app->active_page = (AppPage)i;
                 if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
                 else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
@@ -2498,6 +2848,13 @@ static int handle_mouse_click(Ui *ui, int global_y, int global_x, AppState *app,
         return 1;
     }
     if (handle_tab_click(ui, global_y, global_x, app, render)) return 1;
+    if (app->active_page == APP_PAGE_CPU && app->strace_active &&
+        global_y >= ui->lo.proc.row + 1 &&
+        global_y < ui->lo.proc.row + ui->lo.proc.height - 1 &&
+        global_x >= ui->lo.proc.col + 1 &&
+        global_x < ui->lo.proc.col + ui->lo.proc.width - 1) {
+        return 1;
+    }
     if (app->active_page == APP_PAGE_CPU &&
         handle_proc_click(ui, global_y, global_x, proc_snap, proc_state, render)) {
         return 1;
@@ -2844,6 +3201,13 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         app->help_visible = !app->help_visible;
         render->need_render = 1;
         break;
+    case INPUT_TOGGLE_RW_MODE:
+        app->rw_mode = !app->rw_mode;
+        app_status_set(app, "mode %s", app->rw_mode ? "root/RW" : "user/RO");
+        render->need_header = 1;
+        render->need_footer = 1;
+        render->need_render = 1;
+        break;
     case INPUT_QUIT:
         *exit_requested = 1;
         break;
@@ -2915,9 +3279,15 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         if (app->active_page == APP_PAGE_CPU) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
-            lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, -delta);
-            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
-                                           proc_state->selected, proc_state->scroll);
+            if (app->strace_active) {
+                app->strace_scroll -= delta;
+                if (app->strace_scroll < 0) app->strace_scroll = 0;
+                render->need_proc_body_only = 1;
+            } else {
+                lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, -delta);
+                schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                               proc_state->selected, proc_state->scroll);
+            }
         } else if (app->active_page == APP_PAGE_DIZK) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -2994,9 +3364,14 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         if (app->active_page == APP_PAGE_CPU) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
-            lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, +delta);
-            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
-                                           proc_state->selected, proc_state->scroll);
+            if (app->strace_active) {
+                app->strace_scroll += delta;
+                render->need_proc_body_only = 1;
+            } else {
+                lulo_proc_view_move(proc_state, proc_snap, ui->lo.proc_rows, +delta);
+                schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                               proc_state->selected, proc_state->scroll);
+            }
         } else if (app->active_page == APP_PAGE_DIZK) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -3073,7 +3448,13 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         if (app->active_page == APP_PAGE_CPU) {
             int delta = (scroll_units > 0 ? scroll_units : 1) * 4;
 
-            if (scroll_proc_horizontally(ui, proc_snap, proc_state, -delta)) {
+            if (app->strace_active) {
+                app->strace_x_scroll -= delta;
+                if (app->strace_x_scroll < 0) app->strace_x_scroll = 0;
+                render->need_proc_body_only = 1;
+                render->need_proc_cursor_only = 0;
+                render->need_render = 1;
+            } else if (scroll_proc_horizontally(ui, proc_snap, proc_state, -delta)) {
                 render->need_proc_body_only = 1;
                 render->need_proc_cursor_only = 0;
                 render->need_render = 1;
@@ -3084,7 +3465,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         if (app->active_page == APP_PAGE_CPU) {
             int delta = (scroll_units > 0 ? scroll_units : 1) * 4;
 
-            if (scroll_proc_horizontally(ui, proc_snap, proc_state, +delta)) {
+            if (app->strace_active) {
+                app->strace_x_scroll += delta;
+                render->need_proc_body_only = 1;
+                render->need_proc_cursor_only = 0;
+                render->need_render = 1;
+            } else if (scroll_proc_horizontally(ui, proc_snap, proc_state, +delta)) {
                 render->need_proc_body_only = 1;
                 render->need_proc_cursor_only = 0;
                 render->need_render = 1;
@@ -3093,9 +3479,15 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_PAGE_UP:
         if (app->active_page == APP_PAGE_CPU) {
-            lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, -1);
-            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
-                                           proc_state->selected, proc_state->scroll);
+            if (app->strace_active) {
+                app->strace_scroll -= ui->lo.proc_rows;
+                if (app->strace_scroll < 0) app->strace_scroll = 0;
+                render->need_proc_body_only = 1;
+            } else {
+                lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, -1);
+                schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                               proc_state->selected, proc_state->scroll);
+            }
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), -1);
             render->need_disk = 1;
@@ -3158,9 +3550,14 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_PAGE_DOWN:
         if (app->active_page == APP_PAGE_CPU) {
-            lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, +1);
-            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
-                                           proc_state->selected, proc_state->scroll);
+            if (app->strace_active) {
+                app->strace_scroll += ui->lo.proc_rows;
+                render->need_proc_body_only = 1;
+            } else {
+                lulo_proc_view_page(proc_state, proc_snap, ui->lo.proc_rows, +1);
+                schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                               proc_state->selected, proc_state->scroll);
+            }
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_page(dizk_state, dizk_snap, disk_visible_rows(ui), +1);
             render->need_disk = 1;
@@ -3223,9 +3620,15 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_HOME:
         if (app->active_page == APP_PAGE_CPU) {
-            lulo_proc_view_home(proc_state, proc_snap, ui->lo.proc_rows);
-            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
-                                           proc_state->selected, proc_state->scroll);
+            if (app->strace_active) {
+                app->strace_scroll = 0;
+                app->strace_x_scroll = 0;
+                render->need_proc_body_only = 1;
+            } else {
+                lulo_proc_view_home(proc_state, proc_snap, ui->lo.proc_rows);
+                schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                               proc_state->selected, proc_state->scroll);
+            }
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_home(dizk_state);
             render->need_disk = 1;
@@ -3288,9 +3691,14 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_END:
         if (app->active_page == APP_PAGE_CPU) {
-            lulo_proc_view_end(proc_state, proc_snap, ui->lo.proc_rows);
-            schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
-                                           proc_state->selected, proc_state->scroll);
+            if (app->strace_active) {
+                app->strace_scroll = INT_MAX / 2;
+                render->need_proc_body_only = 1;
+            } else {
+                lulo_proc_view_end(proc_state, proc_snap, ui->lo.proc_rows);
+                schedule_proc_selection_redraw(render, prev_selected, prev_scroll,
+                                               proc_state->selected, proc_state->scroll);
+            }
         } else if (app->active_page == APP_PAGE_DIZK) {
             lulo_dizk_view_end(dizk_state, dizk_snap, disk_visible_rows(ui));
             render->need_disk = 1;
@@ -3352,6 +3760,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         render->need_render = 1;
         break;
     case INPUT_TAB_NEXT:
+        if (app->active_page == APP_PAGE_CPU && app->strace_active &&
+            stop_proc_trace(app, 0) < 0) {
+            render->need_footer = 1;
+            render->need_render = 1;
+            break;
+        }
         app->active_page = (AppPage)((app->active_page + 1) % APP_PAGE_COUNT);
         if (app->active_page == APP_PAGE_SCHED) mark_sched_view_refresh(render, sched_state);
         else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
@@ -3362,6 +3776,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         render->need_render = 1;
         break;
     case INPUT_TAB_PREV:
+        if (app->active_page == APP_PAGE_CPU && app->strace_active &&
+            stop_proc_trace(app, 0) < 0) {
+            render->need_footer = 1;
+            render->need_render = 1;
+            break;
+        }
         app->active_page = (AppPage)((app->active_page + APP_PAGE_COUNT - 1) % APP_PAGE_COUNT);
         if (app->active_page == APP_PAGE_SCHED) mark_sched_view_refresh(render, sched_state);
         else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
@@ -3418,7 +3838,10 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         }
         break;
     case INPUT_TOGGLE_BRANCH:
-        if (app->active_page == APP_PAGE_CPU &&
+        if (app->active_page == APP_PAGE_CPU && app->strace_active) {
+            render->need_proc_body_only = 1;
+            render->need_render = 1;
+        } else if (app->active_page == APP_PAGE_CPU &&
             lulo_proc_toggle_row(proc_state, proc_snap, proc_state->selected) > 0) {
             render->need_proc_refresh = 1;
             render->need_render = 1;
@@ -3487,6 +3910,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             int fatal = 0;
             int rc;
 
+            if (!app->rw_mode) {
+                rw_mode_block(app);
+                render->need_footer = 1;
+                render->need_render = 1;
+                break;
+            }
             if (sched_prepare_new_entry(sched_snap, sched_state, new_path, sizeof(new_path),
                                         &content, err, sizeof(err)) < 0) {
                 sched_status_set(app, "%s", err[0] ? err : "create failed");
@@ -3601,6 +4030,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 render->need_render = 1;
                 break;
             }
+            if (!app->rw_mode && path_requires_rw(delete_path)) {
+                rw_mode_block(app);
+                render->need_footer = 1;
+                render->need_render = 1;
+                break;
+            }
             if (lulo_edit_delete_file(delete_path, err, sizeof(err)) < 0) {
                 sched_status_set(app, "%s", err[0] ? err : "delete failed");
             } else {
@@ -3656,7 +4091,28 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         }
         break;
     case INPUT_SAVE_SNAPSHOT:
-        if (app->active_page == APP_PAGE_TUNE) {
+        if (app->active_page == APP_PAGE_CPU) {
+            if (app->strace_active) {
+                if (stop_proc_trace(app, 0) < 0) {
+                    render->need_footer = 1;
+                } else {
+                    render->need_proc = 1;
+                    render->need_footer = 1;
+                }
+                render->need_render = 1;
+            } else if (!app->rw_mode) {
+                rw_mode_block(app);
+                render->need_footer = 1;
+                render->need_render = 1;
+            } else if (start_proc_trace(proc_snap, proc_state, app) == 0) {
+                render->need_proc = 1;
+                render->need_footer = 1;
+                render->need_render = 1;
+            } else {
+                render->need_footer = 1;
+                render->need_render = 1;
+            }
+        } else if (app->active_page == APP_PAGE_TUNE) {
             if (tune_state->view == LULO_TUNE_VIEW_EXPLORE && active_tune_explore_row(tune_snap, tune_state)) {
                 render->need_tune_save_snapshot = 1;
                 render->need_tune = 1;
@@ -3734,6 +4190,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 render->need_render = 1;
                 break;
             }
+            if (!app->rw_mode && path_requires_rw(edit_path)) {
+                rw_mode_block(app);
+                render->need_footer = 1;
+                render->need_render = 1;
+                break;
+            }
             rc = run_external_edit(ui, input_backend, rawin, dlog, edit_path, &fatal, err, sizeof(err));
             render->need_rebuild = 1;
             render->need_render = 1;
@@ -3761,6 +4223,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             if (!edit_path) {
                 udev_status_set(app, "edit from Rules or Hwdb");
                 render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            if (!app->rw_mode && path_requires_rw(edit_path)) {
+                rw_mode_block(app);
+                render->need_footer = 1;
                 render->need_render = 1;
                 break;
             }
@@ -3797,6 +4265,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                     sched_status_set(app, "edit from Profiles, Rules, Tunables, or Presets");
                 }
                 render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            if (!app->rw_mode && path_requires_rw(edit_path)) {
+                rw_mode_block(app);
+                render->need_footer = 1;
                 render->need_render = 1;
                 break;
             }
@@ -3839,6 +4313,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 render->need_render = 1;
                 break;
             }
+            if (!app->rw_mode && path_requires_rw(edit_path)) {
+                rw_mode_block(app);
+                render->need_footer = 1;
+                render->need_render = 1;
+                break;
+            }
             rc = run_external_edit(ui, input_backend, rawin, dlog, edit_path, &fatal, err, sizeof(err));
             render->need_rebuild = 1;
             render->need_render = 1;
@@ -3861,6 +4341,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_APPLY_SELECTED:
         if (app->active_page == APP_PAGE_SCHED) {
+            if (!app->rw_mode) {
+                rw_mode_block(app);
+                render->need_footer = 1;
+                render->need_render = 1;
+                break;
+            }
             if (sched_state->view == LULO_SCHED_VIEW_PRESETS) {
                 if (sched_state->preset_selected >= 0 && sched_state->selected_preset_id[0]) {
                     render->need_sched_apply_preset = 1;
@@ -3883,6 +4369,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         } else if (app->active_page == APP_PAGE_TUNE) {
             if (tune_state->view == LULO_TUNE_VIEW_EXPLORE) {
                 if (active_tune_row_is_staged(tune_snap, tune_state)) {
+                    if (!app->rw_mode) {
+                        rw_mode_block(app);
+                        render->need_footer = 1;
+                        render->need_render = 1;
+                        break;
+                    }
                     render->need_tune_apply_selected = 1;
                     render->need_tune = 1;
                     render->need_render = 1;
@@ -3892,6 +4384,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                     render->need_render = 1;
                 }
             } else if (tune_state->view == LULO_TUNE_VIEW_SNAPSHOTS || tune_state->view == LULO_TUNE_VIEW_PRESETS) {
+                if (!app->rw_mode) {
+                    rw_mode_block(app);
+                    render->need_footer = 1;
+                    render->need_render = 1;
+                    break;
+                }
                 render->need_tune_apply_selected = 1;
                 render->need_tune = 1;
                 render->need_render = 1;
@@ -3903,20 +4401,21 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         }
         break;
     case INPUT_COLLAPSE_ALL:
-        if (app->active_page == APP_PAGE_CPU && lulo_proc_collapse_all(proc_state, proc_snap) > 0) {
+        if (app->active_page == APP_PAGE_CPU && !app->strace_active &&
+            lulo_proc_collapse_all(proc_state, proc_snap) > 0) {
             render->need_proc_refresh = 1;
             render->need_render = 1;
         }
         break;
     case INPUT_EXPAND_ALL:
-        if (app->active_page == APP_PAGE_CPU) {
+        if (app->active_page == APP_PAGE_CPU && !app->strace_active) {
             lulo_proc_expand_all(proc_state);
             render->need_proc_refresh = 1;
             render->need_render = 1;
         }
         break;
     case INPUT_SIGNAL_TERM:
-        if (app->active_page == APP_PAGE_CPU) {
+        if (app->active_page == APP_PAGE_CPU && !app->strace_active) {
             int ok = signal_selected_process(proc_snap, proc_state, SIGTERM, app);
             render->need_footer = 1;
             if (ok) render->need_proc_refresh = 1;
@@ -3924,7 +4423,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         }
         break;
     case INPUT_SIGNAL_KILL:
-        if (app->active_page == APP_PAGE_CPU) {
+        if (app->active_page == APP_PAGE_CPU && !app->strace_active) {
             int ok = signal_selected_process(proc_snap, proc_state, SIGKILL, app);
             render->need_footer = 1;
             if (ok) render->need_proc_refresh = 1;
@@ -3964,10 +4463,10 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
     if (app->active_page == APP_PAGE_CPU) {
         if (render->need_cpu) render_header_cpu(ui, app, ci, dash, sa, sb, freqs, nfreq, cpu_temps, ncpu_temp);
         else if (render->need_header) render_header_only(ui, dash, app);
-        if (render->need_proc) render_process_only(ui, proc_snap, proc_state);
-        else if (render->need_proc_body_only) render_process_body_only(ui, proc_snap, proc_state);
+        if (render->need_proc) render_process_only(ui, app, proc_snap, proc_state);
+        else if (render->need_proc_body_only) render_process_body_only(ui, app, proc_snap, proc_state);
         else if (render->need_proc_cursor_only) {
-            render_process_cursor_only(ui, proc_snap, proc_state,
+            render_process_cursor_only(ui, app, proc_snap, proc_state,
                                        render->proc_prev_selected, render->proc_prev_scroll);
         }
     } else if (app->active_page == APP_PAGE_DIZK) {
@@ -4521,6 +5020,20 @@ int main(int argc, char *argv[])
                             resample = 1;
                             continue;
                         }
+                        if (app.active_page == APP_PAGE_CPU && app.strace_active) {
+                            RenderFlags trace_render = {0};
+
+                            trace_render.need_render = 1;
+                            trace_render.need_proc_body_only = 1;
+                            render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
+                                           cpu_temps, ncpu_temp, &proc_snap, &proc_state,
+                                           &dizk_snap, &dizk_state, &sched_snap, &sched_state,
+                                           &sched_backend_status, &cgroups_snap, &cgroups_state,
+                                           &cgroups_backend_status, &udev_snap, &udev_state,
+                                           &udev_backend_status, &tune_snap, &tune_state,
+                                           &tune_backend_status, &systemd_snap, &systemd_state,
+                                           &systemd_backend_status, &trace_render);
+                        }
                         if (ms_until_deadline(deadline) == 0) resample = 1;
                         continue;
                     }
@@ -4609,6 +5122,20 @@ int main(int argc, char *argv[])
                                 need_resize = 1;
                                 need_rebuild = 1;
                                 resample = 1;
+                            }
+                            if (app.active_page == APP_PAGE_CPU && app.strace_active && !need_resize) {
+                                RenderFlags trace_render = {0};
+
+                                trace_render.need_render = 1;
+                                trace_render.need_proc_body_only = 1;
+                                render_pending(&ui, &app, &ci, &dash, &stat_a, &stat_b, freqs, nfreq,
+                                               cpu_temps, ncpu_temp, &proc_snap, &proc_state,
+                                               &dizk_snap, &dizk_state, &sched_snap, &sched_state,
+                                               &sched_backend_status, &cgroups_snap, &cgroups_state,
+                                               &cgroups_backend_status, &udev_snap, &udev_state,
+                                               &udev_backend_status, &tune_snap, &tune_state,
+                                               &tune_backend_status, &systemd_snap, &systemd_state,
+                                               &systemd_backend_status, &trace_render);
                             }
                             if (ms_until_deadline(deadline) == 0) resample = 1;
                             continue;
@@ -4884,6 +5411,7 @@ int main(int argc, char *argv[])
         append_sample = 1;
     }
 
+    if (app.strace_active) stop_proc_trace(&app, 1);
     ui_destroy_planes(&ui);
     if (input_backend == INPUT_BACKEND_RAW) {
         terminal_mouse_disable();

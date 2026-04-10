@@ -226,6 +226,8 @@ static InputAction decode_key_byte(unsigned char ch)
         return INPUT_CYCLE_PROC_REFRESH;
     case 'R':
         return INPUT_RELOAD_PAGE;
+    case 'W':
+        return INPUT_TOGGLE_RW_MODE;
     case 'n':
     case 'N':
         return INPUT_NEW_ITEM;
@@ -307,12 +309,12 @@ static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
         return 1;
     }
     if (buf[2] == 'C') {
-        out->action = INPUT_NONE;
+        out->action = INPUT_SCROLL_RIGHT;
         raw_input_consume(in, 3);
         return 1;
     }
     if (buf[2] == 'D') {
-        out->action = INPUT_NONE;
+        out->action = INPUT_SCROLL_LEFT;
         raw_input_consume(in, 3);
         return 1;
     }
@@ -520,6 +522,8 @@ InputAction decode_notcurses_input(uint32_t id)
         return INPUT_CYCLE_PROC_REFRESH;
     case 'R':
         return INPUT_RELOAD_PAGE;
+    case 'W':
+        return INPUT_TOGGLE_RW_MODE;
     case 'n':
     case 'N':
         return INPUT_NEW_ITEM;

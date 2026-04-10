@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_SYSTEM_MAGIC 0x4c555359U
-#define LULOD_SYSTEM_VERSION 7U
+#define LULOD_SYSTEM_VERSION 8U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -568,6 +568,63 @@ int lulod_system_send_sched_apply_preset_request(int fd, const char *preset_id)
 int lulod_system_recv_sched_apply_preset_request(int fd, char *preset_id, size_t preset_id_len)
 {
     return read_string_fixed(fd, preset_id, preset_id_len);
+}
+
+int lulod_system_send_trace_begin_request(int fd, pid_t target_pid)
+{
+    if (write_u32(fd, LULOD_SYSTEM_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_VERSION) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_REQ_TRACE_BEGIN) < 0) return -1;
+    return write_i32(fd, (int32_t)target_pid);
+}
+
+int lulod_system_recv_trace_begin_request(int fd, pid_t *target_pid)
+{
+    int32_t raw = 0;
+
+    if (!target_pid) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (read_i32(fd, &raw) < 0) return -1;
+    *target_pid = (pid_t)raw;
+    return 0;
+}
+
+int lulod_system_send_trace_end_request(int fd, const char *session_id)
+{
+    if (write_u32(fd, LULOD_SYSTEM_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_VERSION) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_REQ_TRACE_END) < 0) return -1;
+    return write_string(fd, session_id);
+}
+
+int lulod_system_recv_trace_end_request(int fd, char *session_id, size_t session_id_len)
+{
+    return read_string_fixed(fd, session_id, session_id_len);
+}
+
+int lulod_system_send_trace_begin_response(int fd, int status, const char *err,
+                                           const char *session_id, const char *output_path)
+{
+    if (write_i32(fd, (int32_t)status) < 0) return -1;
+    if (write_string(fd, err ? err : "") < 0) return -1;
+    if (status < 0) return 0;
+    if (write_string(fd, session_id ? session_id : "") < 0) return -1;
+    return write_string(fd, output_path ? output_path : "");
+}
+
+int lulod_system_recv_trace_begin_response(int fd, char *session_id, size_t session_id_len,
+                                           char *output_path, size_t output_path_len,
+                                           char *err, size_t errlen)
+{
+    int32_t status = 0;
+
+    if (read_i32(fd, &status) < 0) return -1;
+    if (read_string_fixed(fd, err, errlen) < 0) return -1;
+    if (status < 0) return -1;
+    if (read_string_fixed(fd, session_id, session_id_len) < 0) return -1;
+    return read_string_fixed(fd, output_path, output_path_len);
 }
 
 int lulod_system_send_edit_begin_request(int fd, const char *path)

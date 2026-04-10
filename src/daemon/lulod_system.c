@@ -3,6 +3,7 @@
 #include "lulod_system_edit.h"
 #include "lulod_system_ipc.h"
 #include "lulod_system_sched.h"
+#include "lulod_system_trace.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -211,6 +212,34 @@ int main(int argc, char *argv[])
                                                           NULL, NULL);
                 } else {
                     lulod_system_send_edit_begin_response(client_fd, 0, NULL, session_id, edit_path);
+                }
+            } else if (type == LULOD_SYSTEM_REQ_TRACE_BEGIN) {
+                pid_t target_pid = 0;
+                char session_id[128];
+                char output_path[PATH_MAX];
+
+                if (lulod_system_recv_trace_begin_request(client_fd, &target_pid) < 0) {
+                    lulod_system_send_trace_begin_response(client_fd, -1, "bad trace request", NULL, NULL);
+                } else if (lulod_system_trace_begin(target_pid, peer_uid, peer_gid,
+                                                    session_id, sizeof(session_id),
+                                                    output_path, sizeof(output_path),
+                                                    errbuf, sizeof(errbuf)) < 0) {
+                    lulod_system_send_trace_begin_response(client_fd, -1,
+                                                           errbuf[0] ? errbuf : "failed to start trace",
+                                                           NULL, NULL);
+                } else {
+                    lulod_system_send_trace_begin_response(client_fd, 0, NULL, session_id, output_path);
+                }
+            } else if (type == LULOD_SYSTEM_REQ_TRACE_END) {
+                char session_id[128];
+
+                if (lulod_system_recv_trace_end_request(client_fd, session_id, sizeof(session_id)) < 0) {
+                    lulod_system_send_status_response(client_fd, -1, "bad trace stop request");
+                } else if (lulod_system_trace_end(session_id, peer_uid, errbuf, sizeof(errbuf)) < 0) {
+                    lulod_system_send_status_response(client_fd, -1,
+                                                      errbuf[0] ? errbuf : "failed to stop trace");
+                } else {
+                    lulod_system_send_status_response(client_fd, 0, NULL);
                 }
             } else if (type == LULOD_SYSTEM_REQ_EDIT_COMMIT || type == LULOD_SYSTEM_REQ_EDIT_CANCEL) {
                 char session_id[PATH_MAX];

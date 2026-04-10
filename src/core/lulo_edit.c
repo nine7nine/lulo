@@ -21,6 +21,18 @@ void lulo_edit_session_clear(LuloEditSession *session)
     memset(session, 0, sizeof(*session));
 }
 
+void lulo_trace_session_init(LuloTraceSession *session)
+{
+    if (!session) return;
+    memset(session, 0, sizeof(*session));
+}
+
+void lulo_trace_session_clear(LuloTraceSession *session)
+{
+    if (!session) return;
+    memset(session, 0, sizeof(*session));
+}
+
 static int with_system_socket(int (*fn)(int fd, void *opaque), void *opaque,
                               char *err, size_t errlen)
 {
@@ -154,6 +166,56 @@ static int file_delete_request(int fd, void *opaque)
     if (lulod_system_recv_status_response(fd, ctx->err, ctx->errlen) < 0) {
         if (ctx->err && ctx->errlen > 0 && !ctx->err[0]) {
             snprintf(ctx->err, ctx->errlen, "failed to read file delete response");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+typedef struct {
+    pid_t target_pid;
+    LuloTraceSession *session;
+    char *err;
+    size_t errlen;
+} TraceBeginCtx;
+
+static int trace_begin_request(int fd, void *opaque)
+{
+    TraceBeginCtx *ctx = opaque;
+
+    if (lulod_system_send_trace_begin_request(fd, ctx->target_pid) < 0) {
+        if (ctx->err && ctx->errlen > 0) snprintf(ctx->err, ctx->errlen, "failed to send trace request");
+        return -1;
+    }
+    if (lulod_system_recv_trace_begin_response(fd,
+                                               ctx->session->session_id, sizeof(ctx->session->session_id),
+                                               ctx->session->output_path, sizeof(ctx->session->output_path),
+                                               ctx->err, ctx->errlen) < 0) {
+        if (ctx->err && ctx->errlen > 0 && !ctx->err[0]) {
+            snprintf(ctx->err, ctx->errlen, "failed to read trace response");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+typedef struct {
+    const char *session_id;
+    char *err;
+    size_t errlen;
+} TraceEndCtx;
+
+static int trace_end_request(int fd, void *opaque)
+{
+    TraceEndCtx *ctx = opaque;
+
+    if (lulod_system_send_trace_end_request(fd, ctx->session_id) < 0) {
+        if (ctx->err && ctx->errlen > 0) snprintf(ctx->err, ctx->errlen, "failed to send trace stop");
+        return -1;
+    }
+    if (lulod_system_recv_status_response(fd, ctx->err, ctx->errlen) < 0) {
+        if (ctx->err && ctx->errlen > 0 && !ctx->err[0]) {
+            snprintf(ctx->err, ctx->errlen, "failed to read trace stop response");
         }
         return -1;
     }
@@ -307,4 +369,50 @@ int lulo_edit_delete_file(const char *path, char *err, size_t errlen)
     ctx.err = err;
     ctx.errlen = errlen;
     return with_system_socket(file_delete_request, &ctx, err, errlen);
+}
+
+int lulo_trace_session_begin(pid_t target_pid, LuloTraceSession *session,
+                             char *err, size_t errlen)
+{
+    TraceBeginCtx ctx;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (!session || target_pid <= 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid trace target");
+        errno = EINVAL;
+        return -1;
+    }
+
+    lulo_trace_session_init(session);
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.target_pid = target_pid;
+    ctx.session = session;
+    ctx.err = err;
+    ctx.errlen = errlen;
+    if (with_system_socket(trace_begin_request, &ctx, err, errlen) < 0) {
+        lulo_trace_session_clear(session);
+        return -1;
+    }
+    return 0;
+}
+
+int lulo_trace_session_end(LuloTraceSession *session, char *err, size_t errlen)
+{
+    TraceEndCtx ctx;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (!session) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid trace session");
+        errno = EINVAL;
+        return -1;
+    }
+    if (!session->session_id[0]) return 0;
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.session_id = session->session_id;
+    ctx.err = err;
+    ctx.errlen = errlen;
+    if (with_system_socket(trace_end_request, &ctx, err, errlen) < 0) return -1;
+    lulo_trace_session_clear(session);
+    return 0;
 }

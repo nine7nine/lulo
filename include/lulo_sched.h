@@ -7,6 +7,8 @@ typedef enum {
     LULO_SCHED_VIEW_PROFILES = 0,
     LULO_SCHED_VIEW_RULES,
     LULO_SCHED_VIEW_LIVE,
+    LULO_SCHED_VIEW_TUNABLES,
+    LULO_SCHED_VIEW_PRESETS,
     LULO_SCHED_VIEW_COUNT
 } LuloSchedView;
 
@@ -66,12 +68,34 @@ typedef struct {
 } LuloSchedLiveRow;
 
 typedef struct {
+    char path[320];
+    char source[32];
+    char group[64];
+    char name[96];
+    char value[192];
+    int writable;
+} LuloSchedTunableRow;
+
+typedef struct {
+    char id[96];
+    char name[96];
+    char created[64];
+    char path[320];
+    int item_count;
+    int startup;
+} LuloSchedPresetRow;
+
+typedef struct {
     LuloSchedProfileRow *profiles;
     int profile_count;
     LuloSchedRuleRow *rules;
     int rule_count;
     LuloSchedLiveRow *live;
     int live_count;
+    LuloSchedTunableRow *tunables;
+    int tunable_count;
+    LuloSchedPresetRow *presets;
+    int preset_count;
     char config_root[320];
     int watcher_interval_ms;
     int scan_generation;
@@ -85,6 +109,7 @@ typedef struct {
     int background_match_app_slice;
     int background_match_background_slice;
     int background_match_app_unit_prefix;
+    char tunables_startup_preset[96];
     char focused_comm[96];
     char focused_exe[192];
     char focused_unit[128];
@@ -111,10 +136,20 @@ typedef struct {
     int live_selected;
     int live_list_scroll;
     int live_detail_scroll;
+    int tunable_cursor;
+    int tunable_selected;
+    int tunable_list_scroll;
+    int tunable_detail_scroll;
+    int preset_cursor;
+    int preset_selected;
+    int preset_list_scroll;
+    int preset_detail_scroll;
     char selected_profile[64];
     char selected_rule[64];
     int selected_live_pid;
     unsigned long long selected_live_start_time;
+    char selected_tunable_path[320];
+    char selected_preset_id[96];
 } LuloSchedState;
 
 void lulo_sched_state_init(LuloSchedState *state);

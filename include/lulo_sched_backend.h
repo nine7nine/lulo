@@ -11,6 +11,7 @@ typedef struct {
     int loading_full;
     int loading_active;
     int reloading;
+    int applying_preset;
     unsigned generation;
     char error[160];
 } LuloSchedBackendStatus;
@@ -24,11 +25,13 @@ typedef struct LuloSchedBackend {
     int refresh_full;
     int refresh_active;
     int reload_config;
+    int apply_preset;
     unsigned generation;
     int busy;
     int loading_full;
     int loading_active;
     int reloading;
+    int applying_preset;
     int have_snapshot;
     char error[160];
     LuloSchedState requested_state;
@@ -40,6 +43,7 @@ void lulo_sched_backend_stop(LuloSchedBackend *backend);
 void lulo_sched_backend_request_full(LuloSchedBackend *backend, const LuloSchedState *state);
 void lulo_sched_backend_request_active(LuloSchedBackend *backend, const LuloSchedState *state);
 void lulo_sched_backend_request_reload(LuloSchedBackend *backend, const LuloSchedState *state);
+void lulo_sched_backend_request_apply_preset(LuloSchedBackend *backend, const LuloSchedState *state);
 int lulo_sched_backend_consume(LuloSchedBackend *backend, LuloSchedSnapshot *dst,
                                unsigned *generation, LuloSchedBackendStatus *status);
 void lulo_sched_backend_status(LuloSchedBackend *backend, LuloSchedBackendStatus *status);

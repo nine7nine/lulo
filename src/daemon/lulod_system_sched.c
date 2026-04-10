@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fnmatch.h>
+#include <fcntl.h>
 #include <linux/ioprio.h>
 #include <limits.h>
 #include <sched.h>
@@ -264,6 +265,631 @@ static int collect_conf_paths(const char *dirpath, char ***items, int *count)
     *items = paths;
     *count = out_count;
     return 0;
+}
+
+static int path_has_prefix(const char *path, const char *prefix)
+{
+    size_t len;
+
+    if (!path || !prefix) return 0;
+    len = strlen(prefix);
+    while (len > 0 && prefix[len - 1] == '/') len--;
+    return strncmp(path, prefix, len) == 0 &&
+           (path[len] == '\0' || path[len] == '/');
+}
+
+static int read_text_file_value(const char *path, char *buf, size_t len)
+{
+    FILE *fp = NULL;
+    size_t nr = 0;
+
+    if (!buf || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    buf[0] = '\0';
+    fp = fopen(path, "r");
+    if (!fp) return -1;
+    nr = fread(buf, 1, len - 1, fp);
+    if (ferror(fp)) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    buf[nr] = '\0';
+    buf[strcspn(buf, "\r\n")] = '\0';
+    trim_right(buf);
+    return 0;
+}
+
+static int write_text_file_value(const char *path, const char *value)
+{
+    int fd = -1;
+    const char *text = value ? value : "";
+    size_t len = strlen(text);
+
+    fd = open(path, O_WRONLY | O_TRUNC);
+    if (fd < 0) return -1;
+    while (len > 0) {
+        ssize_t nw = write(fd, text, len);
+
+        if (nw < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return -1;
+        }
+        text += (size_t)nw;
+        len -= (size_t)nw;
+    }
+    if (close(fd) < 0) return -1;
+    return 0;
+}
+
+static int sched_tunable_path_info(const char *path, char *resolved, size_t resolved_len,
+                                   char *source, size_t source_len,
+                                   char *group, size_t group_len,
+                                   char *name, size_t name_len)
+{
+    static const char *kernel_root = "/proc/sys/kernel/";
+    static const char *cpufreq_root = "/sys/devices/system/cpu/cpufreq/";
+    static const char *intel_pstate_root = "/sys/devices/system/cpu/intel_pstate/";
+    static const char *amd_pstate_root = "/sys/devices/system/cpu/amd_pstate/";
+    static const char *cpuidle_root = "/sys/devices/system/cpu/cpuidle/";
+    static const char *smt_root = "/sys/devices/system/cpu/smt/";
+    char real[PATH_MAX];
+    const char *base;
+
+    if (!path || !resolved || !source || !group || !name) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!realpath(path, real)) return -1;
+
+    if (path_has_prefix(real, kernel_root)) {
+        base = real + strlen(kernel_root);
+        if (strncmp(base, "sched_", 6) != 0 || strchr(base, '/')) {
+            errno = EPERM;
+            return -1;
+        }
+        snprintf(source, source_len, "kernel");
+        snprintf(group, group_len, "kernel");
+        if (strlen(base) >= name_len) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        snprintf(name, name_len, "%s", base);
+    } else if (path_has_prefix(real, cpufreq_root)) {
+        const char *rest = real + strlen(cpufreq_root);
+        const char *slash = strchr(rest, '/');
+
+        snprintf(source, source_len, "cpufreq");
+        if (slash) {
+            size_t group_part = (size_t)(slash - rest);
+
+            if (group_part == 0 || group_part >= group_len) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            memcpy(group, rest, group_part);
+            group[group_part] = '\0';
+            if (strlen(slash + 1) >= name_len) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            snprintf(name, name_len, "%s", slash + 1);
+        } else {
+            snprintf(group, group_len, "cpufreq");
+            if (strlen(rest) >= name_len) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            snprintf(name, name_len, "%s", rest);
+        }
+        if (!name[0] || strchr(name, '/')) {
+            errno = EPERM;
+            return -1;
+        }
+    } else if (path_has_prefix(real, intel_pstate_root)) {
+        base = real + strlen(intel_pstate_root);
+        if (!*base || strchr(base, '/')) {
+            errno = EPERM;
+            return -1;
+        }
+        snprintf(source, source_len, "intel-pst");
+        snprintf(group, group_len, "intel_pstate");
+        if (strlen(base) >= name_len) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        snprintf(name, name_len, "%s", base);
+    } else if (path_has_prefix(real, amd_pstate_root)) {
+        base = real + strlen(amd_pstate_root);
+        if (!*base || strchr(base, '/')) {
+            errno = EPERM;
+            return -1;
+        }
+        snprintf(source, source_len, "amd-pst");
+        snprintf(group, group_len, "amd_pstate");
+        if (strlen(base) >= name_len) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        snprintf(name, name_len, "%s", base);
+    } else if (path_has_prefix(real, cpuidle_root)) {
+        base = real + strlen(cpuidle_root);
+        if (!*base || strchr(base, '/')) {
+            errno = EPERM;
+            return -1;
+        }
+        snprintf(source, source_len, "cpuidle");
+        snprintf(group, group_len, "cpuidle");
+        if (strlen(base) >= name_len) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        snprintf(name, name_len, "%s", base);
+    } else if (path_has_prefix(real, smt_root)) {
+        base = real + strlen(smt_root);
+        if (!*base || strchr(base, '/')) {
+            errno = EPERM;
+            return -1;
+        }
+        snprintf(source, source_len, "smt");
+        snprintf(group, group_len, "smt");
+        if (strlen(base) >= name_len) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        snprintf(name, name_len, "%s", base);
+    } else {
+        errno = EPERM;
+        return -1;
+    }
+
+    if (snprintf(resolved, resolved_len, "%s", real) >= (int)resolved_len) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+static int append_or_replace_tunable(LuloSchedSnapshot *snap, const LuloSchedTunableRow *row)
+{
+    LuloSchedTunableRow *next;
+
+    if (!snap || !row) return -1;
+    for (int i = 0; i < snap->tunable_count; i++) {
+        if (strcmp(snap->tunables[i].path, row->path) == 0) {
+            snap->tunables[i] = *row;
+            return 0;
+        }
+    }
+    next = realloc(snap->tunables, (size_t)(snap->tunable_count + 1) * sizeof(*next));
+    if (!next) return -1;
+    snap->tunables = next;
+    snap->tunables[snap->tunable_count++] = *row;
+    return 0;
+}
+
+static int append_or_replace_preset(LuloSchedSnapshot *snap, const LuloSchedPresetRow *row)
+{
+    LuloSchedPresetRow *next;
+
+    if (!snap || !row) return -1;
+    for (int i = 0; i < snap->preset_count; i++) {
+        if (strcmp(snap->presets[i].id, row->id) == 0) {
+            snap->presets[i] = *row;
+            return 0;
+        }
+    }
+    next = realloc(snap->presets, (size_t)(snap->preset_count + 1) * sizeof(*next));
+    if (!next) return -1;
+    snap->presets = next;
+    snap->presets[snap->preset_count++] = *row;
+    return 0;
+}
+
+static int tunable_row_cmp(const void *a, const void *b)
+{
+    const LuloSchedTunableRow *ra = a;
+    const LuloSchedTunableRow *rb = b;
+    int cmp;
+    int source_rank_a;
+    int source_rank_b;
+
+    if (!strcmp(ra->source, "kernel")) source_rank_a = 0;
+    else if (!strcmp(ra->source, "cpufreq")) source_rank_a = 1;
+    else if (!strcmp(ra->source, "intel-pst")) source_rank_a = 2;
+    else if (!strcmp(ra->source, "amd-pst")) source_rank_a = 3;
+    else if (!strcmp(ra->source, "cpuidle")) source_rank_a = 4;
+    else if (!strcmp(ra->source, "smt")) source_rank_a = 5;
+    else source_rank_a = 6;
+
+    if (!strcmp(rb->source, "kernel")) source_rank_b = 0;
+    else if (!strcmp(rb->source, "cpufreq")) source_rank_b = 1;
+    else if (!strcmp(rb->source, "intel-pst")) source_rank_b = 2;
+    else if (!strcmp(rb->source, "amd-pst")) source_rank_b = 3;
+    else if (!strcmp(rb->source, "cpuidle")) source_rank_b = 4;
+    else if (!strcmp(rb->source, "smt")) source_rank_b = 5;
+    else source_rank_b = 6;
+
+    if (source_rank_a != source_rank_b) return source_rank_a - source_rank_b;
+    cmp = strcmp(ra->source, rb->source);
+    if (cmp != 0) return cmp;
+    cmp = strcmp(ra->group, rb->group);
+    if (cmp != 0) return cmp;
+    return strcmp(ra->name, rb->name);
+}
+
+static int preset_row_cmp(const void *a, const void *b)
+{
+    const LuloSchedPresetRow *ra = a;
+    const LuloSchedPresetRow *rb = b;
+    int cmp;
+
+    if (ra->startup != rb->startup) return rb->startup - ra->startup;
+    cmp = strcmp(ra->name, rb->name);
+    if (cmp != 0) return cmp;
+    return strcmp(ra->id, rb->id);
+}
+
+static int maybe_append_tunable_file(LuloSchedSnapshot *snap, const char *path)
+{
+    struct stat st;
+    LuloSchedTunableRow row;
+
+    if (!snap || !path) return 0;
+    if (stat(path, &st) < 0 || S_ISDIR(st.st_mode)) return 0;
+    memset(&row, 0, sizeof(row));
+    if (sched_tunable_path_info(path, row.path, sizeof(row.path),
+                                row.source, sizeof(row.source),
+                                row.group, sizeof(row.group),
+                                row.name, sizeof(row.name)) < 0) {
+        return errno == EPERM ? 0 : -1;
+    }
+    if (read_text_file_value(row.path, row.value, sizeof(row.value)) < 0) return 0;
+    row.writable = access(row.path, W_OK) == 0;
+    return append_or_replace_tunable(snap, &row);
+}
+
+static int scan_kernel_sched_tunables(LuloSchedSnapshot *snap)
+{
+    const char *dirpath = "/proc/sys/kernel";
+    struct dirent **namelist = NULL;
+    int n = -1;
+    int rc = -1;
+
+    n = scandir(dirpath, &namelist, NULL, alphasort);
+    if (n < 0) {
+        if (errno == ENOENT || errno == ENOTDIR) return 0;
+        return -1;
+    }
+    for (int i = 0; i < n; i++) {
+        char full[PATH_MAX];
+
+        if (!namelist[i]) continue;
+        if (strncmp(namelist[i]->d_name, "sched_", 6) != 0) {
+            free(namelist[i]);
+            namelist[i] = NULL;
+            continue;
+        }
+        snprintf(full, sizeof(full), "%s/%s", dirpath, namelist[i]->d_name);
+        free(namelist[i]);
+        namelist[i] = NULL;
+        if (maybe_append_tunable_file(snap, full) < 0) goto out;
+    }
+    rc = 0;
+
+out:
+    for (int i = 0; i < n; i++) free(namelist[i]);
+    free(namelist);
+    return rc;
+}
+
+static int scan_tunable_dir_files(LuloSchedSnapshot *snap, const char *dirpath)
+{
+    struct dirent **namelist = NULL;
+    int n = -1;
+    int rc = -1;
+
+    n = scandir(dirpath, &namelist, NULL, alphasort);
+    if (n < 0) {
+        if (errno == ENOENT || errno == ENOTDIR) return 0;
+        return -1;
+    }
+    for (int i = 0; i < n; i++) {
+        char full[PATH_MAX];
+
+        if (!namelist[i]) continue;
+        if (namelist[i]->d_name[0] == '.') {
+            free(namelist[i]);
+            namelist[i] = NULL;
+            continue;
+        }
+        snprintf(full, sizeof(full), "%s/%s", dirpath, namelist[i]->d_name);
+        free(namelist[i]);
+        namelist[i] = NULL;
+        if (maybe_append_tunable_file(snap, full) < 0) goto out;
+    }
+    rc = 0;
+
+out:
+    for (int i = 0; i < n; i++) free(namelist[i]);
+    free(namelist);
+    return rc;
+}
+
+static int scan_cpufreq_tunables(LuloSchedSnapshot *snap)
+{
+    const char *root = "/sys/devices/system/cpu/cpufreq";
+    struct dirent **namelist = NULL;
+    int n = -1;
+    int rc = -1;
+
+    if (scan_tunable_dir_files(snap, root) < 0) return -1;
+    n = scandir(root, &namelist, NULL, alphasort);
+    if (n < 0) {
+        if (errno == ENOENT || errno == ENOTDIR) return 0;
+        return -1;
+    }
+    for (int i = 0; i < n; i++) {
+        char path[PATH_MAX];
+        struct stat st;
+
+        if (!namelist[i]) continue;
+        if (strncmp(namelist[i]->d_name, "policy", 6) != 0) {
+            free(namelist[i]);
+            namelist[i] = NULL;
+            continue;
+        }
+        snprintf(path, sizeof(path), "%s/%s", root, namelist[i]->d_name);
+        free(namelist[i]);
+        namelist[i] = NULL;
+        if (stat(path, &st) < 0 || !S_ISDIR(st.st_mode)) continue;
+        if (scan_tunable_dir_files(snap, path) < 0) goto out;
+    }
+    rc = 0;
+
+out:
+    for (int i = 0; i < n; i++) free(namelist[i]);
+    free(namelist);
+    return rc;
+}
+
+static int scan_flat_tunables(LuloSchedSnapshot *snap, const char *dirpath)
+{
+    return scan_tunable_dir_files(snap, dirpath);
+}
+
+typedef int (*SchedPresetItemFn)(const char *path, const char *value, void *opaque);
+
+static int parse_tunable_preset_file(const char *path, LuloSchedPresetRow *row,
+                                     SchedPresetItemFn item_fn, void *item_ctx,
+                                     char *err, size_t errlen)
+{
+    FILE *fp = NULL;
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t nread;
+    unsigned lineno = 0;
+    int item_count = 0;
+
+    if (row) {
+        memset(row, 0, sizeof(*row));
+        snprintf(row->path, sizeof(row->path), "%s", path);
+        file_stem(path, row->id, sizeof(row->id));
+    }
+
+    fp = fopen(path, "r");
+    if (!fp) {
+        if (err && errlen > 0) snprintf(err, errlen, "%s: %s", path, strerror(errno));
+        return -1;
+    }
+    while ((nread = getline(&line, &cap, fp)) >= 0) {
+        char *work;
+        char *eq;
+        char *key;
+        char *value;
+
+        (void)nread;
+        lineno++;
+        work = trim(line);
+        if (!*work || *work == '#' || *work == ';') continue;
+        eq = strchr(work, '=');
+        if (!eq) {
+            if (err && errlen > 0) snprintf(err, errlen, "%s:%u: expected key=value", path, lineno);
+            goto fail;
+        }
+        *eq = '\0';
+        key = trim(work);
+        value = trim(eq + 1);
+
+        if (!strcmp(key, "type")) {
+            if (strcmp(value, "sched-tunables-preset") != 0 &&
+                strcmp(value, "scheduler-tunables-preset") != 0) {
+                if (err && errlen > 0) snprintf(err, errlen, "%s:%u: invalid preset type", path, lineno);
+                goto fail;
+            }
+        } else if (!strcmp(key, "name")) {
+            if (row) snprintf(row->name, sizeof(row->name), "%s", value);
+        } else if (!strcmp(key, "created")) {
+            if (row) snprintf(row->created, sizeof(row->created), "%s", value);
+        } else if (key[0] == '/') {
+            item_count++;
+            if (item_fn && item_fn(key, value, item_ctx) < 0) {
+                if (err && errlen > 0 && !err[0]) {
+                    snprintf(err, errlen, "%s:%u: failed to apply preset item", path, lineno);
+                }
+                goto fail;
+            }
+        } else {
+            if (err && errlen > 0) snprintf(err, errlen, "%s:%u: unknown key '%s'", path, lineno, key);
+            goto fail;
+        }
+    }
+    free(line);
+    fclose(fp);
+    if (row) {
+        if (!row->name[0]) snprintf(row->name, sizeof(row->name), "%s", row->id);
+        row->item_count = item_count;
+    }
+    return 0;
+
+fail:
+    free(line);
+    fclose(fp);
+    return -1;
+}
+
+static int load_tunables(LuloSchedSnapshot *snap, char *err, size_t errlen)
+{
+    if (!snap) return -1;
+    if (scan_kernel_sched_tunables(snap) < 0 ||
+        scan_cpufreq_tunables(snap) < 0 ||
+        scan_flat_tunables(snap, "/sys/devices/system/cpu/intel_pstate") < 0 ||
+        scan_flat_tunables(snap, "/sys/devices/system/cpu/amd_pstate") < 0 ||
+        scan_flat_tunables(snap, "/sys/devices/system/cpu/cpuidle") < 0 ||
+        scan_flat_tunables(snap, "/sys/devices/system/cpu/smt") < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "failed to discover scheduler tunables: %s", strerror(errno));
+        return -1;
+    }
+    if (snap->tunable_count > 1) {
+        qsort(snap->tunables, (size_t)snap->tunable_count, sizeof(*snap->tunables), tunable_row_cmp);
+    }
+    return 0;
+}
+
+static int load_presets(LuloSchedSnapshot *snap, const char *config_root, char *err, size_t errlen)
+{
+    char dirpath[PATH_MAX];
+    char **paths = NULL;
+    int count = 0;
+    int rc = -1;
+
+    snprintf(dirpath, sizeof(dirpath), "%s/tunables-presets.d", config_root);
+    if (collect_conf_paths(dirpath, &paths, &count) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "%s: %s", dirpath, strerror(errno));
+        return -1;
+    }
+    for (int i = 0; i < count; i++) {
+        LuloSchedPresetRow row;
+
+        if (parse_tunable_preset_file(paths[i], &row, NULL, NULL, err, errlen) < 0) goto out;
+        row.startup = snap->tunables_startup_preset[0] &&
+                      strcmp(row.id, snap->tunables_startup_preset) == 0;
+        if (append_or_replace_preset(snap, &row) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "out of memory loading scheduler tunables presets");
+            goto out;
+        }
+    }
+    if (snap->preset_count > 1) {
+        qsort(snap->presets, (size_t)snap->preset_count, sizeof(*snap->presets), preset_row_cmp);
+    }
+    rc = 0;
+
+out:
+    free_string_list(paths, count);
+    return rc;
+}
+
+static void free_sched_aux_lists(LuloSchedSnapshot *snap)
+{
+    if (!snap) return;
+    free(snap->tunables);
+    snap->tunables = NULL;
+    snap->tunable_count = 0;
+    free(snap->presets);
+    snap->presets = NULL;
+    snap->preset_count = 0;
+}
+
+static int refresh_sched_aux(LuloSchedSnapshot *snap, char *err, size_t errlen)
+{
+    LuloSchedSnapshot fresh = {0};
+
+    if (!snap) return -1;
+    snprintf(fresh.config_root, sizeof(fresh.config_root), "%s", snap->config_root);
+    snprintf(fresh.tunables_startup_preset, sizeof(fresh.tunables_startup_preset), "%s",
+             snap->tunables_startup_preset);
+    if (load_tunables(&fresh, err, errlen) < 0 ||
+        load_presets(&fresh, snap->config_root, err, errlen) < 0) {
+        lulo_sched_snapshot_free(&fresh);
+        return -1;
+    }
+    free_sched_aux_lists(snap);
+    snap->tunables = fresh.tunables;
+    snap->tunable_count = fresh.tunable_count;
+    snap->presets = fresh.presets;
+    snap->preset_count = fresh.preset_count;
+    fresh.tunables = NULL;
+    fresh.presets = NULL;
+    fresh.tunable_count = 0;
+    fresh.preset_count = 0;
+    return 0;
+}
+
+typedef struct {
+    char *err;
+    size_t errlen;
+} ApplyPresetCtx;
+
+static int apply_preset_item(const char *path, const char *value, void *opaque)
+{
+    ApplyPresetCtx *ctx = opaque;
+    char resolved[PATH_MAX];
+    char source[32];
+    char group[64];
+    char name[96];
+
+    if (sched_tunable_path_info(path, resolved, sizeof(resolved),
+                                source, sizeof(source),
+                                group, sizeof(group),
+                                name, sizeof(name)) < 0) {
+        if (ctx && ctx->err && ctx->errlen > 0) {
+            snprintf(ctx->err, ctx->errlen, "preset path not allowed: %s", path);
+        }
+        return -1;
+    }
+    if (write_text_file_value(resolved, value ? value : "") < 0) {
+        if (ctx && ctx->err && ctx->errlen > 0) {
+            snprintf(ctx->err, ctx->errlen, "write %s: %s", resolved, strerror(errno));
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int sched_preset_path_from_id(const char *config_root, const char *id,
+                                     char *buf, size_t len)
+{
+    if (!config_root || !id || !*id || !buf || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (strchr(id, '/')) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (snprintf(buf, len, "%s/tunables-presets.d/%s.conf", config_root, id) >= (int)len) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+static int apply_tunable_preset(const char *config_root, const char *id, char *err, size_t errlen)
+{
+    char path[PATH_MAX];
+    ApplyPresetCtx ctx = {
+        .err = err,
+        .errlen = errlen,
+    };
+
+    if (sched_preset_path_from_id(config_root, id, path, sizeof(path)) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid scheduler preset");
+        return -1;
+    }
+    return parse_tunable_preset_file(path, NULL, apply_preset_item, &ctx, err, errlen);
 }
 
 static int find_profile_index(const LuloSchedSnapshot *snap, const char *name)
@@ -689,6 +1315,8 @@ static int load_global_config(LuloSchedSnapshot *snap, const char *config_root, 
                 return -1;
             }
             snap->background_match_app_unit_prefix = parsed;
+        } else if (!strcmp(key, "tunables_startup_preset")) {
+            snprintf(snap->tunables_startup_preset, sizeof(snap->tunables_startup_preset), "%s", value);
         } else {
             if (err && errlen > 0) snprintf(err, errlen, "%s:%u: unknown key '%s'", path, lineno, key);
             free(line);
@@ -1318,10 +1946,39 @@ int lulod_system_sched_reload(LuloSchedSnapshot *snap, const char *config_root,
         lulo_sched_snapshot_free(&fresh);
         return -1;
     }
+    if (fresh.tunables_startup_preset[0] &&
+        apply_tunable_preset(config_root, fresh.tunables_startup_preset, err, errlen) < 0) {
+        lulo_sched_snapshot_free(&fresh);
+        return -1;
+    }
+    if (refresh_sched_aux(&fresh, err, errlen) < 0) {
+        lulo_sched_snapshot_free(&fresh);
+        return -1;
+    }
 
     lulo_sched_snapshot_free(snap);
     *snap = fresh;
     memset(&fresh, 0, sizeof(fresh));
+    return 0;
+}
+
+int lulod_system_sched_refresh_aux(LuloSchedSnapshot *snap, char *err, size_t errlen)
+{
+    if (err && errlen > 0) err[0] = '\0';
+    return refresh_sched_aux(snap, err, errlen);
+}
+
+int lulod_system_sched_apply_tunable_preset(LuloSchedSnapshot *snap, const char *id,
+                                            char *err, size_t errlen)
+{
+    if (err && errlen > 0) err[0] = '\0';
+    if (!snap || !snap->config_root[0] || !id || !*id) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid scheduler tunables preset request");
+        errno = EINVAL;
+        return -1;
+    }
+    if (apply_tunable_preset(snap->config_root, id, err, errlen) < 0) return -1;
+    if (refresh_sched_aux(snap, err, errlen) < 0) return -1;
     return 0;
 }
 

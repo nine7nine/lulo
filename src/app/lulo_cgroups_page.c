@@ -527,38 +527,40 @@ void render_cgroups_widget(Ui *ui, const LuloCgroupsSnapshot *snap, const LuloCg
 void render_cgroups_status(Ui *ui, const LuloCgroupsSnapshot *snap, const LuloCgroupsState *state,
                            const LuloCgroupsBackendStatus *backend_status, AppState *app)
 {
-    char line[320];
+    char line[512];
     const char *msg = app ? cgroups_status_current(app) : NULL;
-    unsigned rows = 0;
-    unsigned cols = 0;
-    int y;
     int msg_x;
 
-    if (!ui || !ui->cgroups || !state) return;
-    ncplane_dim_yx(ui->cgroups, &rows, &cols);
-    if (rows == 0 || cols <= 2) return;
+    if (!ui || !ui->load || !state) return;
+    plane_reset(ui->load, ui->theme);
+    if (backend_status && !backend_status->have_snapshot && backend_status->busy) {
+        snprintf(line, sizeof(line), "view %s  loading cgroups...",
+                 lulo_cgroups_view_name(state->view));
+        plane_putn(ui->load, 0, 0, ui->theme->white, ui->theme->bg, line, ui->lo.load.width - 2);
+        return;
+    }
+    if (backend_status && backend_status->error[0]) {
+        plane_putn(ui->load, 0, 0, ui->theme->red, ui->theme->bg,
+                   backend_status->error, ui->lo.load.width - 2);
+        return;
+    }
+    if (msg && *msg) {
+        plane_putn(ui->load, 0, 0, ui->theme->green, ui->theme->bg, msg, ui->lo.load.width - 2);
+        return;
+    }
     snprintf(line, sizeof(line),
-             "view %s   path %.220s%s%s",
+             "view %s  pane %s  path %.220s%s%s",
              lulo_cgroups_view_name(state->view),
+             state->focus_preview ? "preview" : "list",
              state->browse_path[0] ? state->browse_path : (snap && snap->browse_path[0] ? snap->browse_path : "/sys/fs/cgroup"),
              backend_status && backend_status->busy ? "   loading" : "",
              backend_status && backend_status->error[0] ? "   error" : "");
-    y = (int)rows - 1;
-    plane_fill(ui->cgroups, y, 1, (int)cols - 2, ui->theme->bg, ui->theme->bg);
-    plane_putn(ui->cgroups, y, 1,
+    plane_putn(ui->load, 0, 0,
                backend_status && backend_status->error[0] ? ui->theme->red :
                backend_status && backend_status->busy ? ui->theme->yellow :
                ui->theme->dim,
-               ui->theme->bg, line, (int)cols - 2);
-    if (msg && *msg) {
-        msg_x = clamp_int((int)strlen(line) + 4, 1, (int)cols - 6);
-        plane_putn(ui->cgroups, y, msg_x, ui->theme->green, ui->theme->bg, msg,
-                   (int)cols - msg_x - 1);
-    } else if (backend_status && backend_status->error[0]) {
-        msg_x = clamp_int((int)strlen(line) + 4, 1, (int)cols - 6);
-        plane_putn(ui->cgroups, y, msg_x, ui->theme->red, ui->theme->bg, backend_status->error,
-                   (int)cols - msg_x - 1);
-    }
+               ui->theme->bg, line, ui->lo.load.width - 2);
+    (void)msg_x;
 }
 
 static LuloCgroupsView cgroups_view_from_point(Ui *ui, const CgroupsWidgetLayout *layout,

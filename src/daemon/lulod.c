@@ -159,6 +159,10 @@ static int sched_state_has_active_preview(const LuloSchedState *state)
         return state->rule_selected >= 0 && state->selected_rule[0];
     case LULO_SCHED_VIEW_LIVE:
         return state->live_selected >= 0 && state->selected_live_pid > 0;
+    case LULO_SCHED_VIEW_TUNABLES:
+        return state->tunable_selected >= 0 && state->selected_tunable_path[0];
+    case LULO_SCHED_VIEW_PRESETS:
+        return state->preset_selected >= 0 && state->selected_preset_id[0];
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return state->profile_selected >= 0 && state->selected_profile[0];
@@ -276,15 +280,32 @@ static int reply_for_sched_request(uint32_t type, const LuloSchedState *state,
 {
     int need_reload;
     int need_full;
+    int apply_preset;
 
     if (err && errlen > 0) err[0] = '\0';
     memset(reply, 0, sizeof(*reply));
     need_reload = type == LULOD_REQ_SCHED_RELOAD;
+    apply_preset = type == LULOD_REQ_SCHED_APPLY_PRESET;
     need_full = need_reload || !*have_cache || mono_ms_now() >= *due_ms;
     if (need_full) {
         if (refresh_sched_cache(cache, need_reload, due_ms, err, errlen) < 0) {
             if (err && errlen > 0 && !err[0]) snprintf(err, errlen, "failed to refresh scheduler cache");
             return -1;
+        }
+        *have_cache = 1;
+    }
+    if (apply_preset) {
+        if (!state || state->view != LULO_SCHED_VIEW_PRESETS || !state->selected_preset_id[0]) {
+            if (err && errlen > 0) snprintf(err, errlen, "select a scheduler tunables preset first");
+            return -1;
+        }
+        if (lulod_sched_apply_tunable_preset(state->selected_preset_id, cache, err, errlen) < 0) {
+            if (err && errlen > 0 && !err[0]) snprintf(err, errlen, "failed to apply scheduler preset");
+            return -1;
+        }
+        if (cache->watcher_interval_ms > 0) {
+            int interval_ms = cache->watcher_interval_ms < 250 ? 250 : cache->watcher_interval_ms;
+            *due_ms = mono_ms_now() + interval_ms;
         }
         *have_cache = 1;
     }
@@ -294,6 +315,7 @@ static int reply_for_sched_request(uint32_t type, const LuloSchedState *state,
     }
     if ((type == LULOD_REQ_SCHED_ACTIVE ||
          type == LULOD_REQ_SCHED_RELOAD ||
+         type == LULOD_REQ_SCHED_APPLY_PRESET ||
          (type == LULOD_REQ_SCHED_FULL && sched_state_has_active_preview(state))) &&
         lulo_sched_snapshot_refresh_active(reply, state) < 0) {
         lulo_sched_snapshot_free(reply);

@@ -16,6 +16,7 @@
 typedef enum {
     EDIT_SCOPE_NONE = 0,
     EDIT_SCOPE_SCHED,
+    EDIT_SCOPE_SCHED_TUNABLES,
     EDIT_SCOPE_SYSTEMD,
     EDIT_SCOPE_CGROUPS,
     EDIT_SCOPE_UDEV,
@@ -76,6 +77,8 @@ static int scope_for_path(const char *path, EditScope *scope_out)
         EditScope scope;
     } allowed[] = {
         { "/etc/lulo/scheduler/", EDIT_SCOPE_SCHED },
+        { "/proc/sys/kernel/sched_", EDIT_SCOPE_SCHED_TUNABLES },
+        { "/sys/devices/system/cpu/cpufreq/", EDIT_SCOPE_SCHED_TUNABLES },
         { "/etc/systemd/", EDIT_SCOPE_SYSTEMD },
         { "/usr/lib/systemd/", EDIT_SCOPE_SYSTEMD },
         { "/lib/systemd/", EDIT_SCOPE_SYSTEMD },
@@ -567,7 +570,7 @@ int lulod_system_edit_commit(const char *session_id, uid_t uid, int *reload_sche
         errno = EPERM;
         return -1;
     }
-    if ((meta.scope == EDIT_SCOPE_CGROUPS
+    if ((meta.scope == EDIT_SCOPE_CGROUPS || meta.scope == EDIT_SCOPE_SCHED_TUNABLES
          ? commit_direct_file_from_edit(edit_path, meta.original_path)
          : replace_file_from_edit(edit_path, meta.original_path)) < 0) {
         if (err && errlen > 0) snprintf(err, errlen, "commit %s: %s", meta.original_path, strerror(errno));
@@ -617,7 +620,7 @@ int lulod_system_write_file(const char *path, const char *content, int *reload_s
         if (err && errlen > 0) snprintf(err, errlen, "write not allowed: %s", path ? path : "");
         return -1;
     }
-    if ((scope == EDIT_SCOPE_CGROUPS
+    if ((scope == EDIT_SCOPE_CGROUPS || scope == EDIT_SCOPE_SCHED_TUNABLES
          ? write_direct_file(resolved, content ? content : "")
          : write_string_to_file(resolved, content ? content : "")) < 0) {
         if (err && errlen > 0) snprintf(err, errlen, "write %s: %s", resolved, strerror(errno));

@@ -165,6 +165,18 @@ int main(int argc, char *argv[])
                     scan_due_ms = mono_ms_now() + next_scan_deadline_ms(&state);
                     lulod_system_send_sched_response(client_fd, 0, NULL, &state);
                 }
+            } else if (type == LULOD_SYSTEM_REQ_SCHED_APPLY_PRESET) {
+                char preset_id[96];
+
+                if (lulod_system_recv_sched_apply_preset_request(client_fd, preset_id, sizeof(preset_id)) < 0) {
+                    lulod_system_send_status_response(client_fd, -1, "bad scheduler preset request");
+                } else if (lulod_system_sched_apply_tunable_preset(&state, preset_id,
+                                                                   errbuf, sizeof(errbuf)) < 0) {
+                    lulod_system_send_status_response(client_fd, -1,
+                                                      errbuf[0] ? errbuf : "failed to apply scheduler preset");
+                } else {
+                    lulod_system_send_status_response(client_fd, 0, NULL);
+                }
             } else if (type == LULOD_SYSTEM_REQ_SCHED_FOCUS_UPDATE) {
                 pid_t focus_pid = 0;
                 unsigned long long focus_start_time = 0;
@@ -270,7 +282,13 @@ int main(int argc, char *argv[])
                     lulod_system_send_status_response(client_fd, 0, NULL);
                 }
             } else if (type == LULOD_SYSTEM_REQ_SCHED_FULL) {
-                lulod_system_send_sched_response(client_fd, 0, NULL, &state);
+                if (lulod_system_sched_refresh_aux(&state, errbuf, sizeof(errbuf)) < 0) {
+                    lulod_system_send_sched_response(client_fd, -1,
+                                                     errbuf[0] ? errbuf : "failed to refresh scheduler tunables",
+                                                     NULL);
+                } else {
+                    lulod_system_send_sched_response(client_fd, 0, NULL, &state);
+                }
             } else {
                 lulod_system_send_sched_response(client_fd, -1, "unknown request", NULL);
             }

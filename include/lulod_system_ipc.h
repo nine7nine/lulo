@@ -16,6 +16,7 @@ enum {
     LULOD_SYSTEM_REQ_EDIT_CANCEL = 6,
     LULOD_SYSTEM_REQ_FILE_WRITE = 7,
     LULOD_SYSTEM_REQ_FILE_DELETE = 8,
+    LULOD_SYSTEM_REQ_SCHED_APPLY_PRESET = 9,
 };
 
 int lulod_system_socket_path(char *buf, size_t len);
@@ -28,6 +29,8 @@ int lulod_system_send_focus_update_request(int fd, pid_t pid, unsigned long long
                                            const char *provider);
 int lulod_system_recv_focus_update_request(int fd, pid_t *pid, unsigned long long *start_time,
                                            char *provider, size_t provider_len);
+int lulod_system_send_sched_apply_preset_request(int fd, const char *preset_id);
+int lulod_system_recv_sched_apply_preset_request(int fd, char *preset_id, size_t preset_id_len);
 int lulod_system_send_edit_begin_request(int fd, const char *path);
 int lulod_system_recv_edit_begin_request(int fd, char *path, size_t path_len);
 int lulod_system_send_edit_session_request(int fd, uint32_t type, const char *session_id);

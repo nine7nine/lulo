@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_MAGIC 0x4c554c4fU
-#define LULOD_VERSION 12U
+#define LULOD_VERSION 13U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -414,10 +414,20 @@ static int serialize_sched_state(int fd, const LuloSchedState *state)
     if (write_i32(fd, state->live_selected) < 0) return -1;
     if (write_i32(fd, state->live_list_scroll) < 0) return -1;
     if (write_i32(fd, state->live_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->tunable_cursor) < 0) return -1;
+    if (write_i32(fd, state->tunable_selected) < 0) return -1;
+    if (write_i32(fd, state->tunable_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->tunable_detail_scroll) < 0) return -1;
+    if (write_i32(fd, state->preset_cursor) < 0) return -1;
+    if (write_i32(fd, state->preset_selected) < 0) return -1;
+    if (write_i32(fd, state->preset_list_scroll) < 0) return -1;
+    if (write_i32(fd, state->preset_detail_scroll) < 0) return -1;
     if (write_string(fd, state->selected_profile) < 0) return -1;
     if (write_string(fd, state->selected_rule) < 0) return -1;
     if (write_i32(fd, state->selected_live_pid) < 0) return -1;
     if (write_all(fd, &state->selected_live_start_time, sizeof(state->selected_live_start_time)) < 0) return -1;
+    if (write_string(fd, state->selected_tunable_path) < 0) return -1;
+    if (write_string(fd, state->selected_preset_id) < 0) return -1;
     return 0;
 }
 
@@ -456,11 +466,29 @@ static int deserialize_sched_state(int fd, LuloSchedState *state)
     state->live_list_scroll = value;
     if (read_i32(fd, &value) < 0) return -1;
     state->live_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tunable_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tunable_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tunable_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->tunable_detail_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_cursor = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_selected = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_list_scroll = value;
+    if (read_i32(fd, &value) < 0) return -1;
+    state->preset_detail_scroll = value;
     if (read_string_fixed(fd, state->selected_profile, sizeof(state->selected_profile)) < 0) return -1;
     if (read_string_fixed(fd, state->selected_rule, sizeof(state->selected_rule)) < 0) return -1;
     if (read_i32(fd, &value) < 0) return -1;
     state->selected_live_pid = value;
     if (read_all(fd, &state->selected_live_start_time, sizeof(state->selected_live_start_time)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_tunable_path, sizeof(state->selected_tunable_path)) < 0) return -1;
+    if (read_string_fixed(fd, state->selected_preset_id, sizeof(state->selected_preset_id)) < 0) return -1;
     return 0;
 }
 
@@ -581,6 +609,7 @@ static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
     if (write_i32(fd, snap->background_match_app_slice) < 0) return -1;
     if (write_i32(fd, snap->background_match_background_slice) < 0) return -1;
     if (write_i32(fd, snap->background_match_app_unit_prefix) < 0) return -1;
+    if (write_string(fd, snap->tunables_startup_preset) < 0) return -1;
     if (write_string(fd, snap->focused_comm) < 0) return -1;
     if (write_string(fd, snap->focused_exe) < 0) return -1;
     if (write_string(fd, snap->focused_unit) < 0) return -1;
@@ -639,6 +668,30 @@ static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
         if (write_i32(fd, row->io_priority) < 0) return -1;
         if (write_i32(fd, row->focused) < 0) return -1;
         if (write_string(fd, row->status) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->tunable_count) < 0) return -1;
+    for (int i = 0; i < snap->tunable_count; i++) {
+        const LuloSchedTunableRow *row = &snap->tunables[i];
+
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_string(fd, row->source) < 0) return -1;
+        if (write_string(fd, row->group) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->value) < 0) return -1;
+        if (write_i32(fd, row->writable) < 0) return -1;
+    }
+
+    if (write_i32(fd, snap->preset_count) < 0) return -1;
+    for (int i = 0; i < snap->preset_count; i++) {
+        const LuloSchedPresetRow *row = &snap->presets[i];
+
+        if (write_string(fd, row->id) < 0) return -1;
+        if (write_string(fd, row->name) < 0) return -1;
+        if (write_string(fd, row->created) < 0) return -1;
+        if (write_string(fd, row->path) < 0) return -1;
+        if (write_i32(fd, row->item_count) < 0) return -1;
+        if (write_i32(fd, row->startup) < 0) return -1;
     }
 
     if (write_string(fd, snap->detail_title) < 0) return -1;
@@ -942,6 +995,7 @@ static int deserialize_sched_snapshot(int fd, LuloSchedSnapshot *snap)
     snap->background_match_background_slice = count;
     if (read_i32(fd, &count) < 0) goto fail;
     snap->background_match_app_unit_prefix = count;
+    if (read_string_fixed(fd, snap->tunables_startup_preset, sizeof(snap->tunables_startup_preset)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focused_comm, sizeof(snap->focused_comm)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focused_exe, sizeof(snap->focused_exe)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focused_unit, sizeof(snap->focused_unit)) < 0) goto fail;
@@ -1039,6 +1093,45 @@ static int deserialize_sched_snapshot(int fd, LuloSchedSnapshot *snap)
         if (read_i32(fd, &count) < 0) goto fail;
         row->focused = count;
         if (read_string_fixed(fd, row->status, sizeof(row->status)) < 0) goto fail;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->tunables = calloc((size_t)count, sizeof(*snap->tunables));
+        if (!snap->tunables) goto fail;
+    }
+    snap->tunable_count = count;
+    for (int i = 0; i < snap->tunable_count; i++) {
+        LuloSchedTunableRow *row = &snap->tunables[i];
+
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->source, sizeof(row->source)) < 0) goto fail;
+        if (read_string_fixed(fd, row->group, sizeof(row->group)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->value, sizeof(row->value)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->writable = count;
+    }
+
+    if (read_i32(fd, &count) < 0) goto fail;
+    if (count < 0) goto fail;
+    if (count > 0) {
+        snap->presets = calloc((size_t)count, sizeof(*snap->presets));
+        if (!snap->presets) goto fail;
+    }
+    snap->preset_count = count;
+    for (int i = 0; i < snap->preset_count; i++) {
+        LuloSchedPresetRow *row = &snap->presets[i];
+
+        if (read_string_fixed(fd, row->id, sizeof(row->id)) < 0) goto fail;
+        if (read_string_fixed(fd, row->name, sizeof(row->name)) < 0) goto fail;
+        if (read_string_fixed(fd, row->created, sizeof(row->created)) < 0) goto fail;
+        if (read_string_fixed(fd, row->path, sizeof(row->path)) < 0) goto fail;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->item_count = count;
+        if (read_i32(fd, &count) < 0) goto fail;
+        row->startup = count;
     }
 
     if (read_string_fixed(fd, snap->detail_title, sizeof(snap->detail_title)) < 0) goto fail;

@@ -17,7 +17,7 @@ if [[ -f "${LULO_EXAMPLES_DIR:-$datadir/examples/scheduler}/scheduler.conf" ]]; 
 fi
 
 "${as_root[@]}" rm -rf "$config_root"
-"${as_root[@]}" install -d "$config_root/profiles.d" "$config_root/rules.d"
+"${as_root[@]}" install -d "$config_root/profiles.d" "$config_root/rules.d" "$config_root/tunables-presets.d"
 "${as_root[@]}" install -m 0644 "$examples_root/scheduler.conf" "$config_root/scheduler.conf"
 
 while IFS= read -r -d '' src; do

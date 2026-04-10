@@ -1,67 +1,59 @@
 # Lulo Scheduler Config
 
-The scheduler uses a compact directory-based config instead of a large DSL.
+This scheduler uses a compact directory-based config instead of a large DSL.
 
-## Layout
+Layout:
 
-| Path | Purpose |
-| --- | --- |
-| `scheduler.conf` | Global scheduler settings |
-| `profiles.d/*.conf` | Profile definitions |
-| `rules.d/*.conf` | Rule definitions |
+- `scheduler.conf`
+- `profiles.d/*.conf`
+- `rules.d/*.conf`
 
-## Matcher Support
+Current matcher support:
 
-| Matcher | Purpose |
-| --- | --- |
-| `comm` | Process command name |
-| `exe` | Executable path |
-| `cmdline` | Full command line |
-| `unit` | systemd unit |
-| `slice` | systemd slice |
-| `cgroup` | cgroup path |
+- `match=comm`
+- `match=exe`
+- `match=cmdline`
+- `match=unit`
+- `match=slice`
+- `match=cgroup`
 
-## Profile Support
+Current profile support:
 
-| Field | Meaning |
-| --- | --- |
-| `nice` | Linux nice level |
-| `policy` | Linux scheduling policy |
-| `rt_priority` | Real-time priority |
-| `io_class` | Linux I/O priority class |
-| `io_priority` | Linux I/O priority level |
+- `nice`
+- `policy`
+- `rt_priority`
+- `io_class`
+- `io_priority`
 
-## Rule Support
+Current rule support:
 
-| Field | Meaning |
-| --- | --- |
-| `enabled` | Enables or disables the rule |
-| `exclude` | Stops further assignment when matched |
-| `profile` | Target profile |
-| `pattern` | Match pattern |
+- `enabled`
+- `exclude`
+- `profile`
+- `pattern`
 
-## Global Scheduler Settings
+Global scheduler settings:
 
-| Setting | Purpose |
-| --- | --- |
-| `watcher_interval_ms` | `/proc` rescan interval |
-| `focus_enabled` | Enables focused-app policy |
-| `focus_profile` | Profile assigned to the active app |
-| `background_enabled` | Enables background fallback |
-| `background_profile` | Fallback profile for lower-priority app-scope processes |
-| `background_match_app_slice` | Match app-scope slices |
-| `background_match_background_slice` | Match background slices |
-| `background_match_app_unit_prefix` | Match app-style unit prefixes |
+- `watcher_interval_ms`
+- `focus_enabled`
+- `focus_profile`
+- `background_enabled`
+- `background_profile`
+- `background_match_app_slice`
+- `background_match_background_slice`
+- `background_match_app_unit_prefix`
 
-## Dynamic Policy
+Dynamic policy:
 
-| Behavior | Notes |
-| --- | --- |
-| `exclude=true` | Stops further assignment |
-| Focus policy | Focused app is assigned `focus_profile` when enabled |
-| Focus precedence | Focused assignment outranks ordinary static app buckets |
-| Explicit rules | Applied after exclusions and before background fallback |
-| Background fallback | Controlled by `background_match_*` settings and shown as `(background)` in `SCHED -> Rules` |
-| Focus visibility | Focus policy is shown as `(focus)` in `SCHED -> Rules` |
+- `exclude=true` stops further assignment
+- if focus tracking is enabled, the focused app is assigned `focus_profile`
+- focused assignment outranks ordinary static app buckets
+- otherwise explicit rules apply
+- finally app-scope processes can fall back to `background_profile`
+- the app-scope fallback classifier is controlled by the `background_match_*`
+  settings and is shown in the SCHED `Rules` view as `(background)`
+- the focused-window policy is shown in the SCHED `Rules` view as `(focus)`
 
-This keeps the watcher compact while still supporting session-aware focus boosting, systemd-aware matching, and per-profile I/O tuning without changing the overall service architecture.
+This keeps the watcher compact while still supporting session-aware focus
+boosting, systemd-aware matching, and per-profile I/O tuning without changing
+the overall service architecture.

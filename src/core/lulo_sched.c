@@ -4,6 +4,8 @@
 
 #include "lulo_model.h"
 
+#include <errno.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +15,30 @@ static int clamp_int_local(int value, int lo, int hi)
     if (value < lo) return lo;
     if (value > hi) return hi;
     return value;
+}
+
+static void trim_right_local(char *text)
+{
+    size_t len;
+
+    if (!text) return;
+    len = strlen(text);
+    while (len > 0 && isspace((unsigned char)text[len - 1])) {
+        text[--len] = '\0';
+    }
+}
+
+static char *trim_left_local(char *text)
+{
+    while (text && *text && isspace((unsigned char)*text)) text++;
+    return text;
+}
+
+static char *trim_local(char *text)
+{
+    text = trim_left_local(text);
+    trim_right_local(text);
+    return text;
 }
 
 static int append_detail_line(char ***lines, int *count, const char *text)
@@ -69,6 +95,16 @@ static int rule_count(const LuloSchedSnapshot *snap)
 static int live_count(const LuloSchedSnapshot *snap)
 {
     return snap ? snap->live_count : 0;
+}
+
+static int tunable_count(const LuloSchedSnapshot *snap)
+{
+    return snap ? snap->tunable_count : 0;
+}
+
+static int preset_count(const LuloSchedSnapshot *snap)
+{
+    return snap ? snap->preset_count : 0;
 }
 
 static void format_sched_policy(char *buf, size_t len, int policy)
@@ -141,6 +177,10 @@ static int *active_cursor(LuloSchedState *state)
         return &state->rule_cursor;
     case LULO_SCHED_VIEW_LIVE:
         return &state->live_cursor;
+    case LULO_SCHED_VIEW_TUNABLES:
+        return &state->tunable_cursor;
+    case LULO_SCHED_VIEW_PRESETS:
+        return &state->preset_cursor;
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return &state->profile_cursor;
@@ -155,6 +195,10 @@ static int *active_selected(LuloSchedState *state)
         return &state->rule_selected;
     case LULO_SCHED_VIEW_LIVE:
         return &state->live_selected;
+    case LULO_SCHED_VIEW_TUNABLES:
+        return &state->tunable_selected;
+    case LULO_SCHED_VIEW_PRESETS:
+        return &state->preset_selected;
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return &state->profile_selected;
@@ -169,6 +213,10 @@ static int *active_list_scroll(LuloSchedState *state)
         return &state->rule_list_scroll;
     case LULO_SCHED_VIEW_LIVE:
         return &state->live_list_scroll;
+    case LULO_SCHED_VIEW_TUNABLES:
+        return &state->tunable_list_scroll;
+    case LULO_SCHED_VIEW_PRESETS:
+        return &state->preset_list_scroll;
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return &state->profile_list_scroll;
@@ -183,6 +231,10 @@ static int *active_detail_scroll(LuloSchedState *state)
         return &state->rule_detail_scroll;
     case LULO_SCHED_VIEW_LIVE:
         return &state->live_detail_scroll;
+    case LULO_SCHED_VIEW_TUNABLES:
+        return &state->tunable_detail_scroll;
+    case LULO_SCHED_VIEW_PRESETS:
+        return &state->preset_detail_scroll;
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return &state->profile_detail_scroll;
@@ -197,6 +249,10 @@ static int active_list_count(const LuloSchedState *state, const LuloSchedSnapsho
         return rule_count(snap);
     case LULO_SCHED_VIEW_LIVE:
         return live_count(snap);
+    case LULO_SCHED_VIEW_TUNABLES:
+        return tunable_count(snap);
+    case LULO_SCHED_VIEW_PRESETS:
+        return preset_count(snap);
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return profile_count(snap);
@@ -298,6 +354,74 @@ static int sync_live_selection(LuloSchedState *state, const LuloSchedSnapshot *s
     } else {
         state->selected_live_pid = -1;
         state->selected_live_start_time = 0;
+    }
+    return selected;
+}
+
+static int sync_tunable_selection(LuloSchedState *state, const LuloSchedSnapshot *snap)
+{
+    int selected = -1;
+
+    if (!state || !snap || snap->tunable_count <= 0) {
+        if (state) {
+            state->tunable_selected = -1;
+            state->tunable_list_scroll = 0;
+            state->tunable_detail_scroll = 0;
+            state->selected_tunable_path[0] = '\0';
+        }
+        return -1;
+    }
+    if (state->selected_tunable_path[0]) {
+        for (int i = 0; i < snap->tunable_count; i++) {
+            if (strcmp(snap->tunables[i].path, state->selected_tunable_path) == 0) {
+                selected = i;
+                break;
+            }
+        }
+    }
+    if (selected < 0 && state->tunable_selected >= 0) {
+        selected = clamp_int_local(state->tunable_selected, 0, snap->tunable_count - 1);
+    }
+    state->tunable_selected = selected;
+    if (selected >= 0) {
+        snprintf(state->selected_tunable_path, sizeof(state->selected_tunable_path), "%s",
+                 snap->tunables[selected].path);
+    } else {
+        state->selected_tunable_path[0] = '\0';
+    }
+    return selected;
+}
+
+static int sync_preset_selection(LuloSchedState *state, const LuloSchedSnapshot *snap)
+{
+    int selected = -1;
+
+    if (!state || !snap || snap->preset_count <= 0) {
+        if (state) {
+            state->preset_selected = -1;
+            state->preset_list_scroll = 0;
+            state->preset_detail_scroll = 0;
+            state->selected_preset_id[0] = '\0';
+        }
+        return -1;
+    }
+    if (state->selected_preset_id[0]) {
+        for (int i = 0; i < snap->preset_count; i++) {
+            if (strcmp(snap->presets[i].id, state->selected_preset_id) == 0) {
+                selected = i;
+                break;
+            }
+        }
+    }
+    if (selected < 0 && state->preset_selected >= 0) {
+        selected = clamp_int_local(state->preset_selected, 0, snap->preset_count - 1);
+    }
+    state->preset_selected = selected;
+    if (selected >= 0) {
+        snprintf(state->selected_preset_id, sizeof(state->selected_preset_id), "%s",
+                 snap->presets[selected].id);
+    } else {
+        state->selected_preset_id[0] = '\0';
     }
     return selected;
 }
@@ -451,6 +575,75 @@ static int format_live_detail(LuloSchedSnapshot *snap, const LuloSchedLiveRow *r
     return append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf);
 }
 
+static int format_tunable_detail(LuloSchedSnapshot *snap, const LuloSchedTunableRow *row)
+{
+    char buf[384];
+
+    if (!snap || !row) return -1;
+    snprintf(snap->detail_title, sizeof(snap->detail_title), "%s", row->name);
+    snprintf(snap->detail_status, sizeof(snap->detail_status), "%s scheduler tunable",
+             row->writable ? "editable" : "read-only");
+    if (append_prefixed_detail_line(&snap->detail_lines, &snap->detail_line_count,
+                                    "path: ", row->path) < 0) return -1;
+    snprintf(buf, sizeof(buf), "source: %s", row->source[0] ? row->source : "-");
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    snprintf(buf, sizeof(buf), "group: %s", row->group[0] ? row->group : "-");
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    snprintf(buf, sizeof(buf), "access: %s", row->writable ? "editable" : "read-only");
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, "") < 0) return -1;
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, "current value:") < 0) return -1;
+    return append_detail_line(&snap->detail_lines, &snap->detail_line_count,
+                              row->value[0] ? row->value : "(empty)");
+}
+
+static int format_preset_detail(LuloSchedSnapshot *snap, const LuloSchedPresetRow *row)
+{
+    char buf[384];
+    FILE *fp = NULL;
+    char line[512];
+    int body_lines = 0;
+
+    if (!snap || !row) return -1;
+    snprintf(snap->detail_title, sizeof(snap->detail_title), "%s", row->name);
+    snprintf(snap->detail_status, sizeof(snap->detail_status), "%s",
+             row->startup ? "startup preset" : "scheduler tunables preset");
+    if (append_prefixed_detail_line(&snap->detail_lines, &snap->detail_line_count,
+                                    "path: ", row->path) < 0) return -1;
+    snprintf(buf, sizeof(buf), "created: %s", row->created[0] ? row->created : "-");
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    snprintf(buf, sizeof(buf), "items: %d", row->item_count);
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    snprintf(buf, sizeof(buf), "startup: %s", row->startup ? "yes" : "no");
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
+    if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, "") < 0) return -1;
+
+    fp = fopen(row->path, "r");
+    if (!fp) {
+        snprintf(buf, sizeof(buf), "open failed: %s", strerror(errno));
+        return append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf);
+    }
+    while (fgets(line, sizeof(line), fp)) {
+        char *work = trim_local(line);
+
+        if (!*work || *work == '#' || *work == ';') continue;
+        if (strncmp(work, "type=", 5) == 0 ||
+            strncmp(work, "name=", 5) == 0 ||
+            strncmp(work, "created=", 8) == 0) {
+            continue;
+        }
+        work[strcspn(work, "\r\n")] = '\0';
+        if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, work) < 0) {
+            fclose(fp);
+            return -1;
+        }
+        body_lines++;
+    }
+    fclose(fp);
+    if (body_lines == 0) return append_detail_line(&snap->detail_lines, &snap->detail_line_count, "(empty preset)");
+    return 0;
+}
+
 void lulo_sched_state_init(LuloSchedState *state)
 {
     memset(state, 0, sizeof(*state));
@@ -461,6 +654,10 @@ void lulo_sched_state_init(LuloSchedState *state)
     state->rule_selected = -1;
     state->live_cursor = -1;
     state->live_selected = -1;
+    state->tunable_cursor = -1;
+    state->tunable_selected = -1;
+    state->preset_cursor = -1;
+    state->preset_selected = -1;
     state->selected_live_pid = -1;
 }
 
@@ -487,6 +684,8 @@ int lulo_sched_snapshot_clone(LuloSchedSnapshot *dst, const LuloSchedSnapshot *s
     dst->background_match_app_slice = src->background_match_app_slice;
     dst->background_match_background_slice = src->background_match_background_slice;
     dst->background_match_app_unit_prefix = src->background_match_app_unit_prefix;
+    snprintf(dst->tunables_startup_preset, sizeof(dst->tunables_startup_preset), "%s",
+             src->tunables_startup_preset);
     snprintf(dst->focused_comm, sizeof(dst->focused_comm), "%s", src->focused_comm);
     snprintf(dst->focused_exe, sizeof(dst->focused_exe), "%s", src->focused_exe);
     snprintf(dst->focused_unit, sizeof(dst->focused_unit), "%s", src->focused_unit);
@@ -512,6 +711,18 @@ int lulo_sched_snapshot_clone(LuloSchedSnapshot *dst, const LuloSchedSnapshot *s
         memcpy(dst->live, src->live, (size_t)src->live_count * sizeof(*dst->live));
         dst->live_count = src->live_count;
     }
+    if (src->tunable_count > 0) {
+        dst->tunables = malloc((size_t)src->tunable_count * sizeof(*dst->tunables));
+        if (!dst->tunables) goto fail;
+        memcpy(dst->tunables, src->tunables, (size_t)src->tunable_count * sizeof(*dst->tunables));
+        dst->tunable_count = src->tunable_count;
+    }
+    if (src->preset_count > 0) {
+        dst->presets = malloc((size_t)src->preset_count * sizeof(*dst->presets));
+        if (!dst->presets) goto fail;
+        memcpy(dst->presets, src->presets, (size_t)src->preset_count * sizeof(*dst->presets));
+        dst->preset_count = src->preset_count;
+    }
     for (int i = 0; i < src->detail_line_count; i++) {
         if (append_detail_line(&dst->detail_lines, &dst->detail_line_count, src->detail_lines[i]) < 0) goto fail;
     }
@@ -528,6 +739,8 @@ void lulo_sched_snapshot_free(LuloSchedSnapshot *snap)
     free(snap->profiles);
     free(snap->rules);
     free(snap->live);
+    free(snap->tunables);
+    free(snap->presets);
     clear_detail_lines(&snap->detail_lines, &snap->detail_line_count);
     memset(snap, 0, sizeof(*snap));
 }
@@ -542,6 +755,12 @@ void lulo_sched_snapshot_mark_loading(LuloSchedSnapshot *snap, const LuloSchedSt
         break;
     case LULO_SCHED_VIEW_LIVE:
         snprintf(snap->detail_title, sizeof(snap->detail_title), "assignment");
+        break;
+    case LULO_SCHED_VIEW_TUNABLES:
+        snprintf(snap->detail_title, sizeof(snap->detail_title), "scheduler tunable");
+        break;
+    case LULO_SCHED_VIEW_PRESETS:
+        snprintf(snap->detail_title, sizeof(snap->detail_title), "scheduler preset");
         break;
     case LULO_SCHED_VIEW_PROFILES:
     default:
@@ -573,6 +792,16 @@ int lulo_sched_snapshot_refresh_active(LuloSchedSnapshot *snap, const LuloSchedS
             return format_live_detail(snap, &snap->live[state->live_selected]);
         }
         break;
+    case LULO_SCHED_VIEW_TUNABLES:
+        if (state->tunable_selected >= 0 && state->tunable_selected < snap->tunable_count) {
+            return format_tunable_detail(snap, &snap->tunables[state->tunable_selected]);
+        }
+        break;
+    case LULO_SCHED_VIEW_PRESETS:
+        if (state->preset_selected >= 0 && state->preset_selected < snap->preset_count) {
+            return format_preset_detail(snap, &snap->presets[state->preset_selected]);
+        }
+        break;
     case LULO_SCHED_VIEW_PROFILES:
     default:
         if (state->profile_selected >= 0 && state->profile_selected < snap->profile_count) {
@@ -596,6 +825,8 @@ void lulo_sched_view_sync(LuloSchedState *state, const LuloSchedSnapshot *snap,
     sync_profile_selection(state, snap);
     sync_rule_selection(state, snap);
     sync_live_selection(state, snap);
+    sync_tunable_selection(state, snap);
+    sync_preset_selection(state, snap);
     sync_active_cursor(state, snap);
     cursor = active_cursor(state);
     scroll = active_list_scroll(state);
@@ -748,6 +979,28 @@ int lulo_sched_open_current(LuloSchedState *state, const LuloSchedSnapshot *snap
             state->selected_live_start_time = snap->live[current].start_time;
         }
         break;
+    case LULO_SCHED_VIEW_TUNABLES:
+        if (current == state->tunable_selected) {
+            state->tunable_selected = -1;
+            state->selected_tunable_path[0] = '\0';
+            state->focus_preview = 0;
+        } else if (current < snap->tunable_count) {
+            state->tunable_selected = current;
+            snprintf(state->selected_tunable_path, sizeof(state->selected_tunable_path), "%s",
+                     snap->tunables[current].path);
+        }
+        break;
+    case LULO_SCHED_VIEW_PRESETS:
+        if (current == state->preset_selected) {
+            state->preset_selected = -1;
+            state->selected_preset_id[0] = '\0';
+            state->focus_preview = 0;
+        } else if (current < snap->preset_count) {
+            state->preset_selected = current;
+            snprintf(state->selected_preset_id, sizeof(state->selected_preset_id), "%s",
+                     snap->presets[current].id);
+        }
+        break;
     case LULO_SCHED_VIEW_PROFILES:
     default:
         if (current == state->profile_selected) {
@@ -794,6 +1047,10 @@ const char *lulo_sched_view_name(LuloSchedView view)
         return "Rules";
     case LULO_SCHED_VIEW_LIVE:
         return "Live";
+    case LULO_SCHED_VIEW_TUNABLES:
+        return "Tunables";
+    case LULO_SCHED_VIEW_PRESETS:
+        return "Presets";
     case LULO_SCHED_VIEW_PROFILES:
     default:
         return "Profiles";

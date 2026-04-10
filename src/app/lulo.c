@@ -322,14 +322,15 @@ static const HelpEntry *help_entries(AppPage page, int *count)
     static const HelpEntry sched_lines[] = {
         {"Tab", "switch top-level pages"},
         {"Shift-Tab", "change scheduler subview"},
-        {"click Profiles/Rules/Live", "change scheduler view"},
+        {"click sub-tabs", "change scheduler view"},
         {"j/k or arrows", "move the active pane"},
         {"PgUp/PgDn, Home/End", "jump the active pane"},
         {"f", "toggle list / preview focus"},
         {"space", "open the selected entry"},
         {"i", "edit the selected file with $VISUAL/$EDITOR"},
-        {"n", "create a new profile or rule file"},
+        {"n", "create a new profile, rule, or tunables preset"},
         {"d", "delete the selected file-backed entry"},
+        {"a", "apply the selected scheduler preset"},
         {"R", "reload scheduler config"},
         {"? / Esc / click", "close help"},
     };
@@ -2157,6 +2158,7 @@ static int sched_backend_status_changed(const LuloSchedBackendStatus *a,
            a->loading_full != b->loading_full ||
            a->loading_active != b->loading_active ||
            a->reloading != b->reloading ||
+           a->applying_preset != b->applying_preset ||
            a->generation != b->generation ||
            strcmp(a->error, b->error) != 0;
 }
@@ -2545,43 +2547,66 @@ static void schedule_proc_selection_redraw(RenderFlags *render,
 }
 
 static void update_sched_render_flags(RenderFlags *render, const LuloSchedState *state,
-                                      int prev_view,
-                                      int prev_profile_cursor, int prev_profile_selected,
-                                      int prev_profile_list_scroll, int prev_profile_detail_scroll,
-                                      int prev_rule_cursor, int prev_rule_selected,
-                                      int prev_rule_list_scroll, int prev_rule_detail_scroll,
-                                      int prev_live_cursor, int prev_live_selected,
-                                      int prev_live_list_scroll, int prev_live_detail_scroll,
-                                      int prev_focus)
+                                      const LuloSchedState *prev)
 {
     if (!render || !state) return;
-    if ((int)state->view != prev_view) {
-        render->need_sched_refresh = 1;
+    if (!prev || state->view != prev->view) {
+        if (state->view == LULO_SCHED_VIEW_TUNABLES ||
+            state->view == LULO_SCHED_VIEW_PRESETS) {
+            render->need_sched_refresh_full = 1;
+        } else {
+            render->need_sched_refresh = 1;
+        }
         return;
     }
     switch (state->view) {
     case LULO_SCHED_VIEW_RULES:
-        if (state->rule_selected != prev_rule_selected) render->need_sched_refresh = 1;
-        else if (state->rule_cursor != prev_rule_cursor ||
-                 state->rule_list_scroll != prev_rule_list_scroll ||
-                 state->rule_detail_scroll != prev_rule_detail_scroll ||
-                 state->focus_preview != prev_focus) render->need_sched = 1;
+        if (state->rule_selected != prev->rule_selected) render->need_sched_refresh = 1;
+        else if (state->rule_cursor != prev->rule_cursor ||
+                 state->rule_list_scroll != prev->rule_list_scroll ||
+                 state->rule_detail_scroll != prev->rule_detail_scroll ||
+                 state->focus_preview != prev->focus_preview) render->need_sched = 1;
         break;
     case LULO_SCHED_VIEW_LIVE:
-        if (state->live_selected != prev_live_selected) render->need_sched_refresh = 1;
-        else if (state->live_cursor != prev_live_cursor ||
-                 state->live_list_scroll != prev_live_list_scroll ||
-                 state->live_detail_scroll != prev_live_detail_scroll ||
-                 state->focus_preview != prev_focus) render->need_sched = 1;
+        if (state->live_selected != prev->live_selected) render->need_sched_refresh = 1;
+        else if (state->live_cursor != prev->live_cursor ||
+                 state->live_list_scroll != prev->live_list_scroll ||
+                 state->live_detail_scroll != prev->live_detail_scroll ||
+                 state->focus_preview != prev->focus_preview) render->need_sched = 1;
+        break;
+    case LULO_SCHED_VIEW_TUNABLES:
+        if (state->tunable_selected != prev->tunable_selected) render->need_sched_refresh = 1;
+        else if (state->tunable_cursor != prev->tunable_cursor ||
+                 state->tunable_list_scroll != prev->tunable_list_scroll ||
+                 state->tunable_detail_scroll != prev->tunable_detail_scroll ||
+                 state->focus_preview != prev->focus_preview) render->need_sched = 1;
+        break;
+    case LULO_SCHED_VIEW_PRESETS:
+        if (state->preset_selected != prev->preset_selected) render->need_sched_refresh = 1;
+        else if (state->preset_cursor != prev->preset_cursor ||
+                 state->preset_list_scroll != prev->preset_list_scroll ||
+                 state->preset_detail_scroll != prev->preset_detail_scroll ||
+                 state->focus_preview != prev->focus_preview) render->need_sched = 1;
         break;
     case LULO_SCHED_VIEW_PROFILES:
     default:
-        if (state->profile_selected != prev_profile_selected) render->need_sched_refresh = 1;
-        else if (state->profile_cursor != prev_profile_cursor ||
-                 state->profile_list_scroll != prev_profile_list_scroll ||
-                 state->profile_detail_scroll != prev_profile_detail_scroll ||
-                 state->focus_preview != prev_focus) render->need_sched = 1;
+        if (state->profile_selected != prev->profile_selected) render->need_sched_refresh = 1;
+        else if (state->profile_cursor != prev->profile_cursor ||
+                 state->profile_list_scroll != prev->profile_list_scroll ||
+                 state->profile_detail_scroll != prev->profile_detail_scroll ||
+                 state->focus_preview != prev->focus_preview) render->need_sched = 1;
         break;
+    }
+}
+
+static void mark_sched_view_refresh(RenderFlags *render, const LuloSchedState *state)
+{
+    if (!render || !state) return;
+    if (state->view == LULO_SCHED_VIEW_TUNABLES ||
+        state->view == LULO_SCHED_VIEW_PRESETS) {
+        render->need_sched_refresh_full = 1;
+    } else {
+        render->need_sched_refresh = 1;
     }
 }
 
@@ -2754,20 +2779,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
 {
     int prev_selected = proc_state ? proc_state->selected : 0;
     int prev_scroll = proc_state ? proc_state->scroll : 0;
-    int prev_sched_view = sched_state ? (int)sched_state->view : 0;
-    int prev_sched_profile_cursor = sched_state ? sched_state->profile_cursor : -1;
-    int prev_sched_profile_selected = sched_state ? sched_state->profile_selected : -1;
-    int prev_sched_profile_list_scroll = sched_state ? sched_state->profile_list_scroll : 0;
-    int prev_sched_profile_detail_scroll = sched_state ? sched_state->profile_detail_scroll : 0;
-    int prev_sched_rule_cursor = sched_state ? sched_state->rule_cursor : -1;
-    int prev_sched_rule_selected = sched_state ? sched_state->rule_selected : -1;
-    int prev_sched_rule_list_scroll = sched_state ? sched_state->rule_list_scroll : 0;
-    int prev_sched_rule_detail_scroll = sched_state ? sched_state->rule_detail_scroll : 0;
-    int prev_sched_live_cursor = sched_state ? sched_state->live_cursor : -1;
-    int prev_sched_live_selected = sched_state ? sched_state->live_selected : -1;
-    int prev_sched_live_list_scroll = sched_state ? sched_state->live_list_scroll : 0;
-    int prev_sched_live_detail_scroll = sched_state ? sched_state->live_detail_scroll : 0;
-    int prev_sched_focus = sched_state ? sched_state->focus_preview : 0;
+    LuloSchedState prev_sched_state = {0};
     int prev_cgroups_view = cgroups_state ? (int)cgroups_state->view : 0;
     char prev_cgroups_browse_path[320] = {0};
     int prev_cgroups_tree_cursor = cgroups_state ? cgroups_state->tree_cursor : -1;
@@ -2821,6 +2833,8 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     int prev_tune_preset_list_scroll = tune_state ? tune_state->preset_list_scroll : 0;
     int prev_tune_preset_detail_scroll = tune_state ? tune_state->preset_detail_scroll : 0;
     int prev_tune_focus = tune_state ? tune_state->focus_preview : 0;
+
+    if (sched_state) prev_sched_state = *sched_state;
 
     if (tune_state) snprintf(prev_tune_browse_path, sizeof(prev_tune_browse_path), "%s", tune_state->browse_path);
     if (cgroups_state) snprintf(prev_cgroups_browse_path, sizeof(prev_cgroups_browse_path), "%s", cgroups_state->browse_path);
@@ -2915,15 +2929,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_sched_view_move(sched_state, sched_snap,
                                  sched_list_rows_visible(ui, sched_state),
                                  sched_preview_rows_visible(ui, sched_state), -delta);
-            update_sched_render_flags(render, sched_state,
-                                      prev_sched_view,
-                                      prev_sched_profile_cursor, prev_sched_profile_selected,
-                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
-                                      prev_sched_rule_cursor, prev_sched_rule_selected,
-                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
-                                      prev_sched_live_cursor, prev_sched_live_selected,
-                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
-                                      prev_sched_focus);
+            update_sched_render_flags(render, sched_state, &prev_sched_state);
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -3002,15 +3008,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_sched_view_move(sched_state, sched_snap,
                                  sched_list_rows_visible(ui, sched_state),
                                  sched_preview_rows_visible(ui, sched_state), +delta);
-            update_sched_render_flags(render, sched_state,
-                                      prev_sched_view,
-                                      prev_sched_profile_cursor, prev_sched_profile_selected,
-                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
-                                      prev_sched_rule_cursor, prev_sched_rule_selected,
-                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
-                                      prev_sched_live_cursor, prev_sched_live_selected,
-                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
-                                      prev_sched_focus);
+            update_sched_render_flags(render, sched_state, &prev_sched_state);
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             int delta = scroll_units > 0 ? scroll_units : 1;
 
@@ -3105,15 +3103,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_sched_view_page(sched_state, sched_snap,
                                  sched_list_rows_visible(ui, sched_state),
                                  sched_preview_rows_visible(ui, sched_state), -1);
-            update_sched_render_flags(render, sched_state,
-                                      prev_sched_view,
-                                      prev_sched_profile_cursor, prev_sched_profile_selected,
-                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
-                                      prev_sched_rule_cursor, prev_sched_rule_selected,
-                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
-                                      prev_sched_live_cursor, prev_sched_live_selected,
-                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
-                                      prev_sched_focus);
+            update_sched_render_flags(render, sched_state, &prev_sched_state);
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_view_page(cgroups_state, cgroups_snap,
                                    cgroups_list_rows_visible(ui, cgroups_state),
@@ -3178,15 +3168,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_sched_view_page(sched_state, sched_snap,
                                  sched_list_rows_visible(ui, sched_state),
                                  sched_preview_rows_visible(ui, sched_state), +1);
-            update_sched_render_flags(render, sched_state,
-                                      prev_sched_view,
-                                      prev_sched_profile_cursor, prev_sched_profile_selected,
-                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
-                                      prev_sched_rule_cursor, prev_sched_rule_selected,
-                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
-                                      prev_sched_live_cursor, prev_sched_live_selected,
-                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
-                                      prev_sched_focus);
+            update_sched_render_flags(render, sched_state, &prev_sched_state);
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_view_page(cgroups_state, cgroups_snap,
                                    cgroups_list_rows_visible(ui, cgroups_state),
@@ -3251,15 +3233,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_sched_view_home(sched_state, sched_snap,
                                  sched_list_rows_visible(ui, sched_state),
                                  sched_preview_rows_visible(ui, sched_state));
-            update_sched_render_flags(render, sched_state,
-                                      prev_sched_view,
-                                      prev_sched_profile_cursor, prev_sched_profile_selected,
-                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
-                                      prev_sched_rule_cursor, prev_sched_rule_selected,
-                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
-                                      prev_sched_live_cursor, prev_sched_live_selected,
-                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
-                                      prev_sched_focus);
+            update_sched_render_flags(render, sched_state, &prev_sched_state);
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_view_home(cgroups_state, cgroups_snap,
                                    cgroups_list_rows_visible(ui, cgroups_state),
@@ -3324,15 +3298,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             lulo_sched_view_end(sched_state, sched_snap,
                                 sched_list_rows_visible(ui, sched_state),
                                 sched_preview_rows_visible(ui, sched_state));
-            update_sched_render_flags(render, sched_state,
-                                      prev_sched_view,
-                                      prev_sched_profile_cursor, prev_sched_profile_selected,
-                                      prev_sched_profile_list_scroll, prev_sched_profile_detail_scroll,
-                                      prev_sched_rule_cursor, prev_sched_rule_selected,
-                                      prev_sched_rule_list_scroll, prev_sched_rule_detail_scroll,
-                                      prev_sched_live_cursor, prev_sched_live_selected,
-                                      prev_sched_live_list_scroll, prev_sched_live_detail_scroll,
-                                      prev_sched_focus);
+            update_sched_render_flags(render, sched_state, &prev_sched_state);
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_view_end(cgroups_state, cgroups_snap,
                                   cgroups_list_rows_visible(ui, cgroups_state),
@@ -3387,7 +3353,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_TAB_NEXT:
         app->active_page = (AppPage)((app->active_page + 1) % APP_PAGE_COUNT);
-        if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
+        if (app->active_page == APP_PAGE_SCHED) mark_sched_view_refresh(render, sched_state);
         else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
         else if (app->active_page == APP_PAGE_UDEV) render->need_udev_refresh_full = 1;
         else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
@@ -3397,7 +3363,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         break;
     case INPUT_TAB_PREV:
         app->active_page = (AppPage)((app->active_page + APP_PAGE_COUNT - 1) % APP_PAGE_COUNT);
-        if (app->active_page == APP_PAGE_SCHED) render->need_sched_refresh = 1;
+        if (app->active_page == APP_PAGE_SCHED) mark_sched_view_refresh(render, sched_state);
         else if (app->active_page == APP_PAGE_CGROUPS) render->need_cgroups_refresh_full = 1;
         else if (app->active_page == APP_PAGE_UDEV) render->need_udev_refresh_full = 1;
         else if (app->active_page == APP_PAGE_SYSTEMD) render->need_systemd_refresh = 1;
@@ -3408,7 +3374,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     case INPUT_VIEW_NEXT:
         if (app->active_page == APP_PAGE_SCHED) {
             lulo_sched_next_view(sched_state);
-            render->need_sched_refresh = 1;
+            mark_sched_view_refresh(render, sched_state);
             render->need_render = 1;
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_next_view(cgroups_state);
@@ -3431,7 +3397,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
     case INPUT_VIEW_PREV:
         if (app->active_page == APP_PAGE_SCHED) {
             lulo_sched_prev_view(sched_state);
-            render->need_sched_refresh = 1;
+            mark_sched_view_refresh(render, sched_state);
             render->need_render = 1;
         } else if (app->active_page == APP_PAGE_CGROUPS) {
             lulo_cgroups_prev_view(cgroups_state);
@@ -3544,13 +3510,24 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 *exit_requested = 1;
                 break;
             }
+            if (sched_state->view == LULO_SCHED_VIEW_PRESETS) {
+                const char *base = path_basename_local(new_path);
+                size_t n = strcspn(base, ".");
+
+                if (n >= sizeof(sched_state->selected_preset_id)) n = sizeof(sched_state->selected_preset_id) - 1;
+                memcpy(sched_state->selected_preset_id, base, n);
+                sched_state->selected_preset_id[n] = '\0';
+                sched_state->preset_selected = -1;
+            }
             if (rc > 0) {
                 sched_status_set(app, "saved %s", path_basename_local(new_path));
-                render->need_sched_reload = 1;
+                if (sched_state->view == LULO_SCHED_VIEW_PRESETS) render->need_sched_refresh_full = 1;
+                else render->need_sched_reload = 1;
                 render->need_sched = 1;
             } else if (rc == 0) {
                 sched_status_set(app, "created %s", path_basename_local(new_path));
-                render->need_sched_reload = 1;
+                if (sched_state->view == LULO_SCHED_VIEW_PRESETS) render->need_sched_refresh_full = 1;
+                else render->need_sched_reload = 1;
                 render->need_sched = 1;
             } else {
                 sched_status_set(app, "%s", err[0] ? err : "edit failed");
@@ -3615,8 +3592,10 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             if (!delete_path) {
                 if (sched_state->view == LULO_SCHED_VIEW_RULES && active_sched_is_builtin_rule(sched_snap, sched_state)) {
                     sched_status_set(app, "built-in rules live in scheduler.conf");
+                } else if (sched_state->view == LULO_SCHED_VIEW_PRESETS) {
+                    sched_status_set(app, "delete from Presets");
                 } else {
-                    sched_status_set(app, "delete from Profiles or file-backed Rules");
+                    sched_status_set(app, "delete from Profiles, Presets, or file-backed Rules");
                 }
                 render->need_load = 1;
                 render->need_render = 1;
@@ -3626,7 +3605,13 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 sched_status_set(app, "%s", err[0] ? err : "delete failed");
             } else {
                 sched_status_set(app, "deleted %s", path_basename_local(delete_path));
-                render->need_sched_reload = 1;
+                if (sched_state->view == LULO_SCHED_VIEW_PRESETS) {
+                    sched_state->selected_preset_id[0] = '\0';
+                    sched_state->preset_selected = -1;
+                    render->need_sched_refresh_full = 1;
+                } else {
+                    render->need_sched_reload = 1;
+                }
                 render->need_sched = 1;
             }
             render->need_load = 1;
@@ -3804,7 +3789,13 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             int rc;
 
             if (!edit_path) {
-                sched_status_set(app, "edit from Profiles or Rules");
+                if (sched_state->view == LULO_SCHED_VIEW_TUNABLES) {
+                    sched_status_set(app, "select a scheduler tunable to edit");
+                } else if (sched_state->view == LULO_SCHED_VIEW_PRESETS) {
+                    sched_status_set(app, "edit from Presets");
+                } else {
+                    sched_status_set(app, "edit from Profiles, Rules, Tunables, or Presets");
+                }
                 render->need_load = 1;
                 render->need_render = 1;
                 break;
@@ -3819,7 +3810,12 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
             }
             if (rc > 0) {
                 sched_status_set(app, "saved %s", path_basename_local(edit_path));
-                render->need_sched_reload = 1;
+                if (sched_state->view == LULO_SCHED_VIEW_PROFILES ||
+                    sched_state->view == LULO_SCHED_VIEW_RULES) {
+                    render->need_sched_reload = 1;
+                } else {
+                    render->need_sched_refresh_full = 1;
+                }
                 render->need_sched = 1;
             } else if (rc == 0) {
                 sched_status_set(app, "edit cancelled");
@@ -3864,7 +3860,27 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         }
         break;
     case INPUT_APPLY_SELECTED:
-        if (app->active_page == APP_PAGE_TUNE) {
+        if (app->active_page == APP_PAGE_SCHED) {
+            if (sched_state->view == LULO_SCHED_VIEW_PRESETS) {
+                if (sched_state->preset_selected >= 0 && sched_state->selected_preset_id[0]) {
+                    render->need_sched_apply_preset = 1;
+                    render->need_sched = 1;
+                    render->need_render = 1;
+                    render->need_load = 1;
+                    sched_status_set(app, "applying %s", sched_state->selected_preset_id);
+                } else {
+                    sched_status_set(app, "select a scheduler preset first");
+                    render->need_sched = 1;
+                    render->need_render = 1;
+                    render->need_load = 1;
+                }
+            } else {
+                sched_status_set(app, "apply uses the Presets view");
+                render->need_sched = 1;
+                render->need_render = 1;
+                render->need_load = 1;
+            }
+        } else if (app->active_page == APP_PAGE_TUNE) {
             if (tune_state->view == LULO_TUNE_VIEW_EXPLORE) {
                 if (active_tune_row_is_staged(tune_snap, tune_state)) {
                     render->need_tune_apply_selected = 1;
@@ -4730,10 +4746,30 @@ int main(int argc, char *argv[])
                     lulo_sched_backend_status(&sched_backend, &sched_backend_status);
                     sched_due_ms = mono_ms_now() + effective_sched_refresh_ms(&sched_snap);
                     render.need_sched = 1;
+                } else if (render.need_sched_apply_preset && app.active_page == APP_PAGE_SCHED) {
+                    if (sched_snapshot_valid) lulo_sched_snapshot_mark_loading(&sched_snap, &sched_state);
+                    lulo_sched_backend_request_apply_preset(&sched_backend, &sched_state);
+                    lulo_sched_backend_status(&sched_backend, &sched_backend_status);
+                    sched_due_ms = mono_ms_now() + effective_sched_refresh_ms(&sched_snap);
+                    render.need_sched = 1;
+                } else if (render.need_sched_refresh_full && app.active_page == APP_PAGE_SCHED) {
+                    if (sched_snapshot_valid) lulo_sched_snapshot_mark_loading(&sched_snap, &sched_state);
+                    lulo_sched_backend_request_full(&sched_backend, &sched_state);
+                    lulo_sched_backend_status(&sched_backend, &sched_backend_status);
+                    sched_due_ms = mono_ms_now() + effective_sched_refresh_ms(&sched_snap);
+                    render.need_sched = 1;
                 } else if (render.need_sched_refresh && app.active_page == APP_PAGE_SCHED) {
-                    if (lulo_sched_snapshot_refresh_active(&sched_snap, &sched_state) < 0) {
-                        exit_requested = 1;
-                        break;
+                    if ((sched_state.view == LULO_SCHED_VIEW_TUNABLES && sched_snap.tunable_count == 0) ||
+                        (sched_state.view == LULO_SCHED_VIEW_PRESETS && sched_snap.preset_count == 0)) {
+                        if (sched_snapshot_valid) lulo_sched_snapshot_mark_loading(&sched_snap, &sched_state);
+                        lulo_sched_backend_request_full(&sched_backend, &sched_state);
+                        lulo_sched_backend_status(&sched_backend, &sched_backend_status);
+                        sched_due_ms = mono_ms_now() + effective_sched_refresh_ms(&sched_snap);
+                    } else {
+                        if (lulo_sched_snapshot_refresh_active(&sched_snap, &sched_state) < 0) {
+                            exit_requested = 1;
+                            break;
+                        }
                     }
                     render.need_sched = 1;
                 }

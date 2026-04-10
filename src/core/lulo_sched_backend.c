@@ -46,6 +46,7 @@ static void *lulo_sched_backend_main(void *opaque)
         int do_full = 0;
         int do_active = 0;
         int do_reload = 0;
+        int do_apply_preset = 0;
         uint32_t type = LULOD_REQ_SCHED_FULL;
         LuloSchedState state = {0};
         LuloSchedSnapshot work = {0};
@@ -54,7 +55,8 @@ static void *lulo_sched_backend_main(void *opaque)
 
         pthread_mutex_lock(&backend->lock);
         while (backend->running &&
-               !backend->refresh_full && !backend->refresh_active && !backend->reload_config) {
+               !backend->refresh_full && !backend->refresh_active &&
+               !backend->reload_config && !backend->apply_preset) {
             pthread_cond_wait(&backend->cond, &backend->lock);
         }
         if (!backend->running) {
@@ -63,19 +65,23 @@ static void *lulo_sched_backend_main(void *opaque)
         }
 
         do_reload = backend->reload_config;
-        do_full = !do_reload && (backend->refresh_full || !backend->have_snapshot);
-        do_active = !do_reload && !do_full && backend->refresh_active;
+        do_apply_preset = !do_reload && backend->apply_preset;
+        do_full = !do_reload && !do_apply_preset && (backend->refresh_full || !backend->have_snapshot);
+        do_active = !do_reload && !do_apply_preset && !do_full && backend->refresh_active;
         backend->refresh_full = 0;
         backend->refresh_active = 0;
         backend->reload_config = 0;
+        backend->apply_preset = 0;
         backend->busy = 1;
         backend->loading_full = do_full;
         backend->loading_active = do_active;
         backend->reloading = do_reload;
+        backend->applying_preset = do_apply_preset;
         state = backend->requested_state;
         pthread_mutex_unlock(&backend->lock);
 
         if (do_reload) type = LULOD_REQ_SCHED_RELOAD;
+        else if (do_apply_preset) type = LULOD_REQ_SCHED_APPLY_PRESET;
         else if (do_active) type = LULOD_REQ_SCHED_ACTIVE;
         else type = LULOD_REQ_SCHED_FULL;
         rc = request_via_lulod(type, &state, &work, err, sizeof(err));
@@ -85,6 +91,7 @@ static void *lulo_sched_backend_main(void *opaque)
         backend->loading_full = 0;
         backend->loading_active = 0;
         backend->reloading = 0;
+        backend->applying_preset = 0;
         if (rc < 0) {
             snprintf(backend->error, sizeof(backend->error), "%s",
                      err[0] ? err : "lulod request failed");
@@ -139,7 +146,7 @@ void lulo_sched_backend_stop(LuloSchedBackend *backend)
 }
 
 static void lulo_sched_backend_request(LuloSchedBackend *backend, const LuloSchedState *state,
-                                       int full, int active, int reload)
+                                       int full, int active, int reload, int apply_preset)
 {
     if (!backend || !backend->started) return;
 
@@ -147,6 +154,11 @@ static void lulo_sched_backend_request(LuloSchedBackend *backend, const LuloSche
     if (state) backend->requested_state = *state;
     if (reload) {
         backend->reload_config = 1;
+        backend->refresh_full = 0;
+        backend->refresh_active = 0;
+        backend->apply_preset = 0;
+    } else if (apply_preset) {
+        backend->apply_preset = 1;
         backend->refresh_full = 0;
         backend->refresh_active = 0;
     } else if (full) {
@@ -161,17 +173,22 @@ static void lulo_sched_backend_request(LuloSchedBackend *backend, const LuloSche
 
 void lulo_sched_backend_request_full(LuloSchedBackend *backend, const LuloSchedState *state)
 {
-    lulo_sched_backend_request(backend, state, 1, 0, 0);
+    lulo_sched_backend_request(backend, state, 1, 0, 0, 0);
 }
 
 void lulo_sched_backend_request_active(LuloSchedBackend *backend, const LuloSchedState *state)
 {
-    lulo_sched_backend_request(backend, state, 0, 1, 0);
+    lulo_sched_backend_request(backend, state, 0, 1, 0, 0);
 }
 
 void lulo_sched_backend_request_reload(LuloSchedBackend *backend, const LuloSchedState *state)
 {
-    lulo_sched_backend_request(backend, state, 0, 0, 1);
+    lulo_sched_backend_request(backend, state, 0, 0, 1, 0);
+}
+
+void lulo_sched_backend_request_apply_preset(LuloSchedBackend *backend, const LuloSchedState *state)
+{
+    lulo_sched_backend_request(backend, state, 0, 0, 0, 1);
 }
 
 int lulo_sched_backend_consume(LuloSchedBackend *backend, LuloSchedSnapshot *dst,
@@ -192,6 +209,7 @@ int lulo_sched_backend_consume(LuloSchedBackend *backend, LuloSchedSnapshot *dst
         status->loading_full = backend->loading_full;
         status->loading_active = backend->loading_active;
         status->reloading = backend->reloading;
+        status->applying_preset = backend->applying_preset;
         status->generation = backend->generation;
         snprintf(status->error, sizeof(status->error), "%s", backend->error);
     }
@@ -222,6 +240,7 @@ void lulo_sched_backend_status(LuloSchedBackend *backend, LuloSchedBackendStatus
     status->loading_full = backend->loading_full;
     status->loading_active = backend->loading_active;
     status->reloading = backend->reloading;
+    status->applying_preset = backend->applying_preset;
     status->generation = backend->generation;
     snprintf(status->error, sizeof(status->error), "%s", backend->error);
     pthread_mutex_unlock(&backend->lock);

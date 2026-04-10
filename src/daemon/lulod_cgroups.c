@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include "lulod_cgroups.h"
+#include "lulo_proc_meta.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -597,36 +598,37 @@ static int append_file_preview_lines(char ***lines, int *count, const char *path
     return 0;
 }
 
-static int append_cgroup_members(char ***lines, int *count, const char *path)
+static int append_named_task_list(char ***lines, int *count, const char *cg_path,
+                                  const char *filename, const char *label,
+                                  const char *id_label)
 {
     FILE *fp;
-    char procs_path[PATH_MAX];
+    char list_path[PATH_MAX];
     char buf[128];
     int shown = 0;
 
-    if (path_join(procs_path, sizeof(procs_path), path, "cgroup.procs") < 0) return 0;
-    fp = fopen(procs_path, "r");
+    if (path_join(list_path, sizeof(list_path), cg_path, filename) < 0) return 0;
+    fp = fopen(list_path, "r");
     if (!fp) return 0;
     if (append_snapshot_line(lines, count, "") < 0) {
         fclose(fp);
         return -1;
     }
-    if (append_snapshot_line(lines, count, "members:") < 0) {
+    if (append_linef(lines, count, "%s:", label) < 0) {
         fclose(fp);
         return -1;
     }
     while (fgets(buf, sizeof(buf), fp) && shown < 12) {
         char line[192];
-        char comm_path[PATH_MAX];
         char comm[96] = "";
-        pid_t pid;
+        unsigned long long start_time = 0;
+        pid_t id;
 
         trim_right(buf);
-        pid = (pid_t)strtol(buf, NULL, 10);
-        snprintf(comm_path, sizeof(comm_path), "/proc/%ld/comm", (long)pid);
-        if (read_text_file_line(comm_path, comm, sizeof(comm)) < 0) comm[0] = '\0';
-        if (comm[0]) snprintf(line, sizeof(line), "%ld  %.160s", (long)pid, comm);
-        else snprintf(line, sizeof(line), "%ld", (long)pid);
+        id = (pid_t)strtol(buf, NULL, 10);
+        if (lulo_proc_meta_read_basic(id, comm, sizeof(comm), &start_time) < 0) comm[0] = '\0';
+        if (comm[0]) snprintf(line, sizeof(line), "%s %ld  %.160s", id_label, (long)id, comm);
+        else snprintf(line, sizeof(line), "%s %ld", id_label, (long)id);
         if (append_snapshot_line(lines, count, line) < 0) {
             fclose(fp);
             return -1;
@@ -634,6 +636,17 @@ static int append_cgroup_members(char ***lines, int *count, const char *path)
         shown++;
     }
     fclose(fp);
+    return 0;
+}
+
+static int append_cgroup_members(char ***lines, int *count, const char *path)
+{
+    if (append_named_task_list(lines, count, path, "cgroup.procs", "processes", "pid") < 0) {
+        return -1;
+    }
+    if (append_named_task_list(lines, count, path, "cgroup.threads", "threads", "tid") < 0) {
+        return -1;
+    }
     return 0;
 }
 

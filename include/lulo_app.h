@@ -246,7 +246,9 @@ typedef struct {
     int need_proc_refresh;
     int need_disk_refresh;
     int need_sched_refresh;
+    int need_sched_refresh_full;
     int need_sched_reload;
+    int need_sched_apply_preset;
     int need_cgroups_refresh;
     int need_cgroups_refresh_full;
     int need_udev_refresh;

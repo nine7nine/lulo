@@ -35,6 +35,10 @@
 #define IOPRIO_PRIO_DATA(mask) ((mask) & ((1 << IOPRIO_CLASS_SHIFT) - 1))
 #endif
 
+#ifndef LULO_SYSCONFDIR
+#define LULO_SYSCONFDIR "/etc"
+#endif
+
 static void trim_right(char *text)
 {
     size_t len;
@@ -1256,7 +1260,7 @@ int lulod_system_sched_default_config_root(char *buf, size_t len)
         snprintf(buf, len, "%s", override);
         return 0;
     }
-    snprintf(buf, len, "/etc/lulo/scheduler");
+    snprintf(buf, len, "%s/lulo/scheduler", LULO_SYSCONFDIR);
     return 0;
 }
 

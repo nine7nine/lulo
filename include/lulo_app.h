@@ -79,7 +79,9 @@ typedef struct {
     int cpu_w;
     int mem_w;
     int time_w;
+    int io_w;
     int cmd_w;
+    int cmd_scroll;
     int body_x;
     int body_y;
     int body_rows;
@@ -172,6 +174,8 @@ typedef enum {
     INPUT_TOGGLE_FOCUS,
     INPUT_SCROLL_UP,
     INPUT_SCROLL_DOWN,
+    INPUT_SCROLL_LEFT,
+    INPUT_SCROLL_RIGHT,
     INPUT_PAGE_UP,
     INPUT_PAGE_DOWN,
     INPUT_HOME,

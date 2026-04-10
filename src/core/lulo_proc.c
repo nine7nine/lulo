@@ -1,11 +1,14 @@
 #include "lulo_proc.h"
 
+#include <errno.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <linux/ioprio.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -26,6 +29,8 @@ typedef struct {
     unsigned long long time_cs;
     int cpu_tenths;
     int mem_tenths;
+    int io_class;
+    int io_priority;
     char command[LULO_PROC_LABEL_MAX];
     int parent_index;
     int first_child;
@@ -113,6 +118,30 @@ static int proc_prio_value(const ProcNode *node)
     return node->rt_priority > 0 ? node->rt_priority : node->priority;
 }
 
+static int clamp_int_local(int value, int lo, int hi)
+{
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
+static int proc_io_score(const ProcNode *node)
+{
+    int prio = clamp_int_local(node->io_priority, 0, 7);
+
+    switch (node->io_class) {
+    case 1:
+        return 300 + (7 - prio);
+    case 2:
+        return 200 + (7 - prio);
+    case 3:
+        return 0;
+    case 0:
+    default:
+        return 100;
+    }
+}
+
 static int proc_field_cmp(const ProcNode *pa, const ProcNode *pb, LuloProcSortKey key)
 {
     switch (key) {
@@ -143,6 +172,15 @@ static int proc_field_cmp(const ProcNode *pa, const ProcNode *pb, LuloProcSortKe
     case LULO_PROC_SORT_TIME:
         if (pa->time_cs != pb->time_cs) return pa->time_cs < pb->time_cs ? -1 : 1;
         return 0;
+    case LULO_PROC_SORT_IO: {
+        int a = proc_io_score(pa);
+        int b = proc_io_score(pb);
+
+        if (a != b) return a < b ? -1 : 1;
+        if (pa->io_class != pb->io_class) return pa->io_class < pb->io_class ? -1 : 1;
+        if (pa->io_priority != pb->io_priority) return pa->io_priority < pb->io_priority ? -1 : 1;
+        return 0;
+    }
     case LULO_PROC_SORT_COMMAND:
         return strcmp(pa->command, pb->command);
     case LULO_PROC_SORT_COUNT:
@@ -218,6 +256,19 @@ static int read_cmdline_joined(const char *path, char *buf, size_t len)
     }
     while (nread > 0 && buf[nread - 1] == ' ') buf[--nread] = '\0';
     return nread > 0 ? 0 : -1;
+}
+
+static void query_process_io(int pid, int *io_class, int *io_priority)
+{
+    int value;
+
+    if (io_class) *io_class = 0;
+    if (io_priority) *io_priority = 0;
+    errno = 0;
+    value = (int)syscall(SYS_ioprio_get, IOPRIO_WHO_PROCESS, (int)pid);
+    if (value < 0) return;
+    if (io_class) *io_class = IOPRIO_PRIO_CLASS((unsigned)value);
+    if (io_priority) *io_priority = IOPRIO_PRIO_DATA((unsigned)value);
 }
 
 static void uid_to_name(uid_t uid, char *buf, size_t len)
@@ -459,6 +510,8 @@ static int build_proc_node(ProcNode *node,
                            int rt_priority,
                            int priority,
                            int nice_value,
+                           int io_class,
+                           int io_priority,
                            long rss_pages,
                            unsigned long long total_ticks,
                            unsigned long long mem_total,
@@ -498,6 +551,8 @@ static int build_proc_node(ProcNode *node,
     node->time_cs = hz > 0 ? total_ticks * 100ULL / (unsigned long long)hz : 0;
     node->cpu_tenths = cpu_pct < 0.0 ? 0 : (int)(cpu_pct + 0.5);
     node->mem_tenths = mem_pct < 0.0 ? 0 : (int)(mem_pct + 0.5);
+    node->io_class = io_class;
+    node->io_priority = io_priority;
     snprintf(node->user, sizeof(node->user), "%s", user);
     snprintf(node->command, sizeof(node->command), "%s", command[0] ? command : comm);
     node->parent_index = -1;
@@ -530,6 +585,7 @@ static int gather_threads_for_process(ProcNodeList *nodes,
         char stat_path[160], comm[128], display[LULO_PROC_LABEL_MAX];
         char state_ch;
         int tid, ppid, policy = 0, rt_priority = 0, priority = 0, nice_value = 0;
+        int io_class = 0, io_priority = 0;
         long rss_pages = 0;
         unsigned long long total_ticks = 0;
         ProcNode node;
@@ -542,8 +598,10 @@ static int gather_threads_for_process(ProcNodeList *nodes,
         if (read_proc_stat(stat_path, comm, sizeof(comm), &state_ch, &ppid, &thread_count, &policy, &rt_priority,
                            &priority, &nice_value, &total_ticks, &rss_pages) < 0) continue;
         snprintf(display, sizeof(display), "{%s}", comm);
+        query_process_io(tid, &io_class, &io_priority);
         if (build_proc_node(&node, state, tid, pid, pid, 1, user, display, comm, state_ch,
-                            policy, rt_priority, priority, nice_value, 0, total_ticks, 0, 1, hz,
+                            policy, rt_priority, priority, nice_value, io_class, io_priority,
+                            0, total_ticks, 0, 1, hz,
                             cpu_total_delta, logical_cpus, cpu_mode) < 0) {
             closedir(dir);
             return -1;
@@ -579,6 +637,7 @@ static int gather_processes(ProcNodeList *nodes,
         struct stat st;
         char state_ch;
         int pid, ppid, num_threads = 0, policy = 0, rt_priority = 0, priority = 0, nice_value = 0;
+        int io_class = 0, io_priority = 0;
         long rss_pages = 0;
         unsigned long long total_ticks = 0;
         ProcNode node;
@@ -598,9 +657,11 @@ static int gather_processes(ProcNodeList *nodes,
         } else {
             snprintf(display, sizeof(display), "[%s]", comm);
         }
+        query_process_io(pid, &io_class, &io_priority);
 
         if (build_proc_node(&node, state, pid, ppid, pid, 0, user, display, comm, state_ch,
                             policy, rt_priority, priority, nice_value,
+                            io_class, io_priority,
                             rss_pages, total_ticks, mem_total, page_size, hz,
                             cpu_total_delta, logical_cpus, cpu_mode) < 0) {
             closedir(dir);
@@ -768,6 +829,8 @@ static int flatten_node_rows(const ProcNodeList *nodes, const LuloProcState *sta
     row.cpu_tenths = node.cpu_tenths;
     row.mem_tenths = node.mem_tenths;
     row.time_cs = node.time_cs;
+    row.io_class = node.io_class;
+    row.io_priority = node.io_priority;
     row.label_prefix_len = (int)strlen(prefix);
     row.label_prefix_cols = prefix_cols;
     snprintf(row.user, sizeof(row.user), "%s", node.user);
@@ -970,6 +1033,7 @@ void lulo_proc_view_sync(LuloProcState *state, const LuloProcSnapshot *snap, int
     if (state->selected < state->scroll) state->scroll = state->selected;
     if (state->selected >= state->scroll + visible_rows) state->scroll = state->selected - visible_rows + 1;
     state->scroll = clamp_int(state->scroll, 0, max_scroll);
+    if (state->x_scroll < 0) state->x_scroll = 0;
 }
 
 void lulo_proc_view_move(LuloProcState *state, const LuloProcSnapshot *snap, int visible_rows, int delta)
@@ -1008,7 +1072,8 @@ void lulo_proc_sort_toggle(LuloProcState *state, LuloProcSortKey key)
         state->sort_key = key;
         state->sort_desc = (key == LULO_PROC_SORT_CPU ||
                             key == LULO_PROC_SORT_MEM ||
-                            key == LULO_PROC_SORT_TIME);
+                            key == LULO_PROC_SORT_TIME ||
+                            key == LULO_PROC_SORT_IO);
     }
 }
 

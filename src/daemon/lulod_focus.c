@@ -15,6 +15,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifndef LULO_HELPERDIR
+#define LULO_HELPERDIR ""
+#endif
+
 static const char *focus_provider_from_env(void)
 {
     const char *override = getenv("LULOD_FOCUS_PROVIDER");
@@ -66,6 +70,47 @@ static int sibling_binary_path(const char *name, char *buf, size_t len)
     return 0;
 }
 
+static int installed_prefix_helper_path(const char *name, char *buf, size_t len)
+{
+    char exe[PATH_MAX];
+    char dirbuf[PATH_MAX];
+    char *dir;
+    ssize_t n;
+
+    if (!name || !buf || len == 0) return -1;
+    n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n < 0) return -1;
+    exe[n] = '\0';
+    snprintf(dirbuf, sizeof(dirbuf), "%s", exe);
+    dir = strrchr(dirbuf, '/');
+    if (!dir) return -1;
+    *dir = '\0';
+    dir = strrchr(dirbuf, '/');
+    if (!dir) return -1;
+    if (strcmp(dir + 1, "bin") != 0) return -1;
+    *dir = '\0';
+    if (dirbuf[0] == '\0') {
+        if (snprintf(buf, len, "/libexec/lulo/%s", name) >= (int)len) return -1;
+    } else if (snprintf(buf, len, "%s/libexec/lulo/%s", dirbuf, name) >= (int)len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int resolve_helper_binary_path(const char *name, char *buf, size_t len)
+{
+    if (sibling_binary_path(name, buf, len) == 0 && access(buf, X_OK) == 0) return 0;
+    if (installed_prefix_helper_path(name, buf, len) == 0 && access(buf, X_OK) == 0) return 0;
+    if (LULO_HELPERDIR[0] != '\0') {
+        if (snprintf(buf, len, "%s/%s", LULO_HELPERDIR, name) >= (int)len) return -1;
+        if (access(buf, X_OK) == 0) return 0;
+    }
+    if (snprintf(buf, len, "%s/%s", "/usr/libexec/lulo", name) < (int)len &&
+        access(buf, X_OK) == 0) return 0;
+    errno = ENOENT;
+    return -1;
+}
+
 static void close_monitor_fd(LulodFocusMonitor *monitor)
 {
     if (monitor->fd >= 0) {
@@ -103,7 +148,7 @@ static int start_focus_helper(LulodFocusMonitor *monitor, long long now_ms,
 
     if (!monitor || !monitor->enabled || !monitor->provider[0]) return -1;
     if (strcmp(monitor->provider, "kde") != 0) return -1;
-    if (sibling_binary_path("lulod-focus-kde", helper_path, sizeof(helper_path)) < 0) {
+    if (resolve_helper_binary_path("lulod-focus-kde", helper_path, sizeof(helper_path)) < 0) {
         if (err && errlen > 0) snprintf(err, errlen, "failed to resolve lulod-focus-kde");
         monitor->enabled = 0;
         return -1;

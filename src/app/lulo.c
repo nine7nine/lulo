@@ -298,7 +298,8 @@ static const HelpEntry *help_entries(AppPage page, int *count)
 {
     static const HelpEntry cpu_lines[] = {
         {"Tab", "switch top-level pages"},
-        {"j/k or arrows", "move the process selection"},
+        {"j/k or up/down", "move the process selection"},
+        {"left/right", "scroll long commands horizontally"},
         {"PgUp/PgDn, Home/End", "jump the process list"},
         {"space", "toggle the selected branch"},
         {"c / e", "collapse or expand all branches"},
@@ -701,7 +702,10 @@ static int scroll_units_for_input(AppState *app, InputAction action, int wheel, 
     long long now;
 
     if (!app) return 1;
-    if (action != INPUT_SCROLL_UP && action != INPUT_SCROLL_DOWN) {
+    if (action != INPUT_SCROLL_UP &&
+        action != INPUT_SCROLL_DOWN &&
+        action != INPUT_SCROLL_LEFT &&
+        action != INPUT_SCROLL_RIGHT) {
         reset_scroll_repeat(app);
         return 1;
     }
@@ -895,6 +899,24 @@ static Rgb proc_nice_color(const Theme *theme, int nice_value)
     return theme->white;
 }
 
+static Rgb proc_io_color(const Theme *theme, int io_class, int io_priority)
+{
+    switch (io_class) {
+    case 1:
+        return io_priority <= 1 ? theme->red : theme->orange;
+    case 2:
+        if (io_priority <= 1) return theme->green;
+        if (io_priority <= 3) return theme->cyan;
+        if (io_priority <= 5) return theme->blue;
+        return theme->dim;
+    case 3:
+        return theme->dim;
+    case 0:
+    default:
+        return theme->white;
+    }
+}
+
 static Rgb proc_time_color(const Theme *theme, unsigned long long time_cs)
 {
     if (time_cs >= 6000) return theme->orange;
@@ -908,6 +930,70 @@ static Rgb proc_command_color(const Theme *theme, const LuloProcRow *row)
     if (row->is_kernel) return theme->cyan;
     if (row->is_thread) return theme->green;
     return proc_state_color(theme, row->state);
+}
+
+static void build_proc_table_layout(Ui *ui);
+
+static int proc_command_visible_width(const ProcTableLayout *pt, const LuloProcRow *row)
+{
+    if (!pt || !row) return 1;
+    if (row->label_prefix_len > 0 &&
+        row->label_prefix_len < LULO_PROC_LABEL_MAX &&
+        row->label_prefix_cols > 0 &&
+        row->label_prefix_cols < pt->cmd_w) {
+        int width = pt->cmd_w - row->label_prefix_cols;
+        return width > 0 ? width : 1;
+    }
+    return pt->cmd_w > 0 ? pt->cmd_w : 1;
+}
+
+static int proc_command_hscroll_max(const LuloProcSnapshot *snap, const ProcTableLayout *pt)
+{
+    int max_scroll = 0;
+
+    if (!snap || !pt) return 0;
+    for (int i = 0; i < snap->count; i++) {
+        const LuloProcRow *row = &snap->rows[i];
+        const char *command = row->label;
+        int visible = proc_command_visible_width(pt, row);
+        int len;
+
+        if (row->label_prefix_len > 0 &&
+            row->label_prefix_len < LULO_PROC_LABEL_MAX &&
+            row->label_prefix_cols > 0 &&
+            row->label_prefix_cols < pt->cmd_w) {
+            command = row->label + row->label_prefix_len;
+        }
+        len = (int)strlen(command);
+        if (len > visible && len - visible > max_scroll) max_scroll = len - visible;
+    }
+    return max_scroll;
+}
+
+static int proc_command_scroll(const LuloProcSnapshot *snap, const ProcTableLayout *pt, const LuloProcState *state)
+{
+    int scroll = state ? state->x_scroll : 0;
+    int max_scroll = proc_command_hscroll_max(snap, pt);
+
+    if (scroll < 0) return 0;
+    if (scroll > max_scroll) return max_scroll;
+    return scroll;
+}
+
+static int scroll_proc_horizontally(Ui *ui, const LuloProcSnapshot *snap, LuloProcState *state, int delta)
+{
+    int max_scroll;
+    int next;
+
+    if (!ui || !snap || !state || delta == 0) return 0;
+    build_proc_table_layout(ui);
+    max_scroll = proc_command_hscroll_max(snap, &ui->proc_table);
+    next = state->x_scroll + delta;
+    if (next < 0) next = 0;
+    if (next > max_scroll) next = max_scroll;
+    if (next == state->x_scroll) return 0;
+    state->x_scroll = next;
+    return 1;
 }
 
 static struct ncplane *create_plane(struct ncplane *parent, int row, int col, int height, int width, const char *name)
@@ -1403,6 +1489,8 @@ static void build_proc_table_layout(Ui *ui)
 {
     ProcTableLayout *pt = &ui->proc_table;
     int inner_w;
+    int fixed_w;
+    int gaps;
     int cmd_w;
 
     memset(pt, 0, sizeof(*pt));
@@ -1415,30 +1503,48 @@ static void build_proc_table_layout(Ui *ui)
     pt->prio_w = 4;
     pt->nice_w = 3;
     pt->cpu_w = 5;
+    pt->io_w = 4;
     pt->show_user = inner_w >= 58;
     pt->show_mem = inner_w >= 72;
     pt->show_time = inner_w >= 86;
     pt->user_w = pt->show_user ? (inner_w >= 68 ? 8 : 6) : 0;
     pt->mem_w = pt->show_mem ? 5 : 0;
     pt->time_w = pt->show_time ? 8 : 0;
-    cmd_w = inner_w - pt->pid_w - pt->policy_w - pt->prio_w - pt->nice_w - pt->cpu_w - 6;
-    if (pt->show_user) cmd_w -= pt->user_w + 1;
-    if (pt->show_mem) cmd_w -= pt->mem_w + 1;
-    if (pt->show_time) cmd_w -= pt->time_w + 1;
+    fixed_w = pt->pid_w + pt->policy_w + pt->prio_w + pt->nice_w + pt->cpu_w + pt->io_w;
+    gaps = 6;
+    if (pt->show_user) {
+        fixed_w += pt->user_w;
+        gaps++;
+    }
+    if (pt->show_mem) {
+        fixed_w += pt->mem_w;
+        gaps++;
+    }
+    if (pt->show_time) {
+        fixed_w += pt->time_w;
+        gaps++;
+    }
+    cmd_w = inner_w - fixed_w - gaps;
     if (cmd_w < 10 && pt->show_time) {
         pt->show_time = 0;
-        cmd_w += pt->time_w + 1;
+        fixed_w -= pt->time_w;
+        gaps--;
         pt->time_w = 0;
+        cmd_w = inner_w - fixed_w - gaps;
     }
     if (cmd_w < 10 && pt->show_mem) {
         pt->show_mem = 0;
-        cmd_w += pt->mem_w + 1;
+        fixed_w -= pt->mem_w;
+        gaps--;
         pt->mem_w = 0;
+        cmd_w = inner_w - fixed_w - gaps;
     }
     if (cmd_w < 10 && pt->show_user) {
         pt->show_user = 0;
-        cmd_w += pt->user_w + 1;
+        fixed_w -= pt->user_w;
+        gaps--;
         pt->user_w = 0;
+        cmd_w = inner_w - fixed_w - gaps;
     }
     if (cmd_w < 8) cmd_w = 8;
     pt->cmd_w = cmd_w;
@@ -1573,6 +1679,10 @@ static void render_process_columns(Ui *ui, const LuloProcState *state)
             set_proc_header_hit(pt, LULO_PROC_SORT_TIME, x, pt->time_w, 1);
             x += pt->time_w + 1;
         }
+        format_sort_header(buf, sizeof(buf), "IO", state, LULO_PROC_SORT_IO, pt->io_w, 1);
+        plane_putn(ui->proc, 1, x, ui->theme->blue, ui->theme->bg, buf, pt->io_w);
+        set_proc_header_hit(pt, LULO_PROC_SORT_IO, x, pt->io_w, 1);
+        x += pt->io_w + 1;
         format_sort_header(buf, sizeof(buf), "COMMAND", state, LULO_PROC_SORT_COMMAND, pt->cmd_w, 1);
         plane_putn(ui->proc, 1, x, ui->theme->white, ui->theme->bg, buf, pt->cmd_w);
         set_proc_header_hit(pt, LULO_PROC_SORT_COMMAND, x, pt->cmd_w, 1);
@@ -1591,6 +1701,7 @@ static void render_process_row(Ui *ui, const LuloProcSnapshot *snap, const LuloP
     char cpu_buf[16];
     char mem_buf[16];
     char time_buf[16];
+    char io_buf[8];
     char policy_buf[8];
     char prio_buf[16];
     char out[1024];
@@ -1602,6 +1713,7 @@ static void render_process_row(Ui *ui, const LuloProcSnapshot *snap, const LuloP
     lulo_format_proc_pct(cpu_buf, sizeof(cpu_buf), row->cpu_tenths);
     lulo_format_proc_pct(mem_buf, sizeof(mem_buf), row->mem_tenths);
     lulo_format_proc_time(time_buf, sizeof(time_buf), row->time_cs);
+    lulo_sched_format_io(io_buf, sizeof(io_buf), row->io_class, row->io_priority);
     lulo_format_proc_policy(policy_buf, sizeof(policy_buf), row->policy);
     lulo_format_proc_priority(prio_buf, sizeof(prio_buf), row->rt_priority, row->priority);
 
@@ -1651,19 +1763,34 @@ static void render_process_row(Ui *ui, const LuloProcSnapshot *snap, const LuloP
         x += pt->time_w + 1;
     }
 
+    snprintf(out, sizeof(out), "%-*s", pt->io_w, io_buf);
+    plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_io_color(ui->theme, row->io_class, row->io_priority),
+               row_bg, out, pt->io_w);
+    x += pt->io_w + 1;
+
     if (row->label_prefix_len > 0 &&
         row->label_prefix_len < (int)sizeof(row->label) &&
         row->label_prefix_cols < pt->cmd_w) {
+        const char *command = row->label + row->label_prefix_len;
         int cmd_only_w = pt->cmd_w - row->label_prefix_cols;
+        int body_scroll = pt->cmd_scroll;
+        int command_len = (int)strlen(command);
+
+        if (body_scroll > command_len) body_scroll = command_len;
         snprintf(out, sizeof(out), "%.*s", row->label_prefix_len, row->label);
         plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : ui->theme->branch,
                    row_bg, out, row->label_prefix_cols);
         x += row->label_prefix_cols;
-        snprintf(out, sizeof(out), "%-*.*s", cmd_only_w, cmd_only_w, row->label + row->label_prefix_len);
+        snprintf(out, sizeof(out), "%-*.*s", cmd_only_w, cmd_only_w, command + body_scroll);
         plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_command_color(ui->theme, row),
                    row_bg, out, cmd_only_w);
     } else {
-        snprintf(out, sizeof(out), "%-*.*s", pt->cmd_w, pt->cmd_w, row->label);
+        const char *command = row->label;
+        int body_scroll = pt->cmd_scroll;
+        int command_len = (int)strlen(command);
+
+        if (body_scroll > command_len) body_scroll = command_len;
+        snprintf(out, sizeof(out), "%-*.*s", pt->cmd_w, pt->cmd_w, command + body_scroll);
         plane_putn(ui->proc, y, x, selected ? ui->theme->select_fg : proc_command_color(ui->theme, row),
                    row_bg, out, pt->cmd_w);
     }
@@ -1690,6 +1817,7 @@ static void render_process_widget(Ui *ui, const LuloProcSnapshot *snap, const Lu
 
     if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
     build_proc_table_layout(ui);
+    ui->proc_table.cmd_scroll = proc_command_scroll(snap, &ui->proc_table, state);
     ncplane_dim_yx(ui->proc, &rows, &cols);
     plane_fill(ui->proc, 1, 1, ui->proc_table.inner_w, ui->theme->bg, ui->theme->bg);
     render_process_title(ui, snap, state);
@@ -1701,6 +1829,7 @@ static void render_process_body_only(Ui *ui, const LuloProcSnapshot *snap, const
 {
     if (!ui->proc || !ui->lo.show_proc || ui->lo.proc_rows <= 0) return;
     build_proc_table_layout(ui);
+    ui->proc_table.cmd_scroll = proc_command_scroll(snap, &ui->proc_table, state);
     render_process_count(ui, snap, state);
     render_process_rows(ui, snap, state, 0, ui->proc_table.body_rows);
 }
@@ -1713,6 +1842,7 @@ static void render_process_cursor_only(Ui *ui, const LuloProcSnapshot *snap, con
 
     if (!ui->proc || !snap || !state) return;
     build_proc_table_layout(ui);
+    ui->proc_table.cmd_scroll = proc_command_scroll(snap, &ui->proc_table, state);
     render_process_count(ui, snap, state);
     old_slot = prev_selected - prev_scroll;
     new_slot = state->selected - state->scroll;
@@ -2726,6 +2856,28 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                         prev_systemd_focus);
         }
         render->need_render = 1;
+        break;
+    case INPUT_SCROLL_LEFT:
+        if (app->active_page == APP_PAGE_CPU) {
+            int delta = (scroll_units > 0 ? scroll_units : 1) * 4;
+
+            if (scroll_proc_horizontally(ui, proc_snap, proc_state, -delta)) {
+                render->need_proc_body_only = 1;
+                render->need_proc_cursor_only = 0;
+                render->need_render = 1;
+            }
+        }
+        break;
+    case INPUT_SCROLL_RIGHT:
+        if (app->active_page == APP_PAGE_CPU) {
+            int delta = (scroll_units > 0 ? scroll_units : 1) * 4;
+
+            if (scroll_proc_horizontally(ui, proc_snap, proc_state, +delta)) {
+                render->need_proc_body_only = 1;
+                render->need_proc_cursor_only = 0;
+                render->need_render = 1;
+            }
+        }
         break;
     case INPUT_PAGE_UP:
         if (app->active_page == APP_PAGE_CPU) {

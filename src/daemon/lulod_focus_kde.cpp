@@ -2,6 +2,7 @@
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusReply>
+#include <QDir>
 #include <QFileInfo>
 #include <QObject>
 #include <QTextStream>
@@ -10,6 +11,10 @@
 #include <cstring>
 #include <limits.h>
 #include <unistd.h>
+
+#ifndef LULO_DATADIR
+#define LULO_DATADIR ""
+#endif
 
 namespace {
 
@@ -34,15 +39,56 @@ static QString helper_root_path()
     return QFileInfo(QString::fromLocal8Bit(exe)).absolutePath();
 }
 
+static QString installed_share_script_path(const QString &root)
+{
+    QFileInfo root_info(root);
+    QDir dir(root_info.absoluteFilePath());
+
+    if (root.isEmpty()) {
+        return {};
+    }
+    if (QFileInfo::exists(root + QLatin1String("/share/lulo/kwin/lulod_focus_kde.js"))) {
+        return QFileInfo(root + QLatin1String("/share/lulo/kwin/lulod_focus_kde.js")).absoluteFilePath();
+    }
+    if (dir.dirName() == QLatin1String("lulo")) {
+        dir.cdUp();
+        if (dir.dirName() == QLatin1String("libexec")) {
+            dir.cdUp();
+            const QString candidate =
+                QFileInfo(dir.absoluteFilePath(QLatin1String("share/lulo/kwin/lulod_focus_kde.js")))
+                    .absoluteFilePath();
+            if (QFileInfo::exists(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return {};
+}
+
 static QString helper_script_path()
 {
+    if (LULO_DATADIR[0] != '\0') {
+        const QString installed =
+            QString::fromLatin1(LULO_DATADIR "/kwin/lulod_focus_kde.js");
+
+        if (QFileInfo::exists(installed)) {
+            return installed;
+        }
+    }
+
     const QString root = helper_root_path();
 
     if (root.isEmpty()) {
         return {};
     }
-    return QFileInfo(root + QLatin1Char('/') + QLatin1String(kScriptRelativePath))
-        .absoluteFilePath();
+    {
+        const QString installed = installed_share_script_path(root);
+
+        if (!installed.isEmpty()) {
+            return installed;
+        }
+    }
+    return QFileInfo(root + QLatin1Char('/') + QLatin1String(kScriptRelativePath)).absoluteFilePath();
 }
 
 static void debug_log(const char *msg)

@@ -11,6 +11,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifndef LULO_HELPERDIR
+#define LULO_HELPERDIR ""
+#endif
+
 static int helper_binary_path(char *buf, size_t len)
 {
     char exe[PATH_MAX];
@@ -19,16 +23,22 @@ static int helper_binary_path(char *buf, size_t len)
     size_t exe_len;
 
     n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n < 0) return -1;
-    exe[n] = '\0';
-    slash = strrchr(exe, '/');
-    if (!slash) return -1;
-    slash[1] = '\0';
-    exe_len = strlen(exe);
-    if (exe_len + sizeof("lulo-admin") > len) return -1;
-    memcpy(buf, exe, exe_len);
-    memcpy(buf + exe_len, "lulo-admin", sizeof("lulo-admin"));
-    return 0;
+    if (n >= 0) {
+        exe[n] = '\0';
+        slash = strrchr(exe, '/');
+        if (!slash) return -1;
+        slash[1] = '\0';
+        exe_len = strlen(exe);
+        if (exe_len + sizeof("lulo-admin") <= len) {
+            memcpy(buf, exe, exe_len);
+            memcpy(buf + exe_len, "lulo-admin", sizeof("lulo-admin"));
+            if (access(buf, X_OK) == 0) return 0;
+        }
+    }
+    if (LULO_HELPERDIR[0] == '\0') return -1;
+    if (snprintf(buf, len, "%s/lulo-admin", LULO_HELPERDIR) >= (int)len) return -1;
+    if (access(buf, X_OK) == 0) return 0;
+    return -1;
 }
 
 static int read_error_pipe(int fd, char *err, size_t errlen)

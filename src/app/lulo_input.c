@@ -354,17 +354,17 @@ static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
         else return 0;
         pos++;
 
-        if ((b & 64) != 0) {
-            wheel = 1;
-            if ((b & 3) == 2) {
-                button = 6;
-                out->action = INPUT_NONE;
-            } else if ((b & 3) == 3) {
-                button = 7;
-                out->action = INPUT_NONE;
-            } else {
-                button = (b & 1) ? 5 : 4;
-                out->action = (button == 4) ? INPUT_SCROLL_UP : INPUT_SCROLL_DOWN;
+            if ((b & 64) != 0) {
+                wheel = 1;
+                if ((b & 3) == 2) {
+                    button = 6;
+                    out->action = INPUT_SCROLL_LEFT;
+                } else if ((b & 3) == 3) {
+                    button = 7;
+                    out->action = INPUT_SCROLL_RIGHT;
+                } else {
+                    button = (b & 1) ? 5 : 4;
+                    out->action = (button == 4) ? INPUT_SCROLL_UP : INPUT_SCROLL_DOWN;
             }
             out->mouse_wheel = 1;
         } else {
@@ -416,8 +416,8 @@ static int raw_input_decode_csi(RawInput *in, DecodedInput *out)
             switch (buf[pos]) {
             case 'A': out->action = INPUT_SCROLL_UP; break;
             case 'B': out->action = INPUT_SCROLL_DOWN; break;
-            case 'C': out->action = INPUT_NONE; break;
-            case 'D': out->action = INPUT_NONE; break;
+            case 'C': out->action = INPUT_SCROLL_RIGHT; break;
+            case 'D': out->action = INPUT_SCROLL_LEFT; break;
             case 'H': out->action = INPUT_HOME; break;
             case 'F': out->action = INPUT_END; break;
             default: return 0;
@@ -455,10 +455,10 @@ int raw_input_decode_one(RawInput *in, DecodedInput *out)
                 out->action = INPUT_SCROLL_DOWN;
                 break;
             case 'C':
-                out->action = INPUT_NONE;
+                out->action = INPUT_SCROLL_RIGHT;
                 break;
             case 'D':
-                out->action = INPUT_NONE;
+                out->action = INPUT_SCROLL_LEFT;
                 break;
             case 'H':
                 out->action = INPUT_HOME;
@@ -538,9 +538,9 @@ InputAction decode_notcurses_input(uint32_t id)
     case NCKEY_DOWN:
         return INPUT_SCROLL_DOWN;
     case NCKEY_LEFT:
-        return INPUT_NONE;
+        return INPUT_SCROLL_LEFT;
     case NCKEY_RIGHT:
-        return INPUT_NONE;
+        return INPUT_SCROLL_RIGHT;
     case NCKEY_TAB:
         return INPUT_TAB_NEXT;
     case NCKEY_PGUP:

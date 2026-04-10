@@ -7,6 +7,10 @@ unit_dir="$config_home/systemd/user"
 unit_path="$unit_dir/lulod.service"
 dropin_dir="$unit_dir/lulod.service.d"
 dropin_path="$dropin_dir/session-env.conf"
+bindir="${LULO_BINDIR:-/usr/bin}"
+datadir="${LULO_DATADIR:-/usr/share/lulo}"
+exec_start="$repo_dir/lulod"
+workdir="$repo_dir"
 import_keys=(
   XDG_RUNTIME_DIR
   DBUS_SESSION_BUS_ADDRESS
@@ -51,11 +55,16 @@ detect_focus_provider() {
   shopt -u nocasematch
 }
 
+if [[ -x "$bindir/lulod" && -d "$datadir" ]]; then
+  exec_start="$bindir/lulod"
+  workdir="$datadir"
+fi
+
 mkdir -p "$unit_dir"
 
 sed \
-  -e "s|@EXEC_START@|$repo_dir/lulod|g" \
-  -e "s|@WORKDIR@|$repo_dir|g" \
+  -e "s|@EXEC_START@|$exec_start|g" \
+  -e "s|@WORKDIR@|$workdir|g" \
   "$repo_dir/lulod.service.in" >"$unit_path"
 
 mkdir -p "$dropin_dir"
@@ -78,3 +87,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now lulod.service
 systemctl --user restart lulod.service
 systemctl --user status lulod.service --no-pager --lines=20
+
+printf 'normal update cycle:\n'
+printf '  cd %s\n' "$repo_dir"
+printf '  make PREFIX=/usr\n'
+printf '  sudo make install PREFIX=/usr\n'
+printf '  ./install-lulod-user-service.sh\n'
+printf '  systemctl --user restart lulod.service\n'

@@ -13,6 +13,7 @@ typedef enum {
     LULO_PROC_SORT_CPU,
     LULO_PROC_SORT_MEM,
     LULO_PROC_SORT_TIME,
+    LULO_PROC_SORT_IO,
     LULO_PROC_SORT_COMMAND,
     LULO_PROC_SORT_COUNT
 } LuloProcSortKey;
@@ -41,6 +42,8 @@ typedef struct {
     int cpu_tenths;
     int mem_tenths;
     unsigned long long time_cs;
+    int io_class;
+    int io_priority;
     int label_prefix_len;
     int label_prefix_cols;
     char label[LULO_PROC_LABEL_MAX];
@@ -65,6 +68,7 @@ typedef struct {
     int selected_pid;
     int selected_is_thread;
     int parents_only;
+    int x_scroll;
     LuloProcSortKey sort_key;
     int sort_desc;
 } LuloProcState;

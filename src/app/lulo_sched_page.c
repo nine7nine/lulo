@@ -2,8 +2,12 @@
 
 #include "lulo_app.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct {
     int tabs_y;
@@ -42,6 +46,181 @@ static int sched_rule_selection_active(const LuloSchedState *state)
 static int sched_live_selection_active(const LuloSchedState *state)
 {
     return state && state->live_selected >= 0 && state->selected_live_pid > 0;
+}
+
+static const LuloSchedRuleRow *active_sched_rule_row(const LuloSchedSnapshot *snap, const LuloSchedState *state)
+{
+    if (!snap || !state) return NULL;
+    if (state->rule_selected >= 0 && state->rule_selected < snap->rule_count) {
+        return &snap->rules[state->rule_selected];
+    }
+    if (state->rule_cursor >= 0 && state->rule_cursor < snap->rule_count) {
+        return &snap->rules[state->rule_cursor];
+    }
+    return NULL;
+}
+
+static const LuloSchedProfileRow *active_sched_profile_row(const LuloSchedSnapshot *snap, const LuloSchedState *state)
+{
+    if (!snap || !state) return NULL;
+    if (state->profile_selected >= 0 && state->profile_selected < snap->profile_count) {
+        return &snap->profiles[state->profile_selected];
+    }
+    if (state->profile_cursor >= 0 && state->profile_cursor < snap->profile_count) {
+        return &snap->profiles[state->profile_cursor];
+    }
+    return NULL;
+}
+
+const char *active_sched_edit_path(const LuloSchedSnapshot *snap, const LuloSchedState *state)
+{
+    if (!snap || !state) return NULL;
+    switch (state->view) {
+    case LULO_SCHED_VIEW_PROFILES:
+        if (state->profile_selected >= 0 && state->profile_selected < snap->profile_count &&
+            snap->profiles[state->profile_selected].path[0]) {
+            return snap->profiles[state->profile_selected].path;
+        }
+        if (state->profile_cursor >= 0 && state->profile_cursor < snap->profile_count &&
+            snap->profiles[state->profile_cursor].path[0]) {
+            return snap->profiles[state->profile_cursor].path;
+        }
+        break;
+    case LULO_SCHED_VIEW_RULES:
+        if (state->rule_selected >= 0 && state->rule_selected < snap->rule_count &&
+            snap->rules[state->rule_selected].path[0]) {
+            return snap->rules[state->rule_selected].path;
+        }
+        if (state->rule_cursor >= 0 && state->rule_cursor < snap->rule_count &&
+            snap->rules[state->rule_cursor].path[0]) {
+            return snap->rules[state->rule_cursor].path;
+        }
+        break;
+    case LULO_SCHED_VIEW_LIVE:
+    default:
+        break;
+    }
+    return NULL;
+}
+
+const char *active_sched_delete_path(const LuloSchedSnapshot *snap, const LuloSchedState *state)
+{
+    const LuloSchedRuleRow *rule;
+    const LuloSchedProfileRow *profile;
+
+    if (!snap || !state) return NULL;
+    switch (state->view) {
+    case LULO_SCHED_VIEW_PROFILES:
+        profile = active_sched_profile_row(snap, state);
+        return profile && profile->path[0] ? profile->path : NULL;
+    case LULO_SCHED_VIEW_RULES:
+        rule = active_sched_rule_row(snap, state);
+        if (!rule || !rule->path[0] || rule->match_kind == LULO_SCHED_MATCH_DYNAMIC) return NULL;
+        return rule->path;
+    case LULO_SCHED_VIEW_LIVE:
+    default:
+        return NULL;
+    }
+}
+
+int active_sched_is_builtin_rule(const LuloSchedSnapshot *snap, const LuloSchedState *state)
+{
+    const LuloSchedRuleRow *rule = active_sched_rule_row(snap, state);
+
+    return rule && rule->match_kind == LULO_SCHED_MATCH_DYNAMIC;
+}
+
+static int next_sched_index_path(const char *dir, const char *prefix, char *path, size_t path_len,
+                                 char *stem, size_t stem_len)
+{
+    for (int i = 1; i < 1000; i++) {
+        char candidate_stem[64];
+        char candidate_path[PATH_MAX];
+
+        snprintf(candidate_stem, sizeof(candidate_stem), "%s-%02d", prefix, i);
+        snprintf(candidate_path, sizeof(candidate_path), "%s/%s.conf", dir, candidate_stem);
+        if (access(candidate_path, F_OK) == 0) continue;
+        if (snprintf(path, path_len, "%s", candidate_path) >= (int)path_len) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (snprintf(stem, stem_len, "%s", candidate_stem) >= (int)stem_len) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        return 0;
+    }
+    errno = EEXIST;
+    return -1;
+}
+
+int sched_prepare_new_entry(const LuloSchedSnapshot *snap, const LuloSchedState *state,
+                            char *path, size_t path_len, char **content_out,
+                            char *err, size_t errlen)
+{
+    char dir[PATH_MAX];
+    char stem[64];
+    char *content = NULL;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (content_out) *content_out = NULL;
+    if (!snap || !state || !path || path_len == 0 || !content_out) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid scheduler entry request");
+        errno = EINVAL;
+        return -1;
+    }
+    if (!snap->config_root[0]) {
+        if (err && errlen > 0) snprintf(err, errlen, "scheduler config root unavailable");
+        errno = EINVAL;
+        return -1;
+    }
+
+    switch (state->view) {
+    case LULO_SCHED_VIEW_PROFILES:
+        if (snprintf(dir, sizeof(dir), "%s/profiles.d", snap->config_root) >= (int)sizeof(dir) ||
+            next_sched_index_path(dir, "90-custom-profile", path, path_len, stem, sizeof(stem)) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "failed to allocate new profile path");
+            return -1;
+        }
+        if (asprintf(&content,
+                     "name=%s\n"
+                     "enabled=true\n"
+                     "nice=0\n"
+                     "# policy=other\n"
+                     "# rt_priority=1\n",
+                     stem) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "out of memory");
+            return -1;
+        }
+        break;
+    case LULO_SCHED_VIEW_RULES:
+        if (snprintf(dir, sizeof(dir), "%s/rules.d", snap->config_root) >= (int)sizeof(dir) ||
+            next_sched_index_path(dir, "90-custom-rule", path, path_len, stem, sizeof(stem)) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "failed to allocate new rule path");
+            return -1;
+        }
+        if (asprintf(&content,
+                     "name=%s\n"
+                     "enabled=true\n"
+                     "match=comm\n"
+                     "pattern=example*\n"
+                     "profile=%s\n"
+                     "# exclude=true\n",
+                     stem,
+                     snap->background_profile[0] ? snap->background_profile : "background") < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "out of memory");
+            return -1;
+        }
+        break;
+    case LULO_SCHED_VIEW_LIVE:
+    default:
+        if (err && errlen > 0) snprintf(err, errlen, "create entries from Profiles or Rules");
+        errno = EINVAL;
+        return -1;
+    }
+
+    *content_out = content;
+    return 0;
 }
 
 static int sched_list_scroll(const LuloSchedState *state)
@@ -225,6 +404,20 @@ static Rgb sched_nice_color(const Theme *theme, int nice_value)
     return theme->white;
 }
 
+static Rgb sched_profile_color(const Theme *theme, const char *profile)
+{
+    if (!profile || !*profile) return theme->dim;
+    if (!strcmp(profile, "audio-rt")) return theme->orange;
+    if (!strcmp(profile, "multimedia")) return theme->yellow;
+    if (!strcmp(profile, "desktop-fg")) return theme->cyan;
+    if (!strcmp(profile, "desktop")) return theme->blue;
+    if (!strcmp(profile, "desktop-bg")) return theme->green;
+    if (!strcmp(profile, "focused")) return theme->red;
+    if (!strcmp(profile, "background")) return theme->green;
+    if (!strcmp(profile, "idle")) return theme->dim;
+    return theme->white;
+}
+
 static Rgb sched_status_color(const Theme *theme, const char *status)
 {
     if (!status || !*status) return theme->dim;
@@ -285,7 +478,8 @@ static void render_sched_profiles_list(struct ncplane *p, const Theme *theme, co
         plane_putn(p, y, x, selected ? theme->select_fg : (row->enabled ? theme->green : theme->dim),
                    row_bg, row->enabled ? "on" : "--", flag_w);
         x += flag_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, row->name, name_w);
+        plane_putn(p, y, x, selected ? theme->select_fg : sched_profile_color(theme, row->name),
+                   row_bg, row->name, name_w);
         x += name_w + 1;
         snprintf(buf, sizeof(buf), "%*s", nice_w, row->has_nice ? "" : "-");
         if (row->has_nice) snprintf(buf, sizeof(buf), "%*d", nice_w, row->nice);
@@ -364,7 +558,7 @@ static void render_sched_rules_list(struct ncplane *p, const Theme *theme, const
         plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, row->pattern, pattern_w);
         x += pattern_w + 1;
         plane_putn(p, y, x, selected ? theme->select_fg :
-                   (row->exclude ? theme->red : theme->yellow),
+                   (row->exclude ? theme->red : sched_profile_color(theme, row->profile)),
                    row_bg, target, target_w);
     }
 }
@@ -431,7 +625,8 @@ static void render_sched_live_list(struct ncplane *p, const Theme *theme, const 
         x += pid_w + 1;
         plane_putn(p, y, x, selected ? theme->select_fg : theme->white, row_bg, row->comm, comm_w);
         x += comm_w + 1;
-        plane_putn(p, y, x, selected ? theme->select_fg : theme->green, row_bg, row->profile, profile_w);
+        plane_putn(p, y, x, selected ? theme->select_fg : sched_profile_color(theme, row->profile),
+                   row_bg, row->profile, profile_w);
         x += profile_w + 1;
         lulo_format_proc_policy(policy, sizeof(policy), row->policy);
         snprintf(buf, sizeof(buf), "%-*s", policy_w, policy);
@@ -468,7 +663,9 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, row->name, rect->width - 4);
             snprintf(buf, sizeof(buf), "%s  %s", row->enabled ? "enabled" : "disabled",
                      row->exclude ? "exclude" : row->profile);
-            plane_putn(p, rect->row + 2, rect->col + 2, row->exclude ? theme->red : theme->yellow, theme->bg, buf, rect->width - 4);
+            plane_putn(p, rect->row + 2, rect->col + 2,
+                       row->exclude ? theme->red : sched_profile_color(theme, row->profile),
+                       theme->bg, buf, rect->width - 4);
             snprintf(buf, sizeof(buf), "%s  %s", lulo_sched_match_kind_name(row->match_kind), row->pattern);
             plane_putn(p, rect->row + 3, rect->col + 2, theme->cyan, theme->bg, buf, rect->width - 4);
             plane_putn(p, rect->row + 4, rect->col + 2, theme->dim, theme->bg, row->path, rect->width - 4);
@@ -483,7 +680,8 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             snprintf(buf, sizeof(buf), "%s (%d)", row->comm, row->pid);
             plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, buf, rect->width - 4);
             snprintf(buf, sizeof(buf), "%s  %s", row->profile, row->rule);
-            plane_putn(p, rect->row + 2, rect->col + 2, theme->green, theme->bg, buf, rect->width - 4);
+            plane_putn(p, rect->row + 2, rect->col + 2, sched_profile_color(theme, row->profile),
+                       theme->bg, buf, rect->width - 4);
             snprintf(buf, sizeof(buf), "pol %s  nice %d  rt %d", policy, row->nice, row->rt_priority);
             plane_putn(p, rect->row + 3, rect->col + 2, theme->yellow, theme->bg, buf, rect->width - 4);
             plane_putn(p, rect->row + 4, rect->col + 2, sched_status_color(theme, row->status), theme->bg,
@@ -496,7 +694,8 @@ static void render_sched_info(struct ncplane *p, const Theme *theme, const LuloR
             const LuloSchedProfileRow *row = &snap->profiles[state->profile_selected];
             char policy[16];
 
-            plane_putn(p, rect->row + 1, rect->col + 2, theme->white, theme->bg, row->name, rect->width - 4);
+            plane_putn(p, rect->row + 1, rect->col + 2, sched_profile_color(theme, row->name),
+                       theme->bg, row->name, rect->width - 4);
             plane_putn(p, rect->row + 2, rect->col + 2, row->enabled ? theme->green : theme->dim, theme->bg,
                        row->enabled ? "enabled" : "disabled", rect->width - 4);
             if (row->has_policy) lulo_format_proc_policy(policy, sizeof(policy), row->policy);
@@ -591,7 +790,7 @@ void render_sched_widget(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedS
 }
 
 void render_sched_status(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedState *state,
-                         const LuloSchedBackendStatus *backend_status)
+                         const LuloSchedBackendStatus *backend_status, AppState *app)
 {
     char buf[512];
     char focusbuf[128];
@@ -607,6 +806,11 @@ void render_sched_status(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedS
     if (backend_status && backend_status->error[0]) {
         plane_putn(ui->load, 0, 0, ui->theme->red, ui->theme->bg,
                    backend_status->error, ui->lo.load.width - 2);
+        return;
+    }
+    if (app && sched_status_current(app)) {
+        plane_putn(ui->load, 0, 0, ui->theme->green, ui->theme->bg,
+                   app->sched_status, ui->lo.load.width - 2);
         return;
     }
     if (snap && snap->focused_pid > 0) {
@@ -628,15 +832,11 @@ void render_sched_status(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedS
     } else {
         snprintf(focusbuf, sizeof(focusbuf), "off");
     }
-    snprintf(buf, sizeof(buf), "view %s  profiles %d  rules %d  live %d  pane %s  focused %s  watcher %dms  scan %d",
+    snprintf(buf, sizeof(buf), "view %s  pane %s  focused %s  watcher %dms",
              lulo_sched_view_name(state->view),
-             snap ? snap->profile_count : 0,
-             snap ? snap->rule_count : 0,
-             snap ? snap->live_count : 0,
              state->focus_preview ? "preview" : "list",
              focusbuf,
-             snap ? snap->watcher_interval_ms : 0,
-             snap ? snap->scan_generation : 0);
+             snap ? snap->watcher_interval_ms : 0);
     if (backend_status) {
         if (backend_status->reloading) strncat(buf, "  reloading", sizeof(buf) - strlen(buf) - 1);
         else if (backend_status->loading_full) strncat(buf, "  refreshing", sizeof(buf) - strlen(buf) - 1);

@@ -6,6 +6,7 @@ typedef struct {
     char raw_unit[256];
     char unit[256];
     char object_path[320];
+    char fragment_path[320];
     char load[24];
     char active[24];
     char sub[24];

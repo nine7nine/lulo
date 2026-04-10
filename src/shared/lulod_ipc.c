@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_MAGIC 0x4c554c4fU
-#define LULOD_VERSION 7U
+#define LULOD_VERSION 9U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -337,6 +337,7 @@ static int serialize_snapshot(int fd, const LuloSystemdSnapshot *snap)
         if (write_string(fd, row->raw_unit) < 0) return -1;
         if (write_string(fd, row->unit) < 0) return -1;
         if (write_string(fd, row->object_path) < 0) return -1;
+        if (write_string(fd, row->fragment_path) < 0) return -1;
         if (write_string(fd, row->load) < 0) return -1;
         if (write_string(fd, row->active) < 0) return -1;
         if (write_string(fd, row->sub) < 0) return -1;
@@ -435,7 +436,11 @@ static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
     if (write_all(fd, &snap->focused_start_time, sizeof(snap->focused_start_time)) < 0) return -1;
     if (write_string(fd, snap->focus_provider) < 0) return -1;
     if (write_string(fd, snap->focus_profile) < 0) return -1;
+    if (write_i32(fd, snap->background_enabled) < 0) return -1;
     if (write_string(fd, snap->background_profile) < 0) return -1;
+    if (write_i32(fd, snap->background_match_app_slice) < 0) return -1;
+    if (write_i32(fd, snap->background_match_background_slice) < 0) return -1;
+    if (write_i32(fd, snap->background_match_app_unit_prefix) < 0) return -1;
     if (write_string(fd, snap->focused_comm) < 0) return -1;
     if (write_string(fd, snap->focused_exe) < 0) return -1;
     if (write_string(fd, snap->focused_unit) < 0) return -1;
@@ -523,6 +528,7 @@ static int deserialize_snapshot(int fd, LuloSystemdSnapshot *snap)
         if (read_string_fixed(fd, row->raw_unit, sizeof(row->raw_unit)) < 0) goto fail;
         if (read_string_fixed(fd, row->unit, sizeof(row->unit)) < 0) goto fail;
         if (read_string_fixed(fd, row->object_path, sizeof(row->object_path)) < 0) goto fail;
+        if (read_string_fixed(fd, row->fragment_path, sizeof(row->fragment_path)) < 0) goto fail;
         if (read_string_fixed(fd, row->load, sizeof(row->load)) < 0) goto fail;
         if (read_string_fixed(fd, row->active, sizeof(row->active)) < 0) goto fail;
         if (read_string_fixed(fd, row->sub, sizeof(row->sub)) < 0) goto fail;
@@ -689,7 +695,15 @@ static int deserialize_sched_snapshot(int fd, LuloSchedSnapshot *snap)
     snap->focused_start_time = start_time;
     if (read_string_fixed(fd, snap->focus_provider, sizeof(snap->focus_provider)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focus_profile, sizeof(snap->focus_profile)) < 0) goto fail;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_enabled = count;
     if (read_string_fixed(fd, snap->background_profile, sizeof(snap->background_profile)) < 0) goto fail;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_match_app_slice = count;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_match_background_slice = count;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_match_app_unit_prefix = count;
     if (read_string_fixed(fd, snap->focused_comm, sizeof(snap->focused_comm)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focused_exe, sizeof(snap->focused_exe)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focused_unit, sizeof(snap->focused_unit)) < 0) goto fail;

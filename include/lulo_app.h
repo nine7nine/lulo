@@ -125,6 +125,8 @@ typedef struct {
     int scroll_streak;
     char status[160];
     long long status_until_ms;
+    char sched_status[160];
+    long long sched_status_until_ms;
     char tune_status[160];
     long long tune_status_until_ms;
     int tune_edit_active;
@@ -175,6 +177,8 @@ typedef enum {
     INPUT_EDIT_SELECTED,
     INPUT_APPLY_SELECTED,
     INPUT_RELOAD_PAGE,
+    INPUT_NEW_ITEM,
+    INPUT_DELETE_SELECTED,
     INPUT_RESIZE,
 } InputAction;
 
@@ -271,9 +275,15 @@ void render_disk_widget(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkStat
 void render_disk_status(Ui *ui, const LuloDizkSnapshot *snap, const LuloDizkState *state);
 int sched_list_rows_visible(const Ui *ui, const LuloSchedState *state);
 int sched_preview_rows_visible(const Ui *ui, const LuloSchedState *state);
+const char *active_sched_edit_path(const LuloSchedSnapshot *snap, const LuloSchedState *state);
+const char *active_sched_delete_path(const LuloSchedSnapshot *snap, const LuloSchedState *state);
+int active_sched_is_builtin_rule(const LuloSchedSnapshot *snap, const LuloSchedState *state);
+int sched_prepare_new_entry(const LuloSchedSnapshot *snap, const LuloSchedState *state,
+                            char *path, size_t path_len, char **content_out,
+                            char *err, size_t errlen);
 void render_sched_widget(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedState *state);
 void render_sched_status(Ui *ui, const LuloSchedSnapshot *snap, const LuloSchedState *state,
-                         const LuloSchedBackendStatus *backend_status);
+                         const LuloSchedBackendStatus *backend_status, AppState *app);
 int point_on_sched_view_tabs(Ui *ui, const LuloSchedState *state, int global_y, int global_x);
 int handle_sched_wheel_target(Ui *ui, LuloSchedState *state,
                               RenderFlags *render, int global_y, int global_x);
@@ -282,6 +292,7 @@ int handle_sched_click(Ui *ui, int global_y, int global_x,
                        RenderFlags *render);
 int systemd_list_rows_visible(const Ui *ui, const LuloSystemdState *state);
 int systemd_preview_rows_visible(const Ui *ui, const LuloSystemdState *state);
+const char *active_systemd_edit_path(const LuloSystemdSnapshot *snap, const LuloSystemdState *state);
 void render_systemd_widget(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state);
 void render_systemd_status(Ui *ui, const LuloSystemdSnapshot *snap, const LuloSystemdState *state,
                            const LuloSystemdBackendStatus *backend_status);
@@ -291,6 +302,8 @@ int handle_systemd_click(Ui *ui, int global_y, int global_x,
                          RenderFlags *render);
 int handle_systemd_wheel_target(Ui *ui, LuloSystemdState *state,
                                 RenderFlags *render, int global_y, int global_x);
+void sched_status_set(AppState *app, const char *fmt, ...);
+const char *sched_status_current(AppState *app);
 void tune_status_set(AppState *app, const char *fmt, ...);
 const char *tune_status_current(AppState *app);
 void tune_edit_prompt_refresh(AppState *app);

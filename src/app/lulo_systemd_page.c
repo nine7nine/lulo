@@ -158,6 +158,30 @@ static const LuloSystemdConfigRow *selected_systemd_config(const LuloSystemdSnap
     return NULL;
 }
 
+const char *active_systemd_edit_path(const LuloSystemdSnapshot *snap, const LuloSystemdState *state)
+{
+    const LuloSystemdServiceRow *service;
+    const LuloSystemdConfigRow *row;
+
+    if (!snap || !state) return NULL;
+    if (state->view == LULO_SYSTEMD_VIEW_CONFIG) {
+        row = selected_systemd_config(snap, state);
+        if (row && row->path[0]) return row->path;
+        if (state->config_cursor >= 0 && state->config_cursor < snap->config_count &&
+            snap->configs[state->config_cursor].path[0]) {
+            return snap->configs[state->config_cursor].path;
+        }
+        return NULL;
+    }
+    service = selected_systemd_service(snap, state);
+    if (service && service->fragment_path[0]) return service->fragment_path;
+    if (state->cursor >= 0 && state->cursor < snap->count &&
+        snap->rows[state->cursor].fragment_path[0]) {
+        return snap->rows[state->cursor].fragment_path;
+    }
+    return NULL;
+}
+
 static Rgb systemd_active_color(const Theme *theme, const LuloSystemdServiceRow *row)
 {
     if (!strcmp(row->active, "failed")) return theme->red;

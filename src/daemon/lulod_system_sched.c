@@ -493,8 +493,40 @@ static int load_global_config(LuloSchedSnapshot *snap, const char *config_root, 
             snap->focus_enabled = parsed;
         } else if (!strcmp(key, "focus_profile")) {
             snprintf(snap->focus_profile, sizeof(snap->focus_profile), "%s", value);
+        } else if (!strcmp(key, "background_enabled")) {
+            if (parse_bool_value(value, &parsed) < 0) {
+                if (err && errlen > 0) snprintf(err, errlen, "%s:%u: invalid background_enabled", path, lineno);
+                free(line);
+                fclose(fp);
+                return -1;
+            }
+            snap->background_enabled = parsed;
         } else if (!strcmp(key, "background_profile")) {
             snprintf(snap->background_profile, sizeof(snap->background_profile), "%s", value);
+        } else if (!strcmp(key, "background_match_app_slice")) {
+            if (parse_bool_value(value, &parsed) < 0) {
+                if (err && errlen > 0) snprintf(err, errlen, "%s:%u: invalid background_match_app_slice", path, lineno);
+                free(line);
+                fclose(fp);
+                return -1;
+            }
+            snap->background_match_app_slice = parsed;
+        } else if (!strcmp(key, "background_match_background_slice")) {
+            if (parse_bool_value(value, &parsed) < 0) {
+                if (err && errlen > 0) snprintf(err, errlen, "%s:%u: invalid background_match_background_slice", path, lineno);
+                free(line);
+                fclose(fp);
+                return -1;
+            }
+            snap->background_match_background_slice = parsed;
+        } else if (!strcmp(key, "background_match_app_unit_prefix")) {
+            if (parse_bool_value(value, &parsed) < 0) {
+                if (err && errlen > 0) snprintf(err, errlen, "%s:%u: invalid background_match_app_unit_prefix", path, lineno);
+                free(line);
+                fclose(fp);
+                return -1;
+            }
+            snap->background_match_app_unit_prefix = parsed;
         } else {
             if (err && errlen > 0) snprintf(err, errlen, "%s:%u: unknown key '%s'", path, lineno, key);
             free(line);
@@ -535,6 +567,45 @@ out:
     return rc;
 }
 
+static void append_summary_token(char *buf, size_t len, const char *token)
+{
+    size_t used;
+
+    if (!buf || len == 0 || !token || !*token) return;
+    used = strlen(buf);
+    if (used > 0 && used + 3 < len) {
+        memcpy(buf + used, " + ", 3);
+        used += 3;
+        buf[used] = '\0';
+    }
+    if (used < len) snprintf(buf + used, len - used, "%s", token);
+}
+
+static void copy_capped_string(char *dst, size_t len, const char *src)
+{
+    size_t copy_len;
+
+    if (!dst || len == 0) return;
+    copy_len = strnlen(src ? src : "", len - 1);
+    memcpy(dst, src ? src : "", copy_len);
+    dst[copy_len] = '\0';
+}
+
+static void build_background_pattern_summary(const LuloSchedSnapshot *snap, char *buf, size_t len)
+{
+    if (!buf || len == 0) return;
+    buf[0] = '\0';
+    if (!snap) return;
+    if (!snap->background_enabled) {
+        snprintf(buf, len, "disabled");
+        return;
+    }
+    if (snap->background_match_app_slice) append_summary_token(buf, len, "app.slice");
+    if (snap->background_match_background_slice) append_summary_token(buf, len, "background.slice");
+    if (snap->background_match_app_unit_prefix) append_summary_token(buf, len, "unit:app-*");
+    if (!buf[0]) snprintf(buf, len, "no classifiers");
+}
+
 static int load_rules(LuloSchedSnapshot *snap, const char *config_root, char *err, size_t errlen)
 {
     char dirpath[PATH_MAX];
@@ -553,6 +624,38 @@ static int load_rules(LuloSchedSnapshot *snap, const char *config_root, char *er
         if (parse_rule_file(paths[i], &row, err, errlen) < 0) goto out;
         if (append_or_replace_rule(snap, &row) < 0) {
             if (err && errlen > 0) snprintf(err, errlen, "out of memory loading rules");
+            goto out;
+        }
+    }
+    {
+        char config_path[PATH_MAX];
+        LuloSchedRuleRow row;
+
+        snprintf(config_path, sizeof(config_path), "%s/scheduler.conf", config_root);
+
+        memset(&row, 0, sizeof(row));
+        snprintf(row.name, sizeof(row.name), "(focus)");
+        copy_capped_string(row.path, sizeof(row.path), config_path);
+        row.enabled = snap->focus_enabled;
+        row.match_kind = LULO_SCHED_MATCH_DYNAMIC;
+        snprintf(row.pattern, sizeof(row.pattern), "active window");
+        snprintf(row.profile, sizeof(row.profile), "%s",
+                 snap->focus_profile[0] ? snap->focus_profile : "-");
+        if (append_or_replace_rule(snap, &row) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "out of memory loading builtin focus rule");
+            goto out;
+        }
+
+        memset(&row, 0, sizeof(row));
+        snprintf(row.name, sizeof(row.name), "(background)");
+        copy_capped_string(row.path, sizeof(row.path), config_path);
+        row.enabled = snap->background_enabled;
+        row.match_kind = LULO_SCHED_MATCH_DYNAMIC;
+        build_background_pattern_summary(snap, row.pattern, sizeof(row.pattern));
+        snprintf(row.profile, sizeof(row.profile), "%s",
+                 snap->background_profile[0] ? snap->background_profile : "-");
+        if (append_or_replace_rule(snap, &row) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "out of memory loading builtin background rule");
             goto out;
         }
     }
@@ -632,6 +735,8 @@ static int match_rule_target(const LuloSchedRuleRow *rule, const LuloProcMeta *m
 
     if (!rule || !meta || !rule->pattern[0]) return 0;
     switch (rule->match_kind) {
+    case LULO_SCHED_MATCH_DYNAMIC:
+        return 0;
     case LULO_SCHED_MATCH_EXE:
         if (meta->exe[0] && fnmatch(rule->pattern, meta->exe, 0) == 0) return 1;
         exe_base = path_basename_ptr(meta->exe);
@@ -661,6 +766,7 @@ static int find_matching_rule(const LuloSchedSnapshot *snap, const LuloProcMeta 
         const LuloSchedRuleRow *rule = &snap->rules[i];
 
         if (!rule->enabled) continue;
+        if (rule->match_kind == LULO_SCHED_MATCH_DYNAMIC) continue;
         if (!match_rule_target(rule, meta)) continue;
         if (rule->exclude) {
             if (rule_idx) *rule_idx = i;
@@ -675,12 +781,15 @@ static int find_matching_rule(const LuloSchedSnapshot *snap, const LuloProcMeta 
     return 0;
 }
 
-static int looks_like_application_process(const LuloProcMeta *meta)
+static int looks_like_application_process(const LuloSchedSnapshot *snap, const LuloProcMeta *meta)
 {
-    if (!meta) return 0;
-    if (meta->cgroup[0] && strstr(meta->cgroup, "/app.slice/")) return 1;
-    if (meta->cgroup[0] && strstr(meta->cgroup, "/background.slice/")) return 1;
-    if (meta->unit[0] && strncmp(meta->unit, "app-", 4) == 0) return 1;
+    if (!snap || !meta || !snap->background_enabled) return 0;
+    if (snap->background_match_app_slice &&
+        meta->cgroup[0] && strstr(meta->cgroup, "/app.slice/")) return 1;
+    if (snap->background_match_background_slice &&
+        meta->cgroup[0] && strstr(meta->cgroup, "/background.slice/")) return 1;
+    if (snap->background_match_app_unit_prefix &&
+        meta->unit[0] && strncmp(meta->unit, "app-", 4) == 0) return 1;
     return 0;
 }
 
@@ -710,7 +819,8 @@ static int find_dynamic_profile(const LuloSchedSnapshot *snap, const LuloProcMet
         }
     }
 
-    if (snap->background_profile[0] && looks_like_application_process(meta)) {
+    if (snap->background_enabled && snap->background_profile[0] &&
+        looks_like_application_process(snap, meta)) {
         idx = find_enabled_profile_index(snap, snap->background_profile);
         if (idx >= 0) {
             if (rule_name && rule_name_len > 0) snprintf(rule_name, rule_name_len, "(background)");
@@ -838,8 +948,29 @@ static int live_row_cmp(const void *a, const void *b)
 {
     const LuloSchedLiveRow *ra = a;
     const LuloSchedLiveRow *rb = b;
+    int pa;
+    int pb;
     int cmp;
 
+    pa = normalized_policy(ra->policy);
+    pb = normalized_policy(rb->policy);
+    if (pa != pb) {
+        int ra_rank = pa == SCHED_FIFO ? 0 :
+                      pa == SCHED_RR ? 1 :
+                      pa == SCHED_OTHER ? 2 :
+                      pa == SCHED_BATCH ? 3 :
+                      pa == SCHED_IDLE ? 4 : 5;
+        int rb_rank = pb == SCHED_FIFO ? 0 :
+                      pb == SCHED_RR ? 1 :
+                      pb == SCHED_OTHER ? 2 :
+                      pb == SCHED_BATCH ? 3 :
+                      pb == SCHED_IDLE ? 4 : 5;
+
+        if (ra_rank != rb_rank) return ra_rank - rb_rank;
+    }
+    if (ra->rt_priority != rb->rt_priority) return rb->rt_priority - ra->rt_priority;
+    if (ra->nice != rb->nice) return ra->nice - rb->nice;
+    if (ra->focused != rb->focused) return rb->focused - ra->focused;
     cmp = strcmp(ra->profile, rb->profile);
     if (cmp != 0) return cmp;
     cmp = strcmp(ra->rule, rb->rule);
@@ -896,7 +1027,11 @@ int lulod_system_sched_reload(LuloSchedSnapshot *snap, const char *config_root,
     fresh.watcher_interval_ms = 1000;
     fresh.focus_enabled = 1;
     snprintf(fresh.focus_profile, sizeof(fresh.focus_profile), "focused");
+    fresh.background_enabled = 1;
     snprintf(fresh.background_profile, sizeof(fresh.background_profile), "background");
+    fresh.background_match_app_slice = 1;
+    fresh.background_match_background_slice = 1;
+    fresh.background_match_app_unit_prefix = 1;
     fresh.focused_pid = snap->focused_pid;
     fresh.focused_start_time = snap->focused_start_time;
     snprintf(fresh.focus_provider, sizeof(fresh.focus_provider), "%s", snap->focus_provider);

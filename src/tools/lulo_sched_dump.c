@@ -14,9 +14,12 @@ static void dump_snapshot(const char *label, const LuloSchedSnapshot *snap)
     printf("config_root=%s\n", snap->config_root);
     printf("watcher_interval_ms=%d scan_generation=%d\n",
            snap->watcher_interval_ms, snap->scan_generation);
-    printf("focus_enabled=%d focus_provider=%s focused_pid=%d focus_profile=%s background_profile=%s\n",
+    printf("focus_enabled=%d focus_provider=%s focused_pid=%d focus_profile=%s background_enabled=%d background_profile=%s\n",
            snap->focus_enabled, snap->focus_provider, snap->focused_pid,
-           snap->focus_profile, snap->background_profile);
+           snap->focus_profile, snap->background_enabled, snap->background_profile);
+    printf("background_match_app_slice=%d background_match_background_slice=%d background_match_app_unit_prefix=%d\n",
+           snap->background_match_app_slice, snap->background_match_background_slice,
+           snap->background_match_app_unit_prefix);
     printf("profiles=%d rules=%d live=%d\n",
            snap->profile_count, snap->rule_count, snap->live_count);
     for (int i = 0; i < snap->profile_count; i++) {

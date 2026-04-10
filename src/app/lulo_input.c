@@ -224,6 +224,12 @@ static InputAction decode_key_byte(unsigned char ch)
         return INPUT_CYCLE_PROC_REFRESH;
     case 'R':
         return INPUT_RELOAD_PAGE;
+    case 'n':
+    case 'N':
+        return INPUT_NEW_ITEM;
+    case 'd':
+    case 'D':
+        return INPUT_DELETE_SELECTED;
     case 'f':
     case 'F':
         return INPUT_TOGGLE_FOCUS;
@@ -502,6 +508,12 @@ InputAction decode_notcurses_input(uint32_t id)
         return INPUT_CYCLE_PROC_REFRESH;
     case 'R':
         return INPUT_RELOAD_PAGE;
+    case 'n':
+    case 'N':
+        return INPUT_NEW_ITEM;
+    case 'd':
+    case 'D':
+        return INPUT_DELETE_SELECTED;
     case 'f':
         return INPUT_TOGGLE_FOCUS;
     case 'k':

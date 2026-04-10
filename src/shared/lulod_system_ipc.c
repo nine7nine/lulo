@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define LULOD_SYSTEM_MAGIC 0x4c555359U
-#define LULOD_SYSTEM_VERSION 3U
+#define LULOD_SYSTEM_VERSION 5U
 
 static int append_owned_line(char ***lines, int *count, const char *text)
 {
@@ -128,6 +128,35 @@ static int read_string_fixed(int fd, char *dst, size_t len)
     return 0;
 }
 
+int lulod_system_send_file_write_request(int fd, const char *path, const char *content)
+{
+    if (write_u32(fd, LULOD_SYSTEM_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_VERSION) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_REQ_FILE_WRITE) < 0) return -1;
+    if (write_string(fd, path) < 0) return -1;
+    return write_string(fd, content ? content : "");
+}
+
+int lulod_system_recv_file_write_request(int fd, char *path, size_t path_len,
+                                         char **content)
+{
+    if (read_string_fixed(fd, path, path_len) < 0) return -1;
+    return read_string_dyn(fd, content);
+}
+
+int lulod_system_send_file_delete_request(int fd, const char *path)
+{
+    if (write_u32(fd, LULOD_SYSTEM_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_VERSION) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_REQ_FILE_DELETE) < 0) return -1;
+    return write_string(fd, path);
+}
+
+int lulod_system_recv_file_delete_request(int fd, char *path, size_t path_len)
+{
+    return read_string_fixed(fd, path, path_len);
+}
+
 static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
 {
     uint32_t count = 0;
@@ -141,7 +170,11 @@ static int serialize_sched_snapshot(int fd, const LuloSchedSnapshot *snap)
     if (write_u64(fd, snap->focused_start_time) < 0) return -1;
     if (write_string(fd, snap->focus_provider) < 0) return -1;
     if (write_string(fd, snap->focus_profile) < 0) return -1;
+    if (write_i32(fd, snap->background_enabled) < 0) return -1;
     if (write_string(fd, snap->background_profile) < 0) return -1;
+    if (write_i32(fd, snap->background_match_app_slice) < 0) return -1;
+    if (write_i32(fd, snap->background_match_background_slice) < 0) return -1;
+    if (write_i32(fd, snap->background_match_app_unit_prefix) < 0) return -1;
     if (write_string(fd, snap->focused_comm) < 0) return -1;
     if (write_string(fd, snap->focused_exe) < 0) return -1;
     if (write_string(fd, snap->focused_unit) < 0) return -1;
@@ -228,7 +261,15 @@ static int deserialize_sched_snapshot(int fd, LuloSchedSnapshot *snap)
     snap->focused_start_time = start_time;
     if (read_string_fixed(fd, snap->focus_provider, sizeof(snap->focus_provider)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focus_profile, sizeof(snap->focus_profile)) < 0) goto fail;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_enabled = count;
     if (read_string_fixed(fd, snap->background_profile, sizeof(snap->background_profile)) < 0) goto fail;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_match_app_slice = count;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_match_background_slice = count;
+    if (read_i32(fd, &count) < 0) goto fail;
+    snap->background_match_app_unit_prefix = count;
     if (read_string_fixed(fd, snap->focused_comm, sizeof(snap->focused_comm)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focused_exe, sizeof(snap->focused_exe)) < 0) goto fail;
     if (read_string_fixed(fd, snap->focused_unit, sizeof(snap->focused_unit)) < 0) goto fail;
@@ -432,6 +473,64 @@ int lulod_system_recv_focus_update_request(int fd, pid_t *pid, unsigned long lon
     if (read_string_fixed(fd, provider, provider_len) < 0) return -1;
     *pid = (pid_t)pid_value;
     *start_time = (unsigned long long)start_value;
+    return 0;
+}
+
+int lulod_system_send_edit_begin_request(int fd, const char *path)
+{
+    if (lulod_system_send_sched_request(fd, LULOD_SYSTEM_REQ_EDIT_BEGIN) < 0) return -1;
+    return write_string(fd, path ? path : "");
+}
+
+int lulod_system_recv_edit_begin_request(int fd, char *path, size_t path_len)
+{
+    return read_string_fixed(fd, path, path_len);
+}
+
+int lulod_system_send_edit_session_request(int fd, uint32_t type, const char *session_id)
+{
+    if (lulod_system_send_sched_request(fd, type) < 0) return -1;
+    return write_string(fd, session_id ? session_id : "");
+}
+
+int lulod_system_recv_edit_session_request(int fd, char *session_id, size_t session_id_len)
+{
+    return read_string_fixed(fd, session_id, session_id_len);
+}
+
+int lulod_system_send_edit_begin_response(int fd, int status, const char *err,
+                                          const char *session_id, const char *edit_path)
+{
+    if (write_u32(fd, LULOD_SYSTEM_MAGIC) < 0) return -1;
+    if (write_u32(fd, LULOD_SYSTEM_VERSION) < 0) return -1;
+    if (write_i32(fd, status) < 0) return -1;
+    if (status < 0) return write_string(fd, err ? err : "edit begin failed");
+    if (write_string(fd, session_id ? session_id : "") < 0) return -1;
+    return write_string(fd, edit_path ? edit_path : "");
+}
+
+int lulod_system_recv_edit_begin_response(int fd, char *session_id, size_t session_id_len,
+                                          char *edit_path, size_t edit_path_len,
+                                          char *err, size_t errlen)
+{
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    int32_t status = 0;
+    char *msg = NULL;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (read_u32(fd, &magic) < 0) return -1;
+    if (read_u32(fd, &version) < 0) return -1;
+    if (read_i32(fd, &status) < 0) return -1;
+    if (magic != LULOD_SYSTEM_MAGIC || version != LULOD_SYSTEM_VERSION) return -1;
+    if (status < 0) {
+        if (read_string_dyn(fd, &msg) < 0) return -1;
+        if (err && errlen > 0) snprintf(err, errlen, "%s", msg ? msg : "edit begin failed");
+        free(msg);
+        return -1;
+    }
+    if (read_string_fixed(fd, session_id, session_id_len) < 0) return -1;
+    if (read_string_fixed(fd, edit_path, edit_path_len) < 0) return -1;
     return 0;
 }
 

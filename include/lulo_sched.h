@@ -17,6 +17,7 @@ typedef enum {
     LULO_SCHED_MATCH_UNIT,
     LULO_SCHED_MATCH_SLICE,
     LULO_SCHED_MATCH_CGROUP,
+    LULO_SCHED_MATCH_DYNAMIC,
 } LuloSchedMatchKind;
 
 typedef struct {
@@ -73,7 +74,11 @@ typedef struct {
     unsigned long long focused_start_time;
     char focus_provider[32];
     char focus_profile[64];
+    int background_enabled;
     char background_profile[64];
+    int background_match_app_slice;
+    int background_match_background_slice;
+    int background_match_app_unit_prefix;
     char focused_comm[96];
     char focused_exe[192];
     char focused_unit[128];

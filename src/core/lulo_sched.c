@@ -354,7 +354,8 @@ static int format_rule_detail(LuloSchedSnapshot *snap, const LuloSchedRuleRow *r
     if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
     snprintf(buf, sizeof(buf), "action: %s", row->exclude ? "exclude" : row->profile);
     if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
-    snprintf(buf, sizeof(buf), "match: %s", lulo_sched_match_kind_name(row->match_kind));
+    if (row->match_kind == LULO_SCHED_MATCH_DYNAMIC) snprintf(buf, sizeof(buf), "match: dynamic");
+    else snprintf(buf, sizeof(buf), "match: %s", lulo_sched_match_kind_name(row->match_kind));
     if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
     snprintf(buf, sizeof(buf), "pattern: %s", row->pattern);
     if (append_detail_line(&snap->detail_lines, &snap->detail_line_count, buf) < 0) return -1;
@@ -429,7 +430,11 @@ int lulo_sched_snapshot_clone(LuloSchedSnapshot *dst, const LuloSchedSnapshot *s
     dst->focused_start_time = src->focused_start_time;
     snprintf(dst->focus_provider, sizeof(dst->focus_provider), "%s", src->focus_provider);
     snprintf(dst->focus_profile, sizeof(dst->focus_profile), "%s", src->focus_profile);
+    dst->background_enabled = src->background_enabled;
     snprintf(dst->background_profile, sizeof(dst->background_profile), "%s", src->background_profile);
+    dst->background_match_app_slice = src->background_match_app_slice;
+    dst->background_match_background_slice = src->background_match_background_slice;
+    dst->background_match_app_unit_prefix = src->background_match_app_unit_prefix;
     snprintf(dst->focused_comm, sizeof(dst->focused_comm), "%s", src->focused_comm);
     snprintf(dst->focused_exe, sizeof(dst->focused_exe), "%s", src->focused_exe);
     snprintf(dst->focused_unit, sizeof(dst->focused_unit), "%s", src->focused_unit);
@@ -746,6 +751,8 @@ const char *lulo_sched_view_name(LuloSchedView view)
 const char *lulo_sched_match_kind_name(LuloSchedMatchKind kind)
 {
     switch (kind) {
+    case LULO_SCHED_MATCH_DYNAMIC:
+        return "dyn";
     case LULO_SCHED_MATCH_EXE:
         return "exe";
     case LULO_SCHED_MATCH_CMDLINE:

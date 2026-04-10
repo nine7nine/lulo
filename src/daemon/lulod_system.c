@@ -1,9 +1,11 @@
 #define _GNU_SOURCE
 
+#include "lulod_system_edit.h"
 #include "lulod_system_ipc.h"
 #include "lulod_system_sched.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -43,6 +45,21 @@ static int next_scan_deadline_ms(const LuloSchedSnapshot *snap)
     int interval = snap && snap->watcher_interval_ms > 0 ? snap->watcher_interval_ms : 1000;
     if (interval < 100) interval = 100;
     return interval;
+}
+
+static int client_peer_ids(int fd, uid_t *uid, gid_t *gid)
+{
+    struct ucred cred;
+    socklen_t len = sizeof(cred);
+
+    if (!uid || !gid) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) < 0) return -1;
+    *uid = cred.uid;
+    *gid = cred.gid;
+    return 0;
 }
 
 static int do_reload_and_scan(LuloSchedSnapshot *snap, const char *config_root,
@@ -121,11 +138,18 @@ int main(int argc, char *argv[])
         {
             int client_fd = accept(listen_fd, NULL, NULL);
             uint32_t type = 0;
+            uid_t peer_uid = 0;
+            gid_t peer_gid = 0;
 
             if (client_fd < 0) {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
                 lulod_system_running = 0;
+                continue;
+            }
+            if (client_peer_ids(client_fd, &peer_uid, &peer_gid) < 0) {
+                lulod_system_send_status_response(client_fd, -1, "failed to read client credentials");
+                close(client_fd);
                 continue;
             }
             if (lulod_system_recv_request_header(client_fd, &type) < 0) {
@@ -157,6 +181,92 @@ int main(int argc, char *argv[])
                                                       errbuf[0] ? errbuf : "scan failed");
                 } else {
                     scan_due_ms = mono_ms_now() + next_scan_deadline_ms(&state);
+                    lulod_system_send_status_response(client_fd, 0, NULL);
+                }
+            } else if (type == LULOD_SYSTEM_REQ_EDIT_BEGIN) {
+                char path[PATH_MAX];
+                char session_id[PATH_MAX];
+                char edit_path[PATH_MAX];
+
+                if (lulod_system_recv_edit_begin_request(client_fd, path, sizeof(path)) < 0) {
+                    lulod_system_send_edit_begin_response(client_fd, -1, "bad edit request", NULL, NULL);
+                } else if (lulod_system_edit_begin(path, peer_uid, peer_gid,
+                                                   session_id, sizeof(session_id),
+                                                   edit_path, sizeof(edit_path),
+                                                   NULL, errbuf, sizeof(errbuf)) < 0) {
+                    lulod_system_send_edit_begin_response(client_fd, -1,
+                                                          errbuf[0] ? errbuf : "failed to start edit session",
+                                                          NULL, NULL);
+                } else {
+                    lulod_system_send_edit_begin_response(client_fd, 0, NULL, session_id, edit_path);
+                }
+            } else if (type == LULOD_SYSTEM_REQ_EDIT_COMMIT || type == LULOD_SYSTEM_REQ_EDIT_CANCEL) {
+                char session_id[PATH_MAX];
+                int reload_sched = 0;
+                int rc;
+
+                if (lulod_system_recv_edit_session_request(client_fd, session_id, sizeof(session_id)) < 0) {
+                    lulod_system_send_status_response(client_fd, -1, "bad edit session request");
+                    close(client_fd);
+                    continue;
+                }
+                if (type == LULOD_SYSTEM_REQ_EDIT_COMMIT) {
+                    rc = lulod_system_edit_commit(session_id, peer_uid, &reload_sched, errbuf, sizeof(errbuf));
+                    if (rc == 0 && reload_sched) {
+                        rc = do_reload_and_scan(&state, config_root, errbuf, sizeof(errbuf));
+                        if (rc == 0) scan_due_ms = mono_ms_now() + next_scan_deadline_ms(&state);
+                    }
+                } else {
+                    rc = lulod_system_edit_cancel(session_id, peer_uid, errbuf, sizeof(errbuf));
+                }
+                if (rc < 0) {
+                    lulod_system_send_status_response(client_fd, -1,
+                                                      errbuf[0] ? errbuf : "edit request failed");
+                } else {
+                    lulod_system_send_status_response(client_fd, 0, NULL);
+                }
+            } else if (type == LULOD_SYSTEM_REQ_FILE_WRITE) {
+                char path[PATH_MAX];
+                char *content = NULL;
+                int reload_sched = 0;
+                int rc;
+
+                if (lulod_system_recv_file_write_request(client_fd, path, sizeof(path), &content) < 0) {
+                    lulod_system_send_status_response(client_fd, -1, "bad file write request");
+                    close(client_fd);
+                    continue;
+                }
+                rc = lulod_system_write_file(path, content, &reload_sched, errbuf, sizeof(errbuf));
+                free(content);
+                if (rc == 0 && reload_sched) {
+                    rc = do_reload_and_scan(&state, config_root, errbuf, sizeof(errbuf));
+                    if (rc == 0) scan_due_ms = mono_ms_now() + next_scan_deadline_ms(&state);
+                }
+                if (rc < 0) {
+                    lulod_system_send_status_response(client_fd, -1,
+                                                      errbuf[0] ? errbuf : "file write failed");
+                } else {
+                    lulod_system_send_status_response(client_fd, 0, NULL);
+                }
+            } else if (type == LULOD_SYSTEM_REQ_FILE_DELETE) {
+                char path[PATH_MAX];
+                int reload_sched = 0;
+                int rc;
+
+                if (lulod_system_recv_file_delete_request(client_fd, path, sizeof(path)) < 0) {
+                    lulod_system_send_status_response(client_fd, -1, "bad file delete request");
+                    close(client_fd);
+                    continue;
+                }
+                rc = lulod_system_delete_file(path, &reload_sched, errbuf, sizeof(errbuf));
+                if (rc == 0 && reload_sched) {
+                    rc = do_reload_and_scan(&state, config_root, errbuf, sizeof(errbuf));
+                    if (rc == 0) scan_due_ms = mono_ms_now() + next_scan_deadline_ms(&state);
+                }
+                if (rc < 0) {
+                    lulod_system_send_status_response(client_fd, -1,
+                                                      errbuf[0] ? errbuf : "file delete failed");
+                } else {
                     lulod_system_send_status_response(client_fd, 0, NULL);
                 }
             } else if (type == LULOD_SYSTEM_REQ_SCHED_FULL) {

@@ -569,7 +569,7 @@ static int append_dependency_section(char ***lines, int *count, const char *titl
 
 static int load_selected_unit_file(LuloSystemdSnapshot *snap, const LuloSystemdState *state)
 {
-    const LuloSystemdServiceRow *row;
+    LuloSystemdServiceRow *row;
     sd_bus *bus = NULL;
     char object_path[320] = {0};
     char *fragment = NULL;
@@ -593,6 +593,7 @@ static int load_selected_unit_file(LuloSystemdSnapshot *snap, const LuloSystemdS
     }
 
     row = &snap->rows[idx];
+    row->fragment_path[0] = '\0';
     snprintf(snap->file_title, sizeof(snap->file_title), "%s unit file", row->user_scope ? "user" : "system");
     snprintf(snap->file_status, sizeof(snap->file_status), "%.20s  %.20s/%.20s  %.80s",
              row->file_state, row->active, row->sub, row->unit);
@@ -641,8 +642,11 @@ static int load_selected_unit_file(LuloSystemdSnapshot *snap, const LuloSystemdS
     }
 
     if (fragment && fragment[0]) {
+        snprintf(row->fragment_path, sizeof(row->fragment_path), "%s", fragment);
         if (append_file_section(&snap->file_lines, &snap->file_line_count, fragment) < 0) goto fail;
         rendered_files = 1;
+    } else if (source && source[0]) {
+        snprintf(row->fragment_path, sizeof(row->fragment_path), "%s", source);
     }
     if (dropins) {
         for (size_t i = 0; dropins[i]; i++) {

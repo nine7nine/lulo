@@ -32,12 +32,14 @@ LULO_SRCS := \
 	$(SRC_CORE)/lulo_model.c \
 	$(SRC_CORE)/lulo_proc.c \
 	$(SRC_CORE)/lulo_dizk.c \
+	$(SRC_CORE)/lulo_edit.c \
 	$(SRC_CORE)/lulo_sched.c \
 	$(SRC_CORE)/lulo_sched_backend.c \
 	$(SRC_CORE)/lulo_systemd.c \
 	$(SRC_CORE)/lulo_systemd_backend.c \
 	$(SRC_CORE)/lulo_tune.c \
 	$(SRC_CORE)/lulo_tune_backend.c \
+	$(SRC_SHARED)/lulod_system_ipc.c \
 	$(SRC_SHARED)/lulod_ipc.c
 
 LULO_ADMIN_SRCS := \
@@ -61,6 +63,7 @@ LULOD_SRCS := \
 
 LULOD_SYSTEM_SRCS := \
 	$(SRC_DAEMON)/lulod_system.c \
+	$(SRC_DAEMON)/lulod_system_edit.c \
 	$(SRC_DAEMON)/lulod_system_sched.c \
 	$(SRC_CORE)/lulo_sched.c \
 	$(SRC_SHARED)/lulo_proc_meta.c \
@@ -82,13 +85,13 @@ analyze:
 
 asan: lulo-asan lulod-asan lulod-system-asan lulo-admin-asan nc_input_probe-asan lulod-focus-kde-asan
 
-lulo: $(LULO_SRCS) include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulod_ipc.h
+lulo: $(LULO_SRCS) include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(NC_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) -lm -lpthread
 
 lulod: $(LULOD_SRCS) include/lulo_sched.h include/lulo_systemd.h include/lulo_tune.h include/lulod_sched.h include/lulod_systemd.h include/lulod_tune.h include/lulod_system_ipc.h include/lulod_ipc.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(LULOD_SRCS) $(SYSTEMD_LIBS) -lm
 
-lulod-system: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_ipc.h include/lulod_system_sched.h
+lulod-system: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(LULOD_SYSTEM_SRCS) -lm
 
 lulo-admin: $(LULO_ADMIN_SRCS) include/lulo_admin.h
@@ -103,13 +106,13 @@ $(LULOD_FOCUS_KDE_MOC): $(LULOD_FOCUS_KDE_SRCS)
 lulod-focus-kde: $(LULOD_FOCUS_KDE_SRCS) $(LULOD_FOCUS_KDE_MOC)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(FOCUS_KDE_PIC) $(FOCUS_KDE_CFLAGS) -o $@ $(LULOD_FOCUS_KDE_SRCS) $(FOCUS_KDE_LIBS)
 
-lulo-asan: $(LULO_SRCS) include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulod_ipc.h
+lulo-asan: $(LULO_SRCS) include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
 	$(CC) $(CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) $(NC_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) -lm -lpthread
 
 lulod-asan: $(LULOD_SRCS) include/lulo_sched.h include/lulo_systemd.h include/lulo_tune.h include/lulod_sched.h include/lulod_systemd.h include/lulod_tune.h include/lulod_system_ipc.h include/lulod_ipc.h
 	$(CC) $(CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) -o $@ $(LULOD_SRCS) $(SYSTEMD_LIBS) -lm
 
-lulod-system-asan: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_ipc.h include/lulod_system_sched.h
+lulod-system-asan: $(LULOD_SYSTEM_SRCS) include/lulo_sched.h include/lulod_system_edit.h include/lulod_system_ipc.h include/lulod_system_sched.h
 	$(CC) $(CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) -o $@ $(LULOD_SYSTEM_SRCS) -lm
 
 lulo-admin-asan: $(LULO_ADMIN_SRCS) include/lulo_admin.h

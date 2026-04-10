@@ -18,11 +18,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "lulo_app.h"
+#include "lulo_edit.h"
 
 static const Theme theme_color = {
     .mono = 0,
@@ -255,11 +257,11 @@ static const char *footer_hint(AppPage page)
 {
     switch (page) {
     case APP_PAGE_SCHED:
-        return "q exit   tab or <- -> page   click view   space open   R reload config   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
+        return "q exit   tab or <- -> page   click view   space open   i edit   n new   d delete   R reload config   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
     case APP_PAGE_TUNE:
         return "q exit   tab or <- -> page   click view   space open   i edit   Enter stage   Esc cancel   a apply   s snapshot   S preset   f focus list/preview   j/k or arrows scroll";
     case APP_PAGE_SYSTEMD:
-        return "q exit   tab or <- -> page   click view   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
+        return "q exit   tab or <- -> page   click view   i edit config   f focus list/preview   j/k or arrows scroll   PgUp/PgDn jump";
     case APP_PAGE_DIZK:
         return "q exit   tab or <- -> switch   j/k or arrows scroll filesystems   PgUp/PgDn jump";
     case APP_PAGE_CPU:
@@ -303,6 +305,28 @@ static void app_status_set(AppState *app, const char *fmt, ...)
     vsnprintf(app->status, sizeof(app->status), fmt, ap);
     va_end(ap);
     app->status_until_ms = mono_ms_now() + 2500;
+}
+
+void sched_status_set(AppState *app, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!app) return;
+    va_start(ap, fmt);
+    vsnprintf(app->sched_status, sizeof(app->sched_status), fmt, ap);
+    va_end(ap);
+    app->sched_status_until_ms = mono_ms_now() + 2500;
+}
+
+const char *sched_status_current(AppState *app)
+{
+    if (!app || !app->sched_status[0]) return NULL;
+    if (mono_ms_now() > app->sched_status_until_ms) {
+        app->sched_status[0] = '\0';
+        app->sched_status_until_ms = 0;
+        return NULL;
+    }
+    return app->sched_status;
 }
 
 void tune_status_set(AppState *app, const char *fmt, ...)
@@ -375,6 +399,147 @@ static const char *app_status_current(AppState *app)
         return NULL;
     }
     return app->status;
+}
+
+static const char *path_basename_local(const char *path)
+{
+    const char *slash;
+
+    if (!path || !*path) return "";
+    slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+static void ui_forget_planes(Ui *ui)
+{
+    if (!ui) return;
+    ui->std = NULL;
+    ui->header = NULL;
+    ui->tabs = NULL;
+    ui->top = NULL;
+    ui->cpu = NULL;
+    ui->mem = NULL;
+    ui->proc = NULL;
+    ui->disk = NULL;
+    ui->sched = NULL;
+    ui->systemd = NULL;
+    ui->tune = NULL;
+    ui->load = NULL;
+    ui->footer = NULL;
+    ui->term_h = 0;
+    ui->term_w = 0;
+    memset(&ui->lo, 0, sizeof(ui->lo));
+    memset(&ui->proc_table, 0, sizeof(ui->proc_table));
+    memset(ui->tab_hits, 0, sizeof(ui->tab_hits));
+}
+
+static void ui_suspend_for_external_editor(Ui *ui, InputBackend input_backend, RawInput *rawin)
+{
+    if (input_backend == INPUT_BACKEND_RAW) {
+        terminal_mouse_disable();
+        raw_input_disable(rawin);
+    }
+    if (ui && ui->nc) {
+        notcurses_stop(ui->nc);
+        ui->nc = NULL;
+    }
+    ui_forget_planes(ui);
+}
+
+static int ui_resume_after_external_editor(Ui *ui, InputBackend input_backend, RawInput *rawin,
+                                           DebugLog *dlog, char *err, size_t errlen)
+{
+    struct notcurses_options opts;
+
+    if (err && errlen > 0) err[0] = '\0';
+    memset(&opts, 0, sizeof(opts));
+    opts.flags = NCOPTION_SUPPRESS_BANNERS | NCOPTION_INHIBIT_SETLOCALE;
+    debug_log_stage(dlog, "before_resume_init");
+    ui->nc = notcurses_core_init(&opts, NULL);
+    if (!ui->nc) {
+        if (err && errlen > 0) snprintf(err, errlen, "failed to reinitialize Notcurses");
+        return -1;
+    }
+    ui->std = notcurses_stdplane(ui->nc);
+    if (input_backend == INPUT_BACKEND_NOTCURSES) {
+        notcurses_mice_enable(ui->nc, NCMICE_BUTTON_EVENT);
+    } else if (input_backend == INPUT_BACKEND_RAW) {
+        if (raw_input_enable(rawin) < 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "failed to restore raw input mode");
+            notcurses_stop(ui->nc);
+            ui->nc = NULL;
+            ui_forget_planes(ui);
+            return -1;
+        }
+        terminal_mouse_enable();
+    }
+    debug_log_stage(dlog, "after_resume_init");
+    return 0;
+}
+
+static int launch_external_editor(const char *path, char *err, size_t errlen)
+{
+    pid_t pid;
+    int status = 0;
+
+    if (err && errlen > 0) err[0] = '\0';
+    if (!path || !*path) {
+        if (err && errlen > 0) snprintf(err, errlen, "invalid edit path");
+        errno = EINVAL;
+        return -1;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "fork editor: %s", strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-lc",
+              "exec ${VISUAL:-${EDITOR:-vi}} \"$1\"",
+              "sh", path, (char *)NULL);
+        _exit(127);
+    }
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            if (err && errlen > 0) snprintf(err, errlen, "wait editor: %s", strerror(errno));
+            return -1;
+        }
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 1;
+    if (WIFEXITED(status) && (WEXITSTATUS(status) == 130 || WEXITSTATUS(status) == 143)) return 0;
+    if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGINT || WTERMSIG(status) == SIGTERM)) return 0;
+    if (err && errlen > 0) {
+        if (WIFEXITED(status)) snprintf(err, errlen, "editor exited with status %d", WEXITSTATUS(status));
+        else if (WIFSIGNALED(status)) snprintf(err, errlen, "editor terminated by signal %d", WTERMSIG(status));
+        else snprintf(err, errlen, "editor failed");
+    }
+    return -1;
+}
+
+static int run_external_edit(Ui *ui, InputBackend input_backend, RawInput *rawin, DebugLog *dlog,
+                             const char *path, int *fatal, char *err, size_t errlen)
+{
+    LuloEditSession session;
+    int editor_rc;
+
+    if (fatal) *fatal = 0;
+    if (err && errlen > 0) err[0] = '\0';
+    lulo_edit_session_init(&session);
+    if (lulo_edit_session_begin(path, &session, err, errlen) < 0) return -1;
+
+    ui_suspend_for_external_editor(ui, input_backend, rawin);
+    editor_rc = launch_external_editor(session.edit_path, err, errlen);
+    if (ui_resume_after_external_editor(ui, input_backend, rawin, dlog, err, errlen) < 0) {
+        if (fatal) *fatal = 1;
+        return -1;
+    }
+    if (editor_rc <= 0) {
+        if (lulo_edit_session_cancel(&session, NULL, 0) < 0) lulo_edit_session_clear(&session);
+        return editor_rc;
+    }
+    if (lulo_edit_session_commit(&session, err, errlen) < 0) return -1;
+    return 1;
 }
 
 static void reset_scroll_repeat(AppState *app)
@@ -1385,13 +1550,13 @@ static void render_disk_page(Ui *ui, const AppState *app, const DashboardState *
     render_disk_status(ui, dizk_snap, dizk_state);
 }
 
-static void render_sched_page(Ui *ui, const AppState *app, const DashboardState *dash,
+static void render_sched_page(Ui *ui, AppState *app, const DashboardState *dash,
                               const LuloSchedSnapshot *sched_snap, const LuloSchedState *sched_state,
                               const LuloSchedBackendStatus *sched_backend_status)
 {
     render_header_widget(ui, dash, app);
     render_sched_widget(ui, sched_snap, sched_state);
-    render_sched_status(ui, sched_snap, sched_state, sched_backend_status);
+    render_sched_status(ui, sched_snap, sched_state, sched_backend_status, app);
 }
 
 static void render_systemd_page(Ui *ui, const AppState *app, const DashboardState *dash,
@@ -1425,10 +1590,11 @@ static void render_disk_only(Ui *ui, const LuloDizkSnapshot *dizk_snap, const Lu
 
 static void render_sched_only(Ui *ui, const LuloSchedSnapshot *sched_snap,
                               const LuloSchedState *sched_state,
+                              AppState *app,
                               const LuloSchedBackendStatus *sched_backend_status)
 {
     render_sched_widget(ui, sched_snap, sched_state);
-    render_sched_status(ui, sched_snap, sched_state, sched_backend_status);
+    render_sched_status(ui, sched_snap, sched_state, sched_backend_status, app);
 }
 
 static void render_systemd_only(Ui *ui, const LuloSystemdSnapshot *systemd_snap,
@@ -1937,6 +2103,7 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                                const LuloSchedSnapshot *sched_snap, LuloSchedState *sched_state,
                                const LuloTuneSnapshot *tune_snap, LuloTuneState *tune_state,
                                const LuloSystemdSnapshot *systemd_snap, LuloSystemdState *systemd_state,
+                               InputBackend input_backend, RawInput *rawin, DebugLog *dlog,
                                DashboardState *dash, int *sample_ms, long long *deadline,
                                int *exit_requested, int *need_resize, RenderFlags *render,
                                int scroll_units)
@@ -2410,6 +2577,79 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
         if (app->active_page == APP_PAGE_SCHED) {
             render->need_sched_reload = 1;
             render->need_sched = 1;
+            sched_status_set(app, "reloading scheduler config");
+            render->need_load = 1;
+            render->need_render = 1;
+        }
+        break;
+    case INPUT_NEW_ITEM:
+        if (app->active_page == APP_PAGE_SCHED) {
+            char new_path[PATH_MAX];
+            char *content = NULL;
+            char err[192];
+            int fatal = 0;
+            int rc;
+
+            if (sched_prepare_new_entry(sched_snap, sched_state, new_path, sizeof(new_path),
+                                        &content, err, sizeof(err)) < 0) {
+                sched_status_set(app, "%s", err[0] ? err : "create failed");
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            rc = lulo_edit_write_file(new_path, content, err, sizeof(err));
+            free(content);
+            if (rc < 0) {
+                sched_status_set(app, "%s", err[0] ? err : "create failed");
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            rc = run_external_edit(ui, input_backend, rawin, dlog, new_path, &fatal, err, sizeof(err));
+            render->need_rebuild = 1;
+            render->need_render = 1;
+            if (fatal) {
+                fprintf(stderr, "%s\n", err[0] ? err : "failed to restore terminal after editing");
+                *exit_requested = 1;
+                break;
+            }
+            if (rc > 0) {
+                sched_status_set(app, "saved %s", path_basename_local(new_path));
+                render->need_sched_reload = 1;
+                render->need_sched = 1;
+            } else if (rc == 0) {
+                sched_status_set(app, "created %s", path_basename_local(new_path));
+                render->need_sched_reload = 1;
+                render->need_sched = 1;
+            } else {
+                sched_status_set(app, "%s", err[0] ? err : "edit failed");
+            }
+            render->need_load = 1;
+        }
+        break;
+    case INPUT_DELETE_SELECTED:
+        if (app->active_page == APP_PAGE_SCHED) {
+            const char *delete_path = active_sched_delete_path(sched_snap, sched_state);
+            char err[192];
+
+            if (!delete_path) {
+                if (sched_state->view == LULO_SCHED_VIEW_RULES && active_sched_is_builtin_rule(sched_snap, sched_state)) {
+                    sched_status_set(app, "built-in rules live in scheduler.conf");
+                } else {
+                    sched_status_set(app, "delete from Profiles or file-backed Rules");
+                }
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            if (lulo_edit_delete_file(delete_path, err, sizeof(err)) < 0) {
+                sched_status_set(app, "%s", err[0] ? err : "delete failed");
+            } else {
+                sched_status_set(app, "deleted %s", path_basename_local(delete_path));
+                render->need_sched_reload = 1;
+                render->need_sched = 1;
+            }
+            render->need_load = 1;
             render->need_render = 1;
         }
         break;
@@ -2448,6 +2688,70 @@ static void apply_input_action(Ui *ui, InputAction action, AppState *app,
                 render->need_tune = 1;
                 render->need_render = 1;
             }
+        } else if (app->active_page == APP_PAGE_SCHED) {
+            const char *edit_path = active_sched_edit_path(sched_snap, sched_state);
+            char err[192];
+            int fatal = 0;
+            int rc;
+
+            if (!edit_path) {
+                sched_status_set(app, "edit from Profiles or Rules");
+                render->need_load = 1;
+                render->need_render = 1;
+                break;
+            }
+            rc = run_external_edit(ui, input_backend, rawin, dlog, edit_path, &fatal, err, sizeof(err));
+            render->need_rebuild = 1;
+            render->need_render = 1;
+            if (fatal) {
+                fprintf(stderr, "%s\n", err[0] ? err : "failed to restore terminal after editing");
+                *exit_requested = 1;
+                break;
+            }
+            if (rc > 0) {
+                sched_status_set(app, "saved %s", path_basename_local(edit_path));
+                render->need_sched_reload = 1;
+                render->need_sched = 1;
+            } else if (rc == 0) {
+                sched_status_set(app, "edit cancelled");
+            } else {
+                sched_status_set(app, "%s", err[0] ? err : "edit failed");
+            }
+            render->need_load = 1;
+        } else if (app->active_page == APP_PAGE_SYSTEMD) {
+            const char *edit_path = active_systemd_edit_path(systemd_snap, systemd_state);
+            char err[192];
+            int fatal = 0;
+            int rc;
+
+            if (!edit_path) {
+                if (systemd_state->view == LULO_SYSTEMD_VIEW_CONFIG) {
+                    app_status_set(app, "edit from Config");
+                } else {
+                    app_status_set(app, "open a service first");
+                }
+                render->need_footer = 1;
+                render->need_render = 1;
+                break;
+            }
+            rc = run_external_edit(ui, input_backend, rawin, dlog, edit_path, &fatal, err, sizeof(err));
+            render->need_rebuild = 1;
+            render->need_render = 1;
+            if (fatal) {
+                fprintf(stderr, "%s\n", err[0] ? err : "failed to restore terminal after editing");
+                *exit_requested = 1;
+                break;
+            }
+            if (rc > 0) {
+                app_status_set(app, "saved %s", path_basename_local(edit_path));
+                render->need_systemd_refresh = 1;
+                render->need_systemd = 1;
+            } else if (rc == 0) {
+                app_status_set(app, "edit cancelled");
+            } else {
+                app_status_set(app, "%s", err[0] ? err : "edit failed");
+            }
+            render->need_footer = 1;
         }
         break;
     case INPUT_APPLY_SELECTED:
@@ -2542,7 +2846,7 @@ static void render_pending(Ui *ui, AppState *app, const CpuInfo *ci, DashboardSt
         if (render->need_disk || render->need_load) render_disk_only(ui, dizk_snap, dizk_state);
     } else if (app->active_page == APP_PAGE_SCHED) {
         if (render->need_header) render_header_only(ui, dash, app);
-        if (render->need_sched || render->need_load) render_sched_only(ui, sched_snap, sched_state, sched_backend_status);
+        if (render->need_sched || render->need_load) render_sched_only(ui, sched_snap, sched_state, app, sched_backend_status);
     } else if (app->active_page == APP_PAGE_TUNE) {
         if (render->need_header) render_header_only(ui, dash, app);
         if (render->need_tune || render->need_load) render_tune_only(ui, tune_snap, tune_state, app, tune_backend_status);
@@ -3010,7 +3314,8 @@ int main(int argc, char *argv[])
                             apply_input_action(&ui, in.action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
                                                &sched_snap, &sched_state,
                                                &tune_snap, &tune_state,
-                                               &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
+                                               &systemd_snap, &systemd_state, input_backend, &rawin, &dlog,
+                                               &dash, &sample_ms, &deadline,
                                                &exit_requested, &need_resize, &render, scroll_units);
                         }
                         if (need_resize || render.need_rebuild || exit_requested) break;
@@ -3087,7 +3392,8 @@ int main(int argc, char *argv[])
                             apply_input_action(&ui, action, &app, &proc_snap, &proc_state, &dizk_snap, &dizk_state,
                                                &sched_snap, &sched_state,
                                                &tune_snap, &tune_state,
-                                               &systemd_snap, &systemd_state, &dash, &sample_ms, &deadline,
+                                               &systemd_snap, &systemd_state, input_backend, &rawin, &dlog,
+                                               &dash, &sample_ms, &deadline,
                                                &exit_requested, &need_resize, &render, scroll_units);
                         }
                         if (need_resize || render.need_rebuild || exit_requested) break;

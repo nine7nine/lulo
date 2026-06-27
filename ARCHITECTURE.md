@@ -16,6 +16,7 @@
 | --- | --- |
 | `lulo-admin` | Narrow privileged helper used by the current polkit/pkexec path |
 | `lulod-focus-kde` | KDE/Qt focus helper that reports the currently focused window PID |
+| `lulod-focus-gnome` | GNOME focus helper; relays the focused PID published by the `lulod-focus@ninez.org` Shell extension |
 
 ## High-Level Data Flow
 
@@ -100,7 +101,7 @@ Responsibilities:
 | Responsibility | Notes |
 | --- | --- |
 | Maintain user-facing snapshots | Covers `SCHED`, `SYSTEMD`, `TUNE`, `CGROUPS`, and `UDEV` |
-| Focus integration | Currently KDE focus reporting |
+| Focus integration | KDE and GNOME focus reporting |
 | Proxy system work | For scheduler/focus requests and privileged operations |
 | Support editor flows | Handles file-backed page editing before privileged commit |
 | Keep the UI responsive | Moves blocking work out of `lulo` |

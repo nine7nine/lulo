@@ -4,12 +4,14 @@
 /lulo-admin
 /nc_input_probe
 /lulod-focus-kde
+/lulod-focus-gnome
 /lulo-asan
 /lulod-asan
 /lulod-system-asan
 /lulo-admin-asan
 /nc_input_probe-asan
 /lulod-focus-kde-asan
+/lulod-focus-gnome-asan
 /notcurses-upstream
 /cpuz
 /cpuz_asan

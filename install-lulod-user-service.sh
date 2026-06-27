@@ -51,6 +51,8 @@ detect_focus_provider() {
   shopt -s nocasematch
   if [[ "$combined" == *kde* || "$combined" == *plasma* ]]; then
     printf 'kde'
+  elif [[ "$combined" == *gnome* ]]; then
+    printf 'gnome'
   fi
   shopt -u nocasematch
 }

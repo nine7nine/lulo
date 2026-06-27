@@ -17,8 +17,8 @@ This project supports a normal `/usr` install layout directly from the existing 
 | Path | Contents |
 | --- | --- |
 | `/usr/bin` | `lulo`, `lulod`, `lulod-system` |
-| `/usr/libexec/lulo` | `lulo-admin`, `lulod-focus-kde` |
-| `/usr/share/lulo` | Runtime data, KWin script, example scheduler config |
+| `/usr/libexec/lulo` | `lulo-admin`, `lulod-focus-kde`, `lulod-focus-gnome` |
+| `/usr/share/lulo` | Runtime data, KWin script, GNOME Shell focus extension, example scheduler config |
 | `/usr/lib/systemd/user` | `lulod.service` |
 | `/usr/lib/systemd/system` | `lulod-system.service` |
 | `/usr/share/polkit-1/actions` | Polkit policy |
@@ -36,6 +36,27 @@ sudo make install PREFIX=/usr
 ```
 
 This is the simplest path. The helper scripts detect the installed `/usr` layout and use it.
+
+For one command that builds, installs to `/usr`, sets up the user/system services,
+and (on GNOME) installs the focus extension:
+
+```bash
+cd /path/to/lulo
+./install-system.sh
+```
+
+### GNOME focus provider
+
+KDE loads its focus script at runtime, but GNOME Shell only loads extensions from
+its own directories, so the GNOME focus provider needs a one-time extension install:
+
+```bash
+./install-lulo-gnome-extension.sh   # copies + enables lulod-focus@ninez.org for your user
+```
+
+On Wayland, log out and back in so GNOME Shell loads the extension, then
+`systemctl --user restart lulod.service`. `install-lulod-user-service.sh`
+auto-detects GNOME and sets `LULOD_FOCUS_PROVIDER=gnome`.
 
 ## Vendor Unit Flow
 

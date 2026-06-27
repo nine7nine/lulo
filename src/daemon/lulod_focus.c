@@ -35,6 +35,7 @@ static const char *focus_provider_from_env(void)
     if (override && *override) {
         if (!strcmp(override, "none")) return NULL;
         if (!strcmp(override, "kde")) return "kde";
+        if (!strcmp(override, "gnome")) return "gnome";
         if (strcmp(override, "auto") != 0) return NULL;
     }
 
@@ -49,6 +50,7 @@ static const char *focus_provider_from_env(void)
 
         if (!value || !*value) continue;
         if (strcasestr(value, "kde") || strcasestr(value, "plasma")) return "kde";
+        if (strcasestr(value, "gnome")) return "gnome";
     }
     return NULL;
 }
@@ -143,13 +145,20 @@ static int start_focus_helper(LulodFocusMonitor *monitor, long long now_ms,
                               char *err, size_t errlen)
 {
     char helper_path[PATH_MAX];
+    const char *helper_name;
     int pipes[2] = {-1, -1};
     pid_t child;
 
     if (!monitor || !monitor->enabled || !monitor->provider[0]) return -1;
-    if (strcmp(monitor->provider, "kde") != 0) return -1;
-    if (resolve_helper_binary_path("lulod-focus-kde", helper_path, sizeof(helper_path)) < 0) {
-        if (err && errlen > 0) snprintf(err, errlen, "failed to resolve lulod-focus-kde");
+    if (!strcmp(monitor->provider, "kde")) {
+        helper_name = "lulod-focus-kde";
+    } else if (!strcmp(monitor->provider, "gnome")) {
+        helper_name = "lulod-focus-gnome";
+    } else {
+        return -1;
+    }
+    if (resolve_helper_binary_path(helper_name, helper_path, sizeof(helper_path)) < 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "failed to resolve %s", helper_name);
         monitor->enabled = 0;
         return -1;
     }

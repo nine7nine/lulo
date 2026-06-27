@@ -33,6 +33,9 @@ FOCUS_KDE_MOC := $(if $(QT6_HOST_LIBEXECS),$(QT6_HOST_LIBEXECS)/moc,moc)
 FOCUS_KDE_CFLAGS := $(shell $(PKG_CONFIG) --cflags Qt6Core Qt6DBus)
 FOCUS_KDE_LIBS := $(shell $(PKG_CONFIG) --libs Qt6Core Qt6DBus)
 FOCUS_KDE_PIC := -fPIC
+FOCUS_GNOME_CFLAGS := $(shell $(PKG_CONFIG) --cflags gio-2.0 glib-2.0 gobject-2.0)
+FOCUS_GNOME_LIBS := $(shell $(PKG_CONFIG) --libs gio-2.0 glib-2.0 gobject-2.0)
+GNOME_SHELL_EXT_UUID := lulod-focus@ninez.org
 
 SRC_APP := src/app
 SRC_ADMIN := src/admin
@@ -103,10 +106,11 @@ LULOD_SYSTEM_SRCS := \
 NC_INPUT_PROBE_SRCS := $(SRC_APP)/nc_input_probe.c
 LULOD_FOCUS_KDE_SRCS := $(SRC_DAEMON)/lulod_focus_kde.cpp
 LULOD_FOCUS_KDE_MOC := $(SRC_DAEMON)/lulod_focus_kde.moc
+LULOD_FOCUS_GNOME_SRCS := $(SRC_DAEMON)/lulod_focus_gnome.c
 
-.PHONY: all clean strict analyze asan install install-bin install-data install-units install-policy install-config print-install-paths install-lulod-user-service restart-lulod-user-service status-lulod-user-service install-lulo-admin-pkexec install-lulod-system-service reset-lulod-system-config
+.PHONY: all clean strict analyze asan install install-bin install-data install-units install-policy install-config print-install-paths install-lulod-user-service restart-lulod-user-service status-lulod-user-service install-lulo-admin-pkexec install-lulod-system-service reset-lulod-system-config install-lulo-gnome-extension
 
-all: lulo lulod lulod-system lulo-admin nc_input_probe lulod-focus-kde
+all: lulo lulod lulod-system lulo-admin nc_input_probe lulod-focus-kde lulod-focus-gnome
 
 strict:
 	$(MAKE) -B CFLAGS="-O2 $(STRICT_WARNINGS)" CXXFLAGS="-O2 $(STRICT_CXXWARNINGS)" all
@@ -114,7 +118,7 @@ strict:
 analyze:
 	$(MAKE) -B CFLAGS="-O0 -Wall -Wextra -fanalyzer" CXXFLAGS="-O0 -Wall -Wextra" all
 
-asan: lulo-asan lulod-asan lulod-system-asan lulo-admin-asan nc_input_probe-asan lulod-focus-kde-asan
+asan: lulo-asan lulod-asan lulod-system-asan lulo-admin-asan nc_input_probe-asan lulod-focus-kde-asan lulod-focus-gnome-asan
 
 lulo: $(LULO_SRCS) include/lulo_auth.h include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_cgroups.h include/lulo_cgroups_backend.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulo_udev.h include/lulo_udev_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(POLKIT_AGENT_ACK) $(CFLAGS) $(NC_CFLAGS) $(POLKIT_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) $(POLKIT_LIBS) -lm -lpthread
@@ -137,6 +141,9 @@ $(LULOD_FOCUS_KDE_MOC): $(LULOD_FOCUS_KDE_SRCS)
 lulod-focus-kde: $(LULOD_FOCUS_KDE_SRCS) $(LULOD_FOCUS_KDE_MOC)
 	$(CXX) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CXXFLAGS) $(FOCUS_KDE_PIC) $(FOCUS_KDE_CFLAGS) -o $@ $(LULOD_FOCUS_KDE_SRCS) $(FOCUS_KDE_LIBS)
 
+lulod-focus-gnome: $(LULOD_FOCUS_GNOME_SRCS)
+	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(CFLAGS) $(FOCUS_GNOME_CFLAGS) -o $@ $(LULOD_FOCUS_GNOME_SRCS) $(FOCUS_GNOME_LIBS)
+
 lulo-asan: $(LULO_SRCS) include/lulo_auth.h include/lulo_edit.h include/lulo_model.h include/lulo_proc.h include/lulo_dizk.h include/lulo_cgroups.h include/lulo_cgroups_backend.h include/lulo_sched.h include/lulo_sched_backend.h include/lulo_systemd.h include/lulo_systemd_backend.h include/lulo_tune.h include/lulo_tune_backend.h include/lulo_udev.h include/lulo_udev_backend.h include/lulod_ipc.h include/lulod_system_ipc.h
 	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(POLKIT_AGENT_ACK) $(STRICT_WARNINGS) $(ASAN_FLAGS) $(NC_CFLAGS) $(POLKIT_CFLAGS) -o $@ $(LULO_SRCS) $(NC_LIBS) $(POLKIT_LIBS) -lm -lpthread
 
@@ -155,6 +162,9 @@ nc_input_probe-asan: $(NC_INPUT_PROBE_SRCS)
 lulod-focus-kde-asan: $(LULOD_FOCUS_KDE_SRCS) $(LULOD_FOCUS_KDE_MOC)
 	$(CXX) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_CXXWARNINGS) $(ASAN_FLAGS) $(FOCUS_KDE_PIC) $(FOCUS_KDE_CFLAGS) -o $@ $(LULOD_FOCUS_KDE_SRCS) $(FOCUS_KDE_LIBS)
 
+lulod-focus-gnome-asan: $(LULOD_FOCUS_GNOME_SRCS)
+	$(CC) $(CPPFLAGS) $(LULO_PATH_CPPFLAGS) $(STRICT_WARNINGS) $(ASAN_FLAGS) $(FOCUS_GNOME_CFLAGS) -o $@ $(LULOD_FOCUS_GNOME_SRCS) $(FOCUS_GNOME_LIBS)
+
 print-install-paths:
 	@printf 'PREFIX=%s\n' "$(PREFIX)"
 	@printf 'BINDIR=%s\n' "$(BINDIR)"
@@ -170,14 +180,18 @@ install: all install-bin install-data install-units install-policy install-confi
 install-bin: all
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(LULO_HELPERDIR)"
 	install -m755 lulo lulod lulod-system "$(DESTDIR)$(BINDIR)/"
-	install -m755 lulo-admin lulod-focus-kde "$(DESTDIR)$(LULO_HELPERDIR)/"
+	install -m755 lulo-admin lulod-focus-kde lulod-focus-gnome "$(DESTDIR)$(LULO_HELPERDIR)/"
 
 install-data:
 	install -d "$(DESTDIR)$(LULO_DATADIR)/kwin" \
+		"$(DESTDIR)$(LULO_DATADIR)/gnome-shell/$(GNOME_SHELL_EXT_UUID)" \
 		"$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/profiles.d" \
 		"$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/rules.d" \
 		"$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/tunables-presets.d"
 	install -m644 share/lulo/kwin/lulod_focus_kde.js "$(DESTDIR)$(LULO_DATADIR)/kwin/"
+	install -m644 share/lulo/gnome-shell/$(GNOME_SHELL_EXT_UUID)/metadata.json \
+		share/lulo/gnome-shell/$(GNOME_SHELL_EXT_UUID)/extension.js \
+		"$(DESTDIR)$(LULO_DATADIR)/gnome-shell/$(GNOME_SHELL_EXT_UUID)/"
 	install -m644 examples/scheduler/README.md "$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/"
 	install -m644 examples/scheduler/scheduler.conf "$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/"
 	for f in examples/scheduler/profiles.d/*.conf; do install -m644 "$$f" "$(DESTDIR)$(LULO_DATADIR)/examples/scheduler/profiles.d/"; done
@@ -217,7 +231,7 @@ install-config:
 	done
 
 clean:
-	rm -f lulo lulod lulod-system lulo-admin nc_input_probe lulod-focus-kde lulo-asan lulod-asan lulod-system-asan lulo-admin-asan nc_input_probe-asan lulod-focus-kde-asan $(LULOD_FOCUS_KDE_MOC)
+	rm -f lulo lulod lulod-system lulo-admin nc_input_probe lulod-focus-kde lulod-focus-gnome lulo-asan lulod-asan lulod-system-asan lulo-admin-asan nc_input_probe-asan lulod-focus-kde-asan lulod-focus-gnome-asan $(LULOD_FOCUS_KDE_MOC)
 
 install-lulod-user-service: lulod
 	chmod +x ./install-lulod-user-service.sh
@@ -234,6 +248,10 @@ install-lulod-system-service: lulod-system
 reset-lulod-system-config:
 	chmod +x ./reset-lulod-system-config.sh
 	./reset-lulod-system-config.sh
+
+install-lulo-gnome-extension:
+	chmod +x ./install-lulo-gnome-extension.sh
+	./install-lulo-gnome-extension.sh
 
 restart-lulod-user-service:
 	systemctl --user daemon-reload

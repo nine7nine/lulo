@@ -132,13 +132,12 @@ It is intentionally dynamic rather than file-backed to avoid permanently hardcod
 
 | Item | Status |
 | --- | --- |
-| KDE/Plasma focus provider | Implemented |
-| `lulod-focus-kde` | Current backend |
-| GNOME provider | Planned |
+| KDE/Plasma focus provider | Implemented (`lulod-focus-kde`) |
+| GNOME focus provider | Implemented (`lulod-focus-gnome` + `lulod-focus@ninez.org` Shell extension) |
 | sway provider | Planned |
 | Other compositor-specific providers | Planned |
 
-The scheduler core is desktop-agnostic. Only active-window detection is currently limited to environments with a supported focus provider.
+The scheduler core is desktop-agnostic. Only active-window detection is currently limited to environments with a supported focus provider. The provider is auto-detected from the session environment and can be overridden with `LULOD_FOCUS_PROVIDER` (`kde`, `gnome`, `none`, or `auto`).
 
 ## Enforcement Model
 

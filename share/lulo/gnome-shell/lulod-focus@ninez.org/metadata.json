@@ -1,0 +1,8 @@
+{
+    "uuid": "lulod-focus@ninez.org",
+    "name": "Lulo Focus Reporter",
+    "description": "Reports the focused window PID over D-Bus (org.ninez.LulodFocus) so the lulo scheduler daemon can apply the focused-app profile. The GNOME counterpart to the KWin focus script.",
+    "shell-version": ["45", "46", "47", "48", "49", "50"],
+    "session-modes": ["user"],
+    "url": "https://github.com/ninez/lulo"
+}

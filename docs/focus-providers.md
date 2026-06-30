@@ -35,7 +35,13 @@ The provider is chosen by `focus_provider_from_env`, which first honors the `LUL
 | `auto` (or unset) | Auto-detect |
 | anything else | Disabled (an unrecognized value turns focus off) |
 
-Auto-detection is **Wayland-gated**: if the session is not Wayland (`XDG_SESSION_TYPE != "wayland"` and no `WAYLAND_DISPLAY`), it returns no provider -- on a pure X11 session focus tracking is off by default, because no X11 helper is implemented. Otherwise it scans `XDG_CURRENT_DESKTOP`, `XDG_SESSION_DESKTOP`, `DESKTOP_SESSION`, `KDE_FULL_SESSION`, and `KDE_SESSION_VERSION` case-insensitively: a `kde`/`plasma` hit selects KDE, a `gnome` hit selects GNOME.
+Once past the override, detection runs in a deliberate order so it keys off what is *actually running* rather than a cached label:
+
+1. **Wayland gate.** If the session is not Wayland (`XDG_SESSION_TYPE != "wayland"` and no `WAYLAND_DISPLAY`), detection returns no provider -- on a pure X11 session focus tracking is off by default, because no X11 helper is implemented.
+2. **Live session-bus probe.** `lulod` asks the session bus which compositor owns its well-known name (`NameHasOwner` on `org.kde.KWin` selects KDE, `org.gnome.Shell` selects GNOME). This is authoritative about the compositor that is up *right now*.
+3. **Environment fallback.** Only if the bus probe is inconclusive (e.g. the bus is unreachable) does it scan `XDG_CURRENT_DESKTOP`, `XDG_SESSION_DESKTOP`, `DESKTOP_SESSION`, `KDE_FULL_SESSION`, and `KDE_SESSION_VERSION` case-insensitively: a `kde`/`plasma` hit selects KDE, a `gnome` hit selects GNOME.
+
+> **Why probe the bus?** The environment `lulod` sees is a *snapshot*: the user-service installer freezes session variables into a systemd drop-in at install time. After a GNOME&harr;KDE reboot that snapshot is stale, and an env-only detector would launch the wrong helper -- e.g. the GNOME helper on a Plasma session, which finds no `org.ninez.LulodFocus` owner and reports no focus. Probing the live bus self-corrects across desktop switches. For the probe to take effect the installer bakes `LULOD_FOCUS_PROVIDER=auto`, deferring the choice to runtime; an explicit `kde` / `gnome` / `none` still wins.
 
 The helper binary is resolved across several install layouts in order -- next to the running `lulod` (dev checkout), `<prefix>/libexec/lulo/`, the compile-time `LULO_HELPERDIR`, then `/usr/libexec/lulo/` -- so the same daemon works in-tree or installed. If the binary cannot be found the monitor disables itself permanently; if a spawn fails it retries after 5 seconds.
 

@@ -184,7 +184,16 @@
 </table>
 
 
-<p>Auto-detection is <strong>Wayland-gated</strong>: if the session is not Wayland (<code>XDG_SESSION_TYPE != "wayland"</code> and no <code>WAYLAND_DISPLAY</code>), it returns no provider &ndash; on a pure X11 session focus tracking is off by default, because no X11 helper is implemented. Otherwise it scans <code>XDG_CURRENT_DESKTOP</code>, <code>XDG_SESSION_DESKTOP</code>, <code>DESKTOP_SESSION</code>, <code>KDE_FULL_SESSION</code>, and <code>KDE_SESSION_VERSION</code> case-insensitively: a <code>kde</code>/<code>plasma</code> hit selects KDE, a <code>gnome</code> hit selects GNOME.</p>
+<p>Once past the override, detection runs in a deliberate order so it keys off what is <em>actually running</em> rather than a cached label:</p>
+
+<ol>
+<li><strong>Wayland gate.</strong> If the session is not Wayland (<code>XDG_SESSION_TYPE != "wayland"</code> and no <code>WAYLAND_DISPLAY</code>), detection returns no provider &ndash; on a pure X11 session focus tracking is off by default, because no X11 helper is implemented.</li>
+<li><strong>Live session-bus probe.</strong> <code>lulod</code> asks the session bus which compositor owns its well-known name (<code>NameHasOwner</code> on <code>org.kde.KWin</code> selects KDE, <code>org.gnome.Shell</code> selects GNOME). This is authoritative about the compositor that is up <em>right now</em>.</li>
+<li><strong>Environment fallback.</strong> Only if the bus probe is inconclusive (e.g. the bus is unreachable) does it scan <code>XDG_CURRENT_DESKTOP</code>, <code>XDG_SESSION_DESKTOP</code>, <code>DESKTOP_SESSION</code>, <code>KDE_FULL_SESSION</code>, and <code>KDE_SESSION_VERSION</code> case-insensitively: a <code>kde</code>/<code>plasma</code> hit selects KDE, a <code>gnome</code> hit selects GNOME.</li>
+</ol>
+
+
+<blockquote><p><strong>Why probe the bus?</strong> The environment <code>lulod</code> sees is a <em>snapshot</em>: the user-service installer freezes session variables into a systemd drop-in at install time. After a GNOME&harr;KDE reboot that snapshot is stale, and an env-only detector would launch the wrong helper &ndash; e.g. the GNOME helper on a Plasma session, which finds no <code>org.ninez.LulodFocus</code> owner and reports no focus. Probing the live bus self-corrects across desktop switches. For the probe to take effect the installer bakes <code>LULOD_FOCUS_PROVIDER=auto</code>, deferring the choice to runtime; an explicit <code>kde</code> / <code>gnome</code> / <code>none</code> still wins.</p></blockquote>
 
 <p>The helper binary is resolved across several install layouts in order &ndash; next to the running <code>lulod</code> (dev checkout), <code>&lt;prefix&gt;/libexec/lulo/</code>, the compile-time <code>LULO_HELPERDIR</code>, then <code>/usr/libexec/lulo/</code> &ndash; so the same daemon works in-tree or installed. If the binary cannot be found the monitor disables itself permanently; if a spawn fails it retries after 5 seconds.</p>
 

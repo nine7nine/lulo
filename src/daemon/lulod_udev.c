@@ -216,8 +216,8 @@ static void parse_udev_data_line(const char *line,
                                  char *devpath, size_t devpath_len)
 {
     if (!line) return;
-    if (strncmp(line, "E:SUBSYSTEM=", 13) == 0) {
-        copy_trunc(subsystem, subsystem_len, line + 13);
+    if (strncmp(line, "E:SUBSYSTEM=", 12) == 0) {
+        copy_trunc(subsystem, subsystem_len, line + 12);
     } else if (strncmp(line, "E:DEVNAME=", 10) == 0) {
         copy_trunc(devnode, devnode_len, line + 10);
     } else if (strncmp(line, "N:", 2) == 0 && !devnode[0]) {

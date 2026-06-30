@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Install & Packaging</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--install--packaging">Lulo &ndash; Install &amp; Packaging</h1>
+
+<p>Lulo builds from a single <code>Makefile</code> into a standard <code>/usr</code> layout: three binaries on <code>PATH</code>, three helpers in <code>libexec</code>, two systemd units (one user, one system), a polkit policy, and the default scheduler config &ndash; plus a one-time GNOME Shell extension step when you want focus tracking on GNOME.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-build-targets">Build targets</a></li>
+<li><a href="#2-installed-layout">Installed layout</a></li>
+<li><a href="#3-first-install">First install</a></li>
+<li><a href="#4-the-one-command-path">The one-command path</a></li>
+<li><a href="#5-gnome-focus-provider">GNOME focus provider</a></li>
+<li><a href="#6-services-and-privilege">Services and privilege</a></li>
+<li><a href="#7-running-lulo">Running lulo</a></li>
+<li><a href="#8-updating-resetting-and-migrating">Updating, resetting, and migrating</a></li>
+<li><a href="#9-packaging">Packaging</a></li>
+<li><a href="#10-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-build-targets">1. Build targets</h2>
+
+<p>The build is a plain <code>make</code> with <code>PREFIX</code> controlling the install root.</p>
+
+<table>
+<thead>
+<tr>
+<th> Command </th>
+<th> Purpose </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>make PREFIX=/usr</code> </td>
+<td> Standard build </td>
+</tr>
+<tr>
+<td> <code>make strict PREFIX=/usr</code> </td>
+<td> Build with stricter warnings </td>
+</tr>
+<tr>
+<td> <code>make analyze PREFIX=/usr</code> </td>
+<td> Static analysis pass </td>
+</tr>
+<tr>
+<td> <code>make asan PREFIX=/usr</code> </td>
+<td> Sanitizer build </td>
+</tr>
+<tr>
+<td> <code>make print-install-paths PREFIX=/usr</code> </td>
+<td> Show the resolved install paths </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="2-installed-layout">2. Installed layout</h2>
+
+<p><code>make install</code> lays the project out under <code>PREFIX</code> (here <code>/usr</code>) plus system config under <code>/etc</code>.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 320" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .bin     { fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .lib     { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .sys     { fill: #2a1f35; stroke: #bb9af7; stroke-width: 1.5; }
+    .data    { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 10px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 10px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-pur { fill: #bb9af7; font-size: 10px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="320" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">Installed footprint</text>
+
+  <rect x="30"  y="56" width="300" height="84" class="bin" rx="6"/>
+  <text x="46" y="76" class="lbl-grn">/usr/bin</text>
+  <text x="46" y="94"  class="lbl-mut">lulo  (TUI)</text>
+  <text x="46" y="108" class="lbl-mut">lulod  (session daemon)</text>
+  <text x="46" y="122" class="lbl-mut">lulod-system  (privileged daemon)</text>
+
+  <rect x="350" y="56" width="300" height="84" class="lib" rx="6"/>
+  <text x="366" y="76" class="lbl-blu">/usr/libexec/lulo</text>
+  <text x="366" y="94"  class="lbl-mut">lulo-admin  (pkexec helper)</text>
+  <text x="366" y="108" class="lbl-mut">lulod-focus-kde</text>
+  <text x="366" y="122" class="lbl-mut">lulod-focus-gnome</text>
+
+  <rect x="670" y="56" width="280" height="84" class="data" rx="6"/>
+  <text x="686" y="76" class="lbl-sm">/usr/share/lulo</text>
+  <text x="686" y="94"  class="lbl-mut">KWin focus script</text>
+  <text x="686" y="108" class="lbl-mut">GNOME Shell extension</text>
+  <text x="686" y="122" class="lbl-mut">example scheduler config</text>
+
+  <rect x="30"  y="164" width="300" height="68" class="sys" rx="6"/>
+  <text x="46" y="184" class="lbl-pur">/usr/lib/systemd</text>
+  <text x="46" y="202" class="lbl-mut">user/lulod.service</text>
+  <text x="46" y="216" class="lbl-mut">system/lulod-system.service</text>
+
+  <rect x="350" y="164" width="300" height="68" class="data" rx="6"/>
+  <text x="366" y="184" class="lbl-sm">/usr/share/polkit-1/actions</text>
+  <text x="366" y="202" class="lbl-mut">io.lulo.system.unlock-rw</text>
+  <text x="366" y="216" class="lbl-mut">io.lulo.admin.pkexec.apply-tune</text>
+
+  <rect x="670" y="164" width="280" height="68" class="data" rx="6"/>
+  <text x="686" y="184" class="lbl-sm">/etc/lulo/scheduler</text>
+  <text x="686" y="202" class="lbl-mut">scheduler.conf</text>
+  <text x="686" y="216" class="lbl-mut">profiles.d / rules.d</text>
+</svg>
+</div>
+
+
+<table>
+<thead>
+<tr>
+<th> Path </th>
+<th> Contents </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>/usr/bin</code> </td>
+<td> <code>lulo</code>, <code>lulod</code>, <code>lulod-system</code> </td>
+</tr>
+<tr>
+<td> <code>/usr/libexec/lulo</code> </td>
+<td> <code>lulo-admin</code>, <code>lulod-focus-kde</code>, <code>lulod-focus-gnome</code> </td>
+</tr>
+<tr>
+<td> <code>/usr/share/lulo</code> </td>
+<td> Runtime data, KWin focus script, GNOME Shell extension, example scheduler config </td>
+</tr>
+<tr>
+<td> <code>/usr/lib/systemd/user</code> </td>
+<td> <code>lulod.service</code> </td>
+</tr>
+<tr>
+<td> <code>/usr/lib/systemd/system</code> </td>
+<td> <code>lulod-system.service</code> </td>
+</tr>
+<tr>
+<td> <code>/usr/share/polkit-1/actions</code> </td>
+<td> Polkit policy (the two actions) </td>
+</tr>
+<tr>
+<td> <code>/etc/lulo/scheduler</code> </td>
+<td> Default scheduler config </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="3-first-install">3. First install</h2>
+
+<p>The simplest path builds, installs, sets up the user and system services, and launches the TUI:</p>
+
+<pre><code class="language-bash code-block">
+cd /path/to/lulo
+make PREFIX=/usr
+sudo make install PREFIX=/usr
+./install-lulod-user-service.sh
+./install-lulod-system-service.sh
+/usr/bin/lulo -i nc
+</code></pre>
+
+
+<p>The helper scripts detect the installed <code>/usr</code> layout and use it. <code>install-lulod-user-service.sh</code> also auto-detects your desktop and, on GNOME, sets <code>LULOD_FOCUS_PROVIDER=gnome</code> for the user service.</p>
+
+<h2 id="4-the-one-command-path">4. The one-command path</h2>
+
+<p>For a single command that builds, installs to <code>/usr</code>, wires up both services, and (on GNOME) installs the focus extension:</p>
+
+<pre><code class="language-bash code-block">
+cd /path/to/lulo
+./install-system.sh
+</code></pre>
+
+
+<h2 id="5-gnome-focus-provider">5. GNOME focus provider</h2>
+
+<p>KDE loads its focus script at runtime, but GNOME Shell only loads extensions from its own directories, so the GNOME focus provider needs a one-time extension install (see <a href="focus-providers.gen.html">Focus Providers</a> for why):</p>
+
+<pre><code class="language-bash code-block">
+./install-lulo-gnome-extension.sh   # copies + enables lulod-focus@ninez.org for your user
+</code></pre>
+
+
+<p>On Wayland, log out and back in so GNOME Shell loads the extension, then <code>systemctl --user restart lulod.service</code>. The provider can always be overridden with <code>LULOD_FOCUS_PROVIDER</code> (<code>kde</code>, <code>gnome</code>, <code>none</code>, or <code>auto</code>).</p>
+
+<h2 id="6-services-and-privilege">6. Services and privilege</h2>
+
+<p>Lulo runs two long-lived services with very different privilege.</p>
+
+<table>
+<thead>
+<tr>
+<th> Unit </th>
+<th> Scope </th>
+<th> Role </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>lulod.service</code> </td>
+<td> systemd <strong>user</strong> unit </td>
+<td> The unprivileged session daemon: snapshot caches and focus integration </td>
+</tr>
+<tr>
+<td> <code>lulod-system.service</code> </td>
+<td> systemd <strong>system</strong> unit </td>
+<td> The privileged daemon: scheduler enforcement, privileged edits, tracing </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>If you prefer to rely on the installed vendor units directly:</p>
+
+<pre><code class="language-bash code-block">
+sudo systemctl daemon-reload
+systemctl --user daemon-reload
+sudo systemctl enable --now lulod-system.service
+systemctl --user enable --now lulod.service
+</code></pre>
+
+
+<p>The privileged daemon is the only component that runs as root; the TUI stays unprivileged and reaches privilege through the RW lease or the <code>pkexec</code> helper (see <a href="process-model-ipc.gen.html">Process Model &amp; IPC</a>). The two polkit actions installed under <code>/usr/share/polkit-1/actions</code> govern those two paths.</p>
+
+<h2 id="7-running-lulo">7. Running lulo</h2>
+
+<pre><code class="language-bash code-block">
+/usr/bin/lulo -i nc
+</code></pre>
+
+
+<p>The <code>-i</code> flag selects the input backend; <code>LULO_INPUT</code> is the environment equivalent. Lulo supports a Notcurses input backend and a raw-terminal backend, auto-selecting based on <code>TERM</code> when not told otherwise &ndash; <code>-i nc</code> forces the Notcurses backend, which is the right choice on VTE/GNOME terminals. Inside the TUI, <code>?</code> shows a per-page help overlay, <code>Tab</code> switches pages, <code>Shift+Tab</code> cycles subviews, and <code>Shift+W</code> unlocks RW mode.</p>
+
+<h2 id="8-updating-resetting-and-migrating">8. Updating, resetting, and migrating</h2>
+
+<p>To update in place when the install path is unchanged:</p>
+
+<pre><code class="language-bash code-block">
+cd /path/to/lulo
+make PREFIX=/usr
+sudo make install PREFIX=/usr
+sudo systemctl restart lulod-system.service
+systemctl --user restart lulod.service
+</code></pre>
+
+
+<p>If your session environment changed significantly, rerun <code>./install-lulod-user-service.sh</code>. To replace <code>/etc/lulo/scheduler</code> with the shipped example config:</p>
+
+<pre><code class="language-bash code-block">
+./reset-lulod-system-config.sh
+sudo systemctl restart lulod-system.service
+</code></pre>
+
+
+<p>If you previously used old repo-local systemd units, disable and remove them before enabling the installed ones (the user unit under <code>~/.config/systemd/user/lulod.service</code>, the system unit under <code>/etc/systemd/system/lulod-system.service</code>), then <code>daemon-reload</code> each scope.</p>
+
+<h2 id="9-packaging">9. Packaging</h2>
+
+<p>For staged / distro packaging, install into a <code>DESTDIR</code> root:</p>
+
+<pre><code class="language-bash code-block">
+make install PREFIX=/usr DESTDIR=/tmp/pkgroot
+</code></pre>
+
+
+<p><code>make print-install-paths PREFIX=/usr</code> shows exactly where each artifact will land, which is useful when authoring a package manifest.</p>
+
+<h2 id="10-see-also">10. See also</h2>
+
+<ul>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+<li><a href="process-model-ipc.gen.html">Process Model &amp; IPC</a></li>
+<li><a href="focus-providers.gen.html">Focus Providers</a></li>
+<li><a href="scheduler.gen.html">Scheduler</a></li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

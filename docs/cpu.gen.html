@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- CPU & Process View</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--cpu--process-view">Lulo &ndash; CPU &amp; Process View</h1>
+
+<p>The <code>CPU</code> page is Lulo&rsquo;s main runtime observability surface: a per-core CPU history heatmap above a live <code>/proc</code>-derived process tree, both sampled on the frontend thread but on deliberately decoupled cadences so the tree can refresh slowly while the heatmap stays smooth.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-what-the-page-shows">What the page shows</a></li>
+<li><a href="#2-the-two-tier-sampling-loop">The two-tier sampling loop</a></li>
+<li><a href="#3-cpu-history-heatmap">CPU history heatmap</a></li>
+<li><a href="#4-frequency-governor-and-temperature">Frequency, governor, and temperature</a></li>
+<li><a href="#5-the-process-tree">The process tree</a></li>
+<li><a href="#6-cpu-modes-total-vs-per-core">CPU% modes: total vs per-core</a></li>
+<li><a href="#7-process-actions-and-tracing">Process actions and tracing</a></li>
+<li><a href="#8-render-economy">Render economy</a></li>
+<li><a href="#9-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-what-the-page-shows">1. What the page shows</h2>
+
+<p>The <code>CPU</code> page combines machine-level CPU monitoring with a process-centric inspection tree. It is the one heavy page whose data is gathered directly on the frontend thread rather than in a daemon, which makes its sampling design the most interesting part of the frontend.</p>
+
+<table>
+<thead>
+<tr>
+<th> Region </th>
+<th> Source </th>
+<th> What it shows </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> CPU heatmap </td>
+<td> <code>/proc/stat</code> (<code>lulo_read_cpu_stat</code>) </td>
+<td> Per-core load history as a scrolling color band </td>
+</tr>
+<tr>
+<td> CPU metadata </td>
+<td> <code>/sys/.../cpufreq</code>, hwmon / thermal </td>
+<td> Current MHz, governor, and per-core temperature </td>
+</tr>
+<tr>
+<td> Memory widget </td>
+<td> <code>/proc/meminfo</code> </td>
+<td> Used / buff / cache / slab / swap / dirty / hugepages </td>
+</tr>
+<tr>
+<td> Process tree </td>
+<td> <code>/proc/[pid]</code> + <code>/proc/[pid]/task</code> </td>
+<td> Parent/child process and thread tree with scheduler state </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="2-the-two-tier-sampling-loop">2. The two-tier sampling loop</h2>
+
+<p>The frontend (<code>src/app/lulo.c</code>) does not run one flat event loop. It runs an outer <em>sampling</em> loop wrapped around an inner <em>event</em> loop, and the split is what keeps the UI live while bounding how often expensive work runs.</p>
+
+<p>The outer loop fires every <code>sample_ms</code> (default 1000ms, adjustable with <code>+</code> / <code>-</code>). On each tick it polls all six daemon backends, gathers per-page data, and does a full page render. It then enters the inner loop with a deadline of <code>now + sample_ms</code>. The inner loop waits on input but the wait is clamped to <strong>at most 100ms</strong>, so even with nothing happening the UI wakes ten times a second to repaint live data and re-check the terminal size. When the deadline expires, control breaks back to the outer loop for the next sample.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 470" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .box     { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .box-cpu { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .box-proc{ fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .box-hot { fill: #2a2438; stroke: #e0af68; stroke-width: 1.5; }
+    .lbl     { fill: #c0caf5; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-yel { fill: #e0af68; font-size: 10px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.5; fill: none; }
+    .ln-y    { stroke: #e0af68; stroke-width: 1.5; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="470" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">CPU page sampling pipeline (decoupled cadences)</text>
+
+  <!-- CPU lane -->
+  <text x="40" y="64" class="lbl-blu">CPU cadence  --  every sample_ms (default 1s, +/-)</text>
+  <rect x="40"  y="76" width="150" height="48" class="box" rx="6"/>
+  <text x="115" y="96"  text-anchor="middle" class="lbl-sm">/proc/stat</text>
+  <text x="115" y="110" text-anchor="middle" class="lbl-mut">per-cpu ticks</text>
+  <rect x="230" y="76" width="170" height="48" class="box-cpu" rx="6"/>
+  <text x="315" y="96"  text-anchor="middle" class="lbl-sm">heat % per core</text>
+  <text x="315" y="110" text-anchor="middle" class="lbl-mut">work / total delta</text>
+  <rect x="440" y="76" width="190" height="48" class="box-cpu" rx="6"/>
+  <text x="535" y="96"  text-anchor="middle" class="lbl-sm">timeline ring [128]</text>
+  <text x="535" y="110" text-anchor="middle" class="lbl-mut">shift-left, append right</text>
+  <rect x="670" y="76" width="270" height="48" class="box-cpu" rx="6"/>
+  <text x="805" y="96"  text-anchor="middle" class="lbl-sm">heatmap render</text>
+  <text x="805" y="110" text-anchor="middle" class="lbl-mut">10-stop gradient per column</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="190" y1="100" x2="230" y2="100" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="400" y1="100" x2="440" y2="100" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="630" y1="100" x2="670" y2="100" class="ln"/>
+
+  <!-- bridge -->
+  <rect x="230" y="160" width="400" height="56" class="box-hot" rx="6"/>
+  <text x="430" y="182" text-anchor="middle" class="lbl-yel">CPU-delta accumulator</text>
+  <text x="430" y="198" text-anchor="middle" class="lbl-mut">sums total jiffy delta across skipped samples,</text>
+  <text x="430" y="210" text-anchor="middle" class="lbl-mut">used as the denominator for process CPU%</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="430" y1="124" x2="430" y2="160" class="ln-y"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="430" y1="216" x2="430" y2="252" class="ln-y"/>
+
+  <!-- proc lane -->
+  <text x="40" y="288" class="lbl-grn">proc cadence  --  max(sample_ms, proc_refresh_ms)  (r cycles 1/2/3/5s)</text>
+  <rect x="40"  y="300" width="170" height="48" class="box" rx="6"/>
+  <text x="125" y="320" text-anchor="middle" class="lbl-sm">/proc/[pid] walk</text>
+  <text x="125" y="334" text-anchor="middle" class="lbl-mut">stat, cmdline, io</text>
+  <rect x="250" y="300" width="180" height="48" class="box-proc" rx="6"/>
+  <text x="340" y="320" text-anchor="middle" class="lbl-sm">arena tree build</text>
+  <text x="340" y="334" text-anchor="middle" class="lbl-mut">sort + bsearch parents</text>
+  <rect x="470" y="300" width="180" height="48" class="box-proc" rx="6"/>
+  <text x="560" y="320" text-anchor="middle" class="lbl-sm">view sync</text>
+  <text x="560" y="334" text-anchor="middle" class="lbl-mut">re-locate selected pid</text>
+  <rect x="690" y="300" width="250" height="48" class="box-proc" rx="6"/>
+  <text x="815" y="320" text-anchor="middle" class="lbl-sm">three-tier repaint</text>
+  <text x="815" y="334" text-anchor="middle" class="lbl-mut">full / body / cursor-only</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="324" x2="250" y2="324" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="430" y1="324" x2="470" y2="324" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="650" y1="324" x2="690" y2="324" class="ln"/>
+
+  <text x="40" y="400" class="lbl-mut">Both lanes run on the frontend thread within one outer sample. The inner event</text>
+  <text x="40" y="414" class="lbl-mut">loop still wakes every 100ms to repaint live data without resampling /proc.</text>
+</svg>
+</div>
+
+
+<h2 id="3-cpu-history-heatmap">3. CPU history heatmap</h2>
+
+<p>The heatmap is the band of colored cells at the top of the page: one column per sample, one row per CPU, scrolling right to left.</p>
+
+<p>Each sample reads <code>/proc/stat</code> into a <code>CpuTick</code> (user / nice / sys / idle / iowait / irq / softirq / steal) for the aggregate <code>cpu</code> line and every <code>cpuN</code>. Two different percentages are derived on purpose:</p>
+
+<table>
+<thead>
+<tr>
+<th> Quantity </th>
+<th> Formula </th>
+<th> Used for </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> Busy % </td>
+<td> <code>(Δtotal − Δ(idle+iowait)) / Δtotal</code> </td>
+<td> The numeric <code>NN%</code> column (treats iowait as idle) </td>
+</tr>
+<tr>
+<td> Heat % </td>
+<td> <code>Δ(user+nice+sys+irq+softirq+steal) / Δtotal</code> </td>
+<td> The heatmap color (excludes iowait from &ldquo;work&rdquo;) </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Heat values feed a 128-slot per-core ring (<code>timeline</code>), appended with a shift-left <code>memmove</code> so the newest sample is always at the right edge. Even when you are on another page, the loop keeps appending heat samples, so the history graph is already populated the moment you tab back to <code>CPU</code>. Each cell is drawn as a full block colored through a 10-stop interpolated gradient (blue → cyan → green → yellow → orange → red); zero-load cells are left as background so idle cores read as empty rather than dark-blue.</p>
+
+<h2 id="4-frequency-governor-and-temperature">4. Frequency, governor, and temperature</h2>
+
+<p>CPU metadata is gathered only while the <code>CPU</code> page is active, to avoid paying for <code>/sys</code> reads you cannot see.</p>
+
+<ul>
+<li><strong>Frequency</strong> comes from <code>cpufreq/scaling_cur_freq</code> (plus min/max, governor, and driver).</li>
+<li><strong>Temperature</strong> prefers hwmon <code>coretemp/tempN_input</code>, falling back to a <code>thermal_zone*</code> whose type matches <code>x86_pkg</code>/<code>pkg</code>. Logical CPUs are mapped to a physical-core reading via <code>threads_per_core</code>, so SMT siblings share one temperature.</li>
+</ul>
+
+
+<p>The governor and temperature columns are responsive: the governor appears only when the CPU panel is at least 50 columns wide, the temperature only at 58+. Temperature is color-graded (≥75 red, ≥65 orange, ≥55 green, else blue).</p>
+
+<h2 id="5-the-process-tree">5. The process tree</h2>
+
+<p>The lower half of the page is a live process and thread tree built fresh from <code>/proc</code> on each proc-cadence tick.</p>
+
+<p><code>gather_processes</code> iterates <code>/proc/[pid]</code>, parsing <code>/proc/PID/stat</code> (carefully handling the parenthesized <code>comm</code> field) for ppid, utime/stime, priority, nice, thread count, RSS, RT priority, and scheduling policy. Command labels join <code>/proc/PID/cmdline</code> (NULs become spaces), falling back to <code>[comm]</code> for kernel threads. I/O priority is read with the <code>ioprio_get</code> syscall. UID→name lookups go through a small FIFO cache. Threads are only expanded (shown as <code>{comm}</code> rows) for processes that actually have more than one thread.</p>
+
+<p>The tree itself is built in an <strong>arena</strong>, not with heap-linked nodes: nodes are sorted by <code>(pid, is_thread)</code>, a separate sorted array of process leaders is built, and each node <code>bsearch</code>es its parent (threads parent to their <code>tgid</code>, processes to their <code>parent_pid</code>) and links through <code>first_child</code> / <code>next_sibling</code> index pointers. That is an O(n log n) build over flat arrays with no per-node allocation.</p>
+
+<h3 id="visible-fields">Visible fields</h3>
+
+<table>
+<thead>
+<tr>
+<th> Field </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> PID </td>
+<td> Process id (threads target the <code>tgid</code> for actions) </td>
+</tr>
+<tr>
+<td> user </td>
+<td> Owning user (root rendered red) </td>
+</tr>
+<tr>
+<td> policy </td>
+<td> Scheduling policy (<code>TS</code>, <code>FF</code>, <code>RR</code>, <code>B</code>, <code>IDL</code>, <code>DLN</code>, <code>EXT</code>) </td>
+</tr>
+<tr>
+<td> priority / nice </td>
+<td> Current scheduling priority </td>
+</tr>
+<tr>
+<td> CPU </td>
+<td> CPU usage in the active percentage mode </td>
+</tr>
+<tr>
+<td> memory </td>
+<td> Resident memory </td>
+</tr>
+<tr>
+<td> time </td>
+<td> Accumulated CPU time (switches to <code>HhMMm</code> past 100 minutes) </td>
+</tr>
+<tr>
+<td> I/O </td>
+<td> Linux I/O priority (RT > best-effort > idle) </td>
+</tr>
+<tr>
+<td> command </td>
+<td> Full command line, horizontally pannable </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Long command lines can be panned left/right (arrow keys, 4 columns per step) while the tree prefix stays fixed, so deep argument lists stay inspectable without breaking the tree shape. Selection is keyed by <code>(pid, is_thread)</code> rather than row index, so after each rebuild the cursor re-locates the same process instead of jumping when the tree reorders. Sibling sort follows the active column (default CPU descending, with CPU → MEM → TIME → PID tie-breaks); clicking a column header toggles its sort.</p>
+
+<p><figure class="screenshot">
+  <img src="img/cpu-page.png" alt="Lulo CPU page: per-core heatmap above the process tree">
+  <figcaption>The CPU history heatmap over the live process tree, with policy, nice, CPU%, memory, and I/O columns.</figcaption>
+</figure></p>
+
+<h2 id="6-cpu-modes-total-vs-per-core">6. CPU% modes: total vs per-core</h2>
+
+<p>The <code>p</code> key toggles how the process CPU% column is normalized. This affects the <strong>process column only</strong> — the per-core heatmap is unchanged.</p>
+
+<table>
+<thead>
+<tr>
+<th> Mode </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>total</code> </td>
+<td> Default; percent of total machine CPU capacity </td>
+</tr>
+<tr>
+<td> <code>per-core</code> </td>
+<td> htop-style; a process pegging one core reads ~100% </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Internally the column is <code>Δticks × scale × 1000 / cpu_total_delta</code>, where <code>scale</code> is <code>1.0</code> in total mode and <code>logical_cpus</code> in per-core mode. Because the process tree can refresh more slowly than the CPU samples, the denominator is the <strong>accumulated</strong> total-jiffy delta across every CPU sample since the last proc gather — so process CPU% stays correct even when the tree refreshes every 5s while CPU samples every 1s. Switching modes invalidates the cached snapshot and forces an immediate resnapshot.</p>
+
+<h2 id="7-process-actions-and-tracing">7. Process actions and tracing</h2>
+
+<p>The page is deliberately conservative about privileged inspection, but it does expose direct control over the selected process.</p>
+
+<table>
+<thead>
+<tr>
+<th> Action </th>
+<th> Key </th>
+<th> Effect </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> Signal (terminate) </td>
+<td> <code>x</code> </td>
+<td> <code>SIGTERM</code> (targets the <code>tgid</code> for thread rows) </td>
+</tr>
+<tr>
+<td> Signal (kill) </td>
+<td> <code>X</code> </td>
+<td> <code>SIGKILL</code> </td>
+</tr>
+<tr>
+<td> Trace </td>
+<td> <code>s</code> </td>
+<td> Start/stop an strace session on the selected process </td>
+</tr>
+<tr>
+<td> Collapse / expand all </td>
+<td> <code>c</code> / <code>e</code> </td>
+<td> Fold the tree to process leaders, or expand fully </td>
+</tr>
+<tr>
+<td> Refresh cadence </td>
+<td> <code>r</code> </td>
+<td> Cycle the proc refresh interval (1 / 2 / 3 / 5s) </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Tracing requires RW mode (see <a href="process-model-ipc.gen.html">Process Model &amp; IPC</a>) and refuses kernel threads. When active, the process panel is replaced by a live trace view that tails the most recent output (last 256 KiB) with vertical and horizontal scroll, auto-refreshing on the 100ms idle tick.</p>
+
+<h2 id="8-render-economy">8. Render economy</h2>
+
+<p>Cursor movement does not redraw the whole table. The frontend keeps three repaint tiers and picks the cheapest one each time:</p>
+
+<table>
+<thead>
+<tr>
+<th> Tier </th>
+<th> Redraws </th>
+<th> When </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> Full </td>
+<td> Entire process panel </td>
+<td> New snapshot or layout change </td>
+</tr>
+<tr>
+<td> Body-only </td>
+<td> Rows + count </td>
+<td> Scroll position changed </td>
+</tr>
+<tr>
+<td> Cursor-only </td>
+<td> Just the old and new selected rows </td>
+<td> Selection moved without scrolling </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Scrolling has streak-based acceleration (consecutive same-direction moves within 120ms step by 2, then 3 units), while mouse-wheel steps stay at 1 unit. Heavy pages elsewhere only repaint when their daemon&rsquo;s snapshot generation advances or a status field changes, so idle daemons cost zero frames.</p>
+
+<h2 id="9-see-also">9. See also</h2>
+
+<ul>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+<li><a href="process-model-ipc.gen.html">Process Model &amp; IPC</a></li>
+<li><a href="scheduler.gen.html">Scheduler</a> &ndash; why a process is being treated the way it is</li>
+<li><a href="disk.gen.html">Disk View</a></li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

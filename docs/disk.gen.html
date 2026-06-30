@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Disk View</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--disk-view">Lulo &ndash; Disk View</h1>
+
+<p>The <code>DISK</code> page is the one heavy page with no daemon behind it: it gathers everything synchronously in-process from <code>/proc</code>, <code>/sys/block</code>, and the mount tables, then lays it out as a responsive multi-panel dashboard covering filesystems, block devices, live I/O, and queue tunables.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-what-the-page-shows">What the page shows</a></li>
+<li><a href="#2-where-the-data-comes-from">Where the data comes from</a></li>
+<li><a href="#3-the-responsive-panel-layout">The responsive panel layout</a></li>
+<li><a href="#4-filesystems-panel">Filesystems panel</a></li>
+<li><a href="#5-devices-io-and-queue-panels">Devices, I/O, and queue panels</a></li>
+<li><a href="#6-why-disk-has-no-daemon">Why DISK has no daemon</a></li>
+<li><a href="#7-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-what-the-page-shows">1. What the page shows</h2>
+
+<p><code>DISK</code> is a read-only storage dashboard. Unlike the cgroups, systemd, udev, and tune pages &ndash; which each talk to <code>lulod</code> over a socket &ndash; the disk page calls one synchronous gather (<code>lulo_dizk_snapshot_gather</code>) directly on the frontend thread and renders the result into a set of stacked panels.</p>
+
+<table>
+<thead>
+<tr>
+<th> Panel </th>
+<th> Source </th>
+<th> What it shows </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> Filesystems </td>
+<td> <code>getmntent</code> + <code>statvfs</code> </td>
+<td> Mounted filesystem usage with an aggregate total row </td>
+</tr>
+<tr>
+<td> Devices </td>
+<td> <code>/sys/block</code> </td>
+<td> Block devices: size, rotational, model, transport </td>
+</tr>
+<tr>
+<td> I/O </td>
+<td> <code>/proc/diskstats</code> + <code>/proc/uptime</code> </td>
+<td> Per-device utilization and read/write bytes </td>
+</tr>
+<tr>
+<td> Queue &amp; Swap </td>
+<td> <code>/sys/block/*/queue/*</code>, <code>/proc/swaps</code> </td>
+<td> Scheduler, read-ahead, request depth, swap usage </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="2-where-the-data-comes-from">2. Where the data comes from</h2>
+
+<p>Every field is parsed from a kernel-provided file or pseudo-file; there is no <code>df</code>, <code>lsblk</code>, or <code>iostat</code> subprocess. The whole snapshot is a flat struct of fixed-size arrays, so the gather does no heap allocation.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 380" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .src     { fill: #1f2535; stroke: #565f89; stroke-width: 1; }
+    .mid     { fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .panel   { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.4; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="380" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">DISK snapshot: kernel sources into one synchronous gather</text>
+
+  <rect x="30"  y="56" width="180" height="34" class="src" rx="6"/>
+  <text x="120" y="77" text-anchor="middle" class="lbl-mut">/etc/mtab -> /proc/mounts + statvfs</text>
+  <rect x="30"  y="98" width="180" height="34" class="src" rx="6"/>
+  <text x="120" y="119" text-anchor="middle" class="lbl-mut">/sys/block (size, rotational)</text>
+  <rect x="30"  y="140" width="180" height="34" class="src" rx="6"/>
+  <text x="120" y="161" text-anchor="middle" class="lbl-mut">/proc/diskstats + /proc/uptime</text>
+  <rect x="30"  y="182" width="180" height="34" class="src" rx="6"/>
+  <text x="120" y="203" text-anchor="middle" class="lbl-mut">/sys/block/*/queue/*</text>
+  <rect x="30"  y="224" width="180" height="34" class="src" rx="6"/>
+  <text x="120" y="245" text-anchor="middle" class="lbl-mut">/proc/swaps</text>
+  <rect x="30"  y="266" width="180" height="34" class="src" rx="6"/>
+  <text x="120" y="287" text-anchor="middle" class="lbl-mut">/etc/fstab + /dev/disk/by-*</text>
+
+  <rect x="360" y="150" width="240" height="70" class="mid" rx="6"/>
+  <text x="480" y="178" text-anchor="middle" class="lbl-grn">lulo_dizk_snapshot_gather</text>
+  <text x="480" y="196" text-anchor="middle" class="lbl-mut">in-process, synchronous,</text>
+  <text x="480" y="208" text-anchor="middle" class="lbl-mut">fixed arrays, no heap</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="73"  x2="360" y2="170" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="115" x2="360" y2="178" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="157" x2="360" y2="185" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="199" x2="360" y2="192" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="241" x2="360" y2="199" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="283" x2="360" y2="206" class="ln"/>
+
+  <rect x="740" y="70"  width="210" height="40" class="panel" rx="6"/>
+  <text x="845" y="94"  text-anchor="middle" class="lbl-sm">Filesystems  (+ total row)</text>
+  <rect x="740" y="120" width="210" height="40" class="panel" rx="6"/>
+  <text x="845" y="144" text-anchor="middle" class="lbl-sm">Devices</text>
+  <rect x="740" y="170" width="210" height="40" class="panel" rx="6"/>
+  <text x="845" y="194" text-anchor="middle" class="lbl-sm">I/O  (util% + rd/wr)</text>
+  <rect x="740" y="220" width="210" height="40" class="panel" rx="6"/>
+  <text x="845" y="244" text-anchor="middle" class="lbl-sm">Queue & Swap</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="185" x2="740" y2="90"  class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="185" x2="740" y2="140" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="185" x2="740" y2="190" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="185" x2="740" y2="240" class="ln"/>
+</svg>
+</div>
+
+
+<p>The gather is selective about what it shows so the dashboard stays meaningful:</p>
+
+<ul>
+<li><strong>Filesystems</strong> iterate <code>getmntent</code> over <code>/etc/mtab</code> (falling back to <code>/proc/mounts</code>), with a blocklist of pseudo/virtual filesystem types and a dedup by device. <code>tmpfs</code> is kept only for <code>/tmp</code> and <code>/dev/shm</code>. Usage is <code>total − f_bfree×f_frsize</code> from <code>statvfs</code>.</li>
+<li><strong>Block devices</strong> come from <code>/sys/block</code>, reading <code>size</code>, <code>queue/rotational</code>, and <code>device/model</code>; transport (nvme / sata / mmc / virtio) is inferred from the device name. Loop, ram, dm, and zram devices are skipped.</li>
+<li><strong>I/O</strong> parses <code>/proc/diskstats</code> against <code>/proc/uptime</code>, deriving utilization as <code>io_ms / uptime_ms × 100</code>; partitions are filtered out so only whole devices show.</li>
+<li><strong>Queue tunables</strong> read per-disk <code>/sys/block/*/queue/*</code> &ndash; the active scheduler (the bracketed <code>[mq-deadline]</code> token), <code>read_ahead_kb</code>, <code>nr_requests</code>, <code>max_sectors_kb</code>, <code>write_cache</code>, and <code>wbt_lat_usec</code>, plus NVMe <code>power_state</code> and NUMA node.</li>
+<li><strong>Swap</strong> parses <code>/proc/swaps</code>, and <strong>fstab</strong> is read with <code>getmntent</code> over <code>/etc/fstab</code>, resolving <code>UUID=</code> / <code>LABEL=</code> / <code>PARTLABEL=</code> entries through the <code>/dev/disk/by-*</code> symlink trees.</li>
+</ul>
+
+
+<h2 id="3-the-responsive-panel-layout">3. The responsive panel layout</h2>
+
+<p>The renderer (<code>build_disk_widget_layout</code>) is a responsive splitter rather than a fixed grid. The Filesystems panel is always on top; the Devices, I/O, and Queue &amp; Swap panels arrange side by side when the terminal is at least 96 columns wide and stack vertically below that, with per-breakpoint reserved heights and clamped sizing.</p>
+
+<p><figure class="screenshot">
+  <img src="img/disk-page.png" alt="Lulo DISK page with filesystems, devices, I/O, and queue panels">
+  <figcaption>The DISK dashboard: aggregate total row atop per-filesystem bars, with device, I/O, and queue panels alongside.</figcaption>
+</figure></p>
+
+<h2 id="4-filesystems-panel">4. Filesystems panel</h2>
+
+<p>The Filesystems panel leads with a synthetic <strong>total / &ldquo;all mounts&rdquo;</strong> row that sums used and total bytes across every mount and draws an aggregate usage meter. That row uses its own dedicated purple/lavender color so it reads as a summary, not as one of the component mounts.</p>
+
+<p>Each per-filesystem row gets a <strong>stable color keyed to its index, not its usage</strong>: the row index is cycled through a fixed palette permutation into the theme&rsquo;s fill slots, so adjacent filesystems always get distinct hues and a given mount keeps the same color across frames regardless of how full it is. This is a deliberate choice &ndash; the color encodes <em>identity</em> (which mount), while the bar length and percentage encode <em>capacity</em>.</p>
+
+<h2 id="5-devices-io-and-queue-panels">5. Devices, I/O, and queue panels</h2>
+
+<table>
+<thead>
+<tr>
+<th> Panel </th>
+<th> Columns / content </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> Devices </td>
+<td> Device name, size, rotational/SSD, transport, model </td>
+</tr>
+<tr>
+<td> I/O </td>
+<td> Utilization% bar, read bytes, write bytes (from <code>diskstats</code> deltas) </td>
+</tr>
+<tr>
+<td> Queue &amp; Swap </td>
+<td> I/O scheduler, read-ahead, <code>nr_requests</code>, plus swap usage meters </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>I/O utilization and swap meters are threshold-colored (graded at 25 / 50 / 75 / 90%), so a saturated device or near-full swap is visible at a glance.</p>
+
+<h2 id="6-why-disk-has-no-daemon">6. Why DISK has no daemon</h2>
+
+<p>Every other heavy page caches its data in <code>lulod</code> and serves it to the TUI over a socket, because gathering it (a full systemd unit inventory, a deep cgroup walk) is expensive and must stay off the UI thread. Disk data is cheap &ndash; a handful of small <code>/proc</code> and <code>/sys</code> reads plus <code>statvfs</code> per mount &ndash; so it is gathered inline whenever the page renders or a refresh is requested. There is no TTL cache and no IPC: the snapshot is simply rebuilt each time. This keeps the disk page self-contained and is the reason it is structurally the simplest page in the app.</p>
+
+<h2 id="7-see-also">7. See also</h2>
+
+<ul>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+<li><a href="cpu.gen.html">CPU &amp; Process View</a></li>
+<li><a href="tune.gen.html">Tune View</a> &ndash; editing <code>/sys/block/*/queue</code> tunables as bundles</li>
+<li><a href="cgroups.gen.html">Cgroups View</a></li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

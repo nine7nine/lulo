@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Process Model & IPC</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--process-model--ipc">Lulo &ndash; Process Model &amp; IPC</h1>
+
+<p>Lulo is three processes joined by two Unix-socket protocols and split across one privilege boundary, with two distinct escalation paths behind it: a session-scoped RW lease (authenticated by a polkit agent embedded <em>inside</em> the TUI) and a narrow <code>pkexec</code> helper for tunable writes.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-topology">Topology</a></li>
+<li><a href="#2-the-two-sockets">The two sockets</a></li>
+<li><a href="#3-wire-protocol">Wire protocol</a></li>
+<li><a href="#4-the-full-vs-active-refresh-model">The FULL vs ACTIVE refresh model</a></li>
+<li><a href="#5-rw-mode-and-the-embedded-auth-agent">RW mode and the embedded auth agent</a></li>
+<li><a href="#6-the-rw-lease-and-the-request-guard">The RW lease and the request guard</a></li>
+<li><a href="#7-privileged-edit-sessions">Privileged edit sessions</a></li>
+<li><a href="#8-proc-tracing">Proc tracing</a></li>
+<li><a href="#9-the-second-privilege-path-pkexec">The second privilege path: pkexec</a></li>
+<li><a href="#10-security-properties">Security properties</a></li>
+<li><a href="#11-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-topology">1. Topology</h2>
+
+<p>The frontend <code>lulo</code> runs as the user and never writes a system file. The unprivileged session daemon <code>lulod</code> caches state and integrates with the desktop. The privileged daemon <code>lulod-system</code> runs as root and is the only component that applies scheduling policy, edits system files, or traces processes. Two separate escalation paths cross the privilege boundary.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 470" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .ui      { fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .sess    { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .priv    { fill: #2a1f35; stroke: #bb9af7; stroke-width: 1.5; }
+    .box     { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .lbl     { fill: #c0caf5; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 12px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 12px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-pur { fill: #bb9af7; font-size: 12px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-cy  { fill: #7dcfff; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-yel { fill: #e0af68; font-size: 10px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.5; fill: none; }
+    .ln-y    { stroke: #e0af68; stroke-width: 1.5; stroke-dasharray: 5,3; fill: none; }
+    .bound   { stroke: #6b7398; stroke-width: 1.2; stroke-dasharray: 6,4; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="470" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">Two sockets, one privilege boundary, two escalation paths</text>
+
+  <rect x="40"  y="56" width="240" height="70" class="ui" rx="6"/>
+  <text x="60"  y="80"  class="lbl-grn">lulo</text>
+  <text x="60"  y="98"  class="lbl-mut">TUI, runs as user</text>
+  <text x="60"  y="112" class="lbl-mut">embeds polkit auth agent</text>
+
+  <rect x="370" y="56" width="240" height="70" class="sess" rx="6"/>
+  <text x="390" y="80"  class="lbl-blu">lulod</text>
+  <text x="390" y="98"  class="lbl-mut">session daemon, runs as user</text>
+  <text x="390" y="112" class="lbl-mut">snapshot cache + focus</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="280" y1="82" x2="370" y2="82" class="ln"/>
+  <text x="292" y="74" class="lbl-cy">$XDG_RUNTIME_DIR/lulod.sock</text>
+  <text x="292" y="120" class="lbl-mut">no peer-cred check (per-user)</text>
+
+  <rect x="700" y="56" width="240" height="70" class="box" rx="6"/>
+  <text x="720" y="80"  class="lbl-cy">snapshot backends</text>
+  <text x="720" y="98"  class="lbl-mut">systemd / tune / cgroups /</text>
+  <text x="720" y="112" class="lbl-mut">udev / sched, FULL + ACTIVE</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="610" y1="90" x2="700" y2="90" class="ln"/>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="20" y1="200" x2="960" y2="200" class="bound"/>
+  <text x="490" y="194" text-anchor="middle" class="lbl-yel">SO_PEERCRED + RW lease  --  privilege boundary</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="160" y1="126" x2="160" y2="250" class="ln-y"/>
+  <text x="172" y="170" class="lbl-yel">pkexec lulo-admin</text>
+  <text x="172" y="184" class="lbl-mut">apply-tune (path B)</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="126" x2="490" y2="250" class="ln"/>
+  <text x="502" y="230" class="lbl-cy">/run/lulod-system.sock  (path A)</text>
+
+  <rect x="40"  y="252" width="300" height="64" class="box" rx="6"/>
+  <text x="60"  y="274" class="lbl-cy">lulo-admin</text>
+  <text x="60"  y="290" class="lbl-mut">root, validates path allowlist,</text>
+  <text x="60"  y="304" class="lbl-mut">writes /proc/sys, /sys, cgroup</text>
+
+  <rect x="370" y="252" width="570" height="180" class="priv" rx="6"/>
+  <text x="390" y="276" class="lbl-pur">lulod-system  --  privileged daemon (root)</text>
+  <rect x="390" y="288" width="250" height="56" class="box" rx="6"/>
+  <text x="515" y="308" text-anchor="middle" class="lbl-sm">RW lease table</text>
+  <text x="515" y="324" text-anchor="middle" class="lbl-mut">(uid, pid, start_time) x16</text>
+  <rect x="660" y="288" width="260" height="56" class="box" rx="6"/>
+  <text x="790" y="308" text-anchor="middle" class="lbl-sm">scheduler engine</text>
+  <text x="790" y="324" text-anchor="middle" class="lbl-mut">/proc scan + apply</text>
+  <rect x="390" y="356" width="250" height="56" class="box" rx="6"/>
+  <text x="515" y="376" text-anchor="middle" class="lbl-sm">edit sessions</text>
+  <text x="515" y="392" text-anchor="middle" class="lbl-mut">realpath + allowlist + rename</text>
+  <rect x="660" y="356" width="260" height="56" class="box" rx="6"/>
+  <text x="790" y="376" text-anchor="middle" class="lbl-sm">proc tracing</text>
+  <text x="790" y="392" text-anchor="middle" class="lbl-mut">sandboxed strace session</text>
+</svg>
+</div>
+
+
+<h2 id="2-the-two-sockets">2. The two sockets</h2>
+
+<p>Both boundaries are <code>AF_UNIX</code> / <code>SOCK_STREAM</code> sockets, but their trust models differ.</p>
+
+<table>
+<thead>
+<tr>
+<th> Boundary </th>
+<th> Path </th>
+<th> Access control </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>lulo &lt;-&gt; lulod</code> </td>
+<td> <code>$XDG_RUNTIME_DIR/lulod.sock</code> (else <code>/tmp/lulod-&lt;uid&gt;.sock</code>) </td>
+<td> Filesystem only (the runtime dir is mode 0700); no peer-cred check </td>
+</tr>
+<tr>
+<td> <code>lulod &lt;-&gt; lulod-system</code> </td>
+<td> <code>/run/lulod-system.sock</code> (override <code>LULOD_SYSTEM_SOCKET</code>) </td>
+<td> <code>chmod 0666</code>, world-connectable; every accept reads <code>SO_PEERCRED</code> </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>The session socket is per-user and unprivileged, so it simply trusts any local connector. The system socket is deliberately world-connectable &ndash; access control is <strong>not</strong> filesystem-based &ndash; because it is enforced per request via the kernel-supplied peer credentials plus the RW lease (below). When <code>lulod</code> binds its socket it does a small but careful thing: rather than blindly unlinking a stale socket, it <em>connect-probes</em> first, so it never deletes the socket of a daemon that is already running.</p>
+
+<h2 id="3-wire-protocol">3. Wire protocol</h2>
+
+<p>Both protocols are hand-rolled, field-by-field streaming serializations over the stream socket &ndash; there is no overall length prefix, so reader and writer must agree exactly on the schema for each message type. Each message opens with a three-<code>uint32</code> header.</p>
+
+<table>
+<thead>
+<tr>
+<th> Protocol </th>
+<th> Magic </th>
+<th> Version </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>lulod</code> </td>
+<td> <code>0x4c554c4f</code> (&ldquo;LULO&rdquo;) </td>
+<td> 13 </td>
+</tr>
+<tr>
+<td> <code>lulod-system</code> </td>
+<td> <code>0x4c555359</code> (&ldquo;LUSY&rdquo;) </td>
+<td> 9 </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Requests carry <code>magic, version, type</code>; responses carry <code>magic, version, int32 status</code> (plus an error string when status is negative). A mismatched magic or version is a hard reject. The format is <strong>native-endian and ABI-tied</strong> (raw <code>int32</code> / <code>uint64</code> / enum casts, no <code>htonl</code>), which is correct for same-host Unix sockets but is a hard &ldquo;local single-host only&rdquo; constraint.</p>
+
+<p>The request type tells the daemon what you want. The session daemon&rsquo;s requests cover the five cached pages:</p>
+
+<pre><code class="language-text code-block">
+lulod:  SYSTEMD_FULL/ACTIVE, TUNE_FULL/ACTIVE/SAVE_SNAPSHOT/SAVE_PRESET/APPLY_SELECTED,
+        SCHED_FULL/ACTIVE/RELOAD/APPLY_PRESET, CGROUPS_FULL/ACTIVE, UDEV_FULL/ACTIVE
+</code></pre>
+
+
+<p>The system daemon&rsquo;s requests cover scheduling, editing, tracing, and auth:</p>
+
+<pre><code class="language-text code-block">
+lulod-system:  SCHED_FULL, SCHED_RELOAD, SCHED_FOCUS_UPDATE, EDIT_BEGIN, EDIT_COMMIT,
+               EDIT_CANCEL, FILE_WRITE, FILE_DELETE, SCHED_APPLY_PRESET,
+               TRACE_BEGIN, TRACE_END, AUTH_UNLOCK, AUTH_LOCK
+</code></pre>
+
+
+<h2 id="4-the-full-vs-active-refresh-model">4. The FULL vs ACTIVE refresh model</h2>
+
+<p>The session-daemon pages share one refresh pattern that keeps the UI cheap. Every page can ask for two granularities:</p>
+
+<ul>
+<li><strong><code>FULL</code></strong> returns the cached snapshot &ndash; the whole list &ndash; refreshed only when its TTL (mostly ~5s) has expired. This is the expensive gather (a systemd inventory, a cgroup walk), so it is throttled.</li>
+<li><strong><code>ACTIVE</code></strong> re-renders just the <em>selected</em> item&rsquo;s live detail against the cached list. This is what runs as you move the cursor, so the preview stays current without re-gathering everything.</li>
+</ul>
+
+
+<p>The request payload is the page&rsquo;s UI <strong>state</strong> (cursors, scroll offsets, selection) so the daemon can compute the right &ldquo;active&rdquo; preview; the response is the domain <strong>snapshot</strong>. On the frontend side, a worker-thread backend holds the latest snapshot with a monotonic generation counter, and the render loop only repaints when the generation advances &ndash; so idle daemons cost zero frames. If the socket is missing, the backend will try to start <code>lulod</code> via its systemd user unit and then by forking it directly, throttled to once a second.</p>
+
+<h2 id="5-rw-mode-and-the-embedded-auth-agent">5. RW mode and the embedded auth agent</h2>
+
+<p>The frontend boots <strong>read-only</strong>. RW mode is a per-session unlock (toggled with <code>Shift+W</code>) that lets you perform privileged writes, edits, traces, and preset-applies through <code>lulod-system</code>. What makes it unusual is <em>how the authentication happens</em>: the password prompt is rendered <strong>inside the Notcurses TUI</strong>, because the frontend registers its own polkit agent.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 360" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .ui      { fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .priv    { fill: #2a1f35; stroke: #bb9af7; stroke-width: 1.5; }
+    .pk      { fill: #2a2438; stroke: #e0af68; stroke-width: 1.5; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-pur { fill: #bb9af7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-yel { fill: #e0af68; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.5; fill: none; }
+    .lbl-n   { fill: #7dcfff; font-size: 9px; font-family: 'JetBrains Mono', monospace; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="360" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">RW unlock: polkit authenticates through the TUI's own agent</text>
+
+  <rect x="40"  y="120" width="220" height="90" class="ui" rx="6"/>
+  <text x="60"  y="146" class="lbl-grn">lulo (TUI)</text>
+  <text x="60"  y="164" class="lbl-mut">worker thread registers a</text>
+  <text x="60"  y="178" class="lbl-mut">PolkitAgentListener at</text>
+  <text x="60"  y="192" class="lbl-mut">/io/lulo/AuthAgent</text>
+
+  <rect x="380" y="120" width="220" height="90" class="priv" rx="6"/>
+  <text x="400" y="146" class="lbl-pur">lulod-system</text>
+  <text x="400" y="164" class="lbl-mut">checks authorization for</text>
+  <text x="400" y="178" class="lbl-mut">io.lulo.system.unlock-rw</text>
+  <text x="400" y="192" class="lbl-mut">ALLOW_USER_INTERACTION</text>
+
+  <rect x="720" y="120" width="220" height="90" class="pk" rx="6"/>
+  <text x="740" y="146" class="lbl-yel">polkitd</text>
+  <text x="740" y="164" class="lbl-mut">needs to authenticate -></text>
+  <text x="740" y="178" class="lbl-mut">calls back into lulo's</text>
+  <text x="740" y="192" class="lbl-mut">registered agent</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="260" y1="150" x2="380" y2="150" class="ln"/>
+  <text x="268" y="142" class="lbl-n">1. AUTH_UNLOCK</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="150" x2="720" y2="150" class="ln"/>
+  <text x="612" y="142" class="lbl-n">2. check_authorization</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="720" y1="186" x2="260" y2="186" class="ln"/>
+  <text x="430" y="178" class="lbl-n">3. prompt rendered in the TUI -> user types password -> response</text>
+
+  <text x="60"  y="250" class="lbl-mut">4. on success, lulod-system records an RW lease for (uid, pid, start_time);</text>
+  <text x="60"  y="266" class="lbl-mut">   the TUI sets rw_mode = 1 and the status bar flips to "root/RW".</text>
+  <text x="60"  y="290" class="lbl-mut">Shift+W again sends AUTH_LOCK, revoking the lease; a daemon restart drops all leases.</text>
+</svg>
+</div>
+
+
+<p><figure class="screenshot">
+  <img src="img/auth-overlay.png" alt="Lulo RW-mode authentication prompt rendered inside the TUI">
+  <figcaption>The RW-mode unlock: polkit&rsquo;s password prompt is drawn as an overlay inside the Notcurses TUI via Lulo&rsquo;s own registered agent.</figcaption>
+</figure></p>
+
+<p>The flow: pressing <code>Shift+W</code> spawns a worker thread that registers a <code>PolkitAgentListener</code> for the calling process (subject built from pid + start-time + uid) at object path <code>/io/lulo/AuthAgent</code>, and in parallel sends <code>AUTH_UNLOCK</code> to <code>lulod-system</code>. The system daemon asks polkit to authorize the action <code>io.lulo.system.unlock-rw</code> with user interaction allowed. polkit, needing a password, calls back into the frontend&rsquo;s <em>own</em> registered agent &ndash; whose prompt, info, and error signals are marshalled into the TUI and drawn as an auth overlay. Keystrokes flow back as the polkit session response. On success the TUI sets <code>rw_mode = 1</code>; on failure it surfaces the polkit error.</p>
+
+<h2 id="6-the-rw-lease-and-the-request-guard">6. The RW lease and the request guard</h2>
+
+<p>Authorization on the daemon side is an in-memory <strong>lease table</strong> (16 slots) of <code>{active, uid, pid, start_time}</code>. On a successful unlock the daemon records a lease keyed on the kernel-reported peer <code>uid</code> and <code>pid</code> plus the process <code>start_time</code> read from <code>/proc</code> &ndash; which pins the lease to <em>this exact process instance</em> and defeats PID reuse. Leases live only in process memory, so restarting <code>lulod-system</code> drops them all and forces re-authentication.</p>
+
+<p>Every mutating privileged request passes through <code>require_rw_lease</code>: root bypasses, otherwise the daemon re-reads the peer&rsquo;s current start-time and demands an exact <code>(uid, pid, start_time)</code> match, returning <code>EPERM</code> if absent.</p>
+
+<table>
+<thead>
+<tr>
+<th> Lease-gated (need RW) </th>
+<th> Not lease-gated </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>SCHED_APPLY_PRESET</code>, <code>EDIT_BEGIN</code>, <code>EDIT_COMMIT</code> </td>
+<td> <code>SCHED_FULL</code>, <code>SCHED_RELOAD</code> (reads) </td>
+</tr>
+<tr>
+<td> <code>FILE_WRITE</code>, <code>FILE_DELETE</code>, <code>TRACE_BEGIN</code> </td>
+<td> <code>SCHED_FOCUS_UPDATE</code>, <code>AUTH_LOCK</code> </td>
+</tr>
+<tr>
+<td> </td>
+<td> <code>EDIT_CANCEL</code>, <code>TRACE_END</code> (ownership-checked instead) </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>The frontend also has a <code>path_requires_rw</code> check (paths under <code>/etc</code>, <code>/usr</code>, <code>/lib</code>, <code>/proc</code>, <code>/sys</code>, <code>/run/udev</code>, <code>/run/systemd</code>) that blocks an action with &ldquo;RO mode: Shift+W for root/RW&rdquo; before it ever hits the wire &ndash; but that is purely advisory UX. The daemon&rsquo;s lease guard is the authoritative gate and never trusts the frontend&rsquo;s check.</p>
+
+<h2 id="7-privileged-edit-sessions">7. Privileged edit sessions</h2>
+
+<p>Editing a system file abstracts the privilege away: the frontend tries the unprivileged path first and only escalates on failure.</p>
+
+<ol>
+<li><strong>Begin.</strong> If <code>access(path, W_OK)</code> succeeds, the user can edit in place &ndash; no daemon involved. Otherwise the frontend sends <code>EDIT_BEGIN</code>. The daemon resolves the real path with <code>realpath</code>, checks it against an <strong>allowlist of prefixes</strong> (<code>/etc/lulo/scheduler/</code>, <code>/proc/sys/kernel/sched_</code>, <code>/sys/devices/system/cpu/cpufreq/</code>, the systemd dirs, <code>/sys/fs/cgroup/</code>, the udev dirs), opens the source <code>O_RDONLY|O_NOFOLLOW</code>, copies it into a <code>mkstemp</code> temp under <code>/run/user/&lt;uid&gt;/lulo-edit/</code>, and chowns that copy 0600 to the user. It returns a session id and the path to the user-owned copy.</li>
+<li><strong>Edit.</strong> The frontend opens the <em>copy</em> in <code>$VISUAL</code> / <code>$EDITOR</code>. The user edits a private file they own.</li>
+<li><strong>Commit.</strong> <code>EDIT_COMMIT</code> re-checks the session&rsquo;s <code>uid</code> ownership and re-validates the scope, then writes back. For real files this is <strong>atomic</strong>: a same-directory <code>mkstemp</code>, content copy, mode/owner preserved, <code>fsync</code>, then <code>rename()</code> over the original. For kernel pseudo-files (cgroup controllers, sched tunables) it writes in place, since atomic rename is not meaningful there. <code>O_NOFOLLOW</code> is used throughout to block symlink races, and committing a scheduler file triggers a config reload + rescan.</li>
+</ol>
+
+
+<p><code>EDIT_CANCEL</code> (ownership-checked, not lease-gated) cleans up the copy and meta. Direct <code>FILE_WRITE</code> / <code>FILE_DELETE</code> follow the same realpath-and-allowlist discipline for editor-less changes.</p>
+
+<h2 id="8-proc-tracing">8. Proc tracing</h2>
+
+<p>The <code>s</code> key on the CPU page starts a trace of the selected process. It does <strong>not</strong> call <code>ptrace</code> directly &ndash; <code>lulod-system</code> (as root) forks and execs the system <code>strace</code> binary:</p>
+
+<pre><code class="language-text code-block">
+strace -f -s 256 -yy -ttt -p &lt;pid&gt;
+</code></pre>
+
+
+<p>Before spawning, it pre-flights: the PID must exist (<code>kill(pid,0)</code>), <code>readlink(/proc/&lt;pid&gt;/exe)</code> must succeed (rejecting kernel threads), and <code>/usr/bin/strace</code> must be executable. Output is written to <code>/run/user/&lt;uid&gt;/lulo-trace/&lt;session_id&gt;.log</code>, created 0600 and chowned to the requesting user so only they can read it. The <code>session_id</code> is strictly validated to <code>[A-Za-z0-9._-]</code> before any path interpolation, which closes off path traversal, and a root-only meta file records the owning uid, child pid, target pid, and output path. <code>TRACE_END</code> enforces that the requester owns the session (so the owner can always stop their own trace), then <code>SIGTERM</code> → grace → <code>SIGKILL</code> and unlinks the files. Privilege is required because attaching to an arbitrary process needs <code>CAP_SYS_PTRACE</code>; routing it through the root daemon and chowning the log to the user is what makes it both possible and readable.</p>
+
+<h2 id="9-the-second-privilege-path-pkexec">9. The second privilege path: pkexec</h2>
+
+<p>Tunable application (the <a href="tune.gen.html">Tune page</a>&rsquo;s <code>apply</code>) uses a separate, simpler escalation route, independent of the lease machinery. <code>lulod</code> builds a small plan (a <code>lulo-admin-tune-v1</code> header plus <code>path&lt;TAB&gt;value</code> lines) and runs <code>pkexec lulo-admin apply-tune</code>, piping the plan to the helper on stdin. The <code>lulo-admin</code> helper refuses to run unless it is root and the verb is <code>apply-tune</code>, and it validates every path through <code>realpath</code> + a prefix allowlist limited to <code>/proc/sys</code>, <code>/sys</code>, and <code>/sys/fs/cgroup</code> before writing. polkit gates it via the <code>io.lulo.admin.pkexec.apply-tune</code> action.</p>
+
+<p>So there are two polkit actions and two privilege models by design: the <strong>lease path</strong> (broad, session-stateful, for scheduler/edit/trace) and the <strong>pkexec path</strong> (narrow, stateless, for tunable writes only).</p>
+
+<h2 id="10-security-properties">10. Security properties</h2>
+
+<p>The design concentrates privilege and validates aggressively at the boundary.</p>
+
+<ul>
+<li><strong>Peer credentials are the trust anchor.</strong> The system socket reads <code>SO_PEERCRED</code> on every accept; the frontend cannot lie about its uid or pid.</li>
+<li><strong>Leases and ownership are PID-reuse-hardened.</strong> Lease, edit, and trace ownership are all keyed on <code>(uid, pid, start_time)</code>, so a recycled PID can never inherit another process&rsquo;s authorization.</li>
+<li><strong>TOCTOU defenses throughout.</strong> <code>realpath</code> before every allowlist check, <code>O_NOFOLLOW</code> everywhere, same-directory <code>mkstemp</code>+<code>rename</code> with preserved owner/mode, and scope re-validation at commit time.</li>
+<li><strong>The advisory check is never trusted.</strong> The frontend&rsquo;s <code>path_requires_rw</code> is convenience only; the daemon re-checks the lease independently.</li>
+</ul>
+
+
+<p>Two properties are worth flagging for maintainers. The system socket is intentionally world-connectable (0666), so security rests entirely on the per-request lease and ownership checks &ndash; a new request handler that forgets <code>require_rw_lease</code> would be an instant privilege hole. And the deserializers do not cap string/array lengths, which is low-risk on a local peer-checked socket but means a hostile local process could trigger large allocations; the version field is the only compatibility guard.</p>
+
+<h2 id="11-see-also">11. See also</h2>
+
+<ul>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+<li><a href="scheduler.gen.html">Scheduler</a> &ndash; the largest consumer of the privileged path</li>
+<li><a href="focus-providers.gen.html">Focus Providers</a> &ndash; <code>SCHED_FOCUS_UPDATE</code> across the boundary</li>
+<li><a href="tune.gen.html">Tune View</a> &ndash; the pkexec apply path</li>
+<li><a href="cpu.gen.html">CPU &amp; Process View</a> &ndash; where tracing is launched</li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

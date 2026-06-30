@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Cgroups View</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--cgroups-view">Lulo &ndash; Cgroups View</h1>
+
+<p>The <code>CGROUPS</code> page is a live <code>/sys/fs/cgroup</code> browser that also knows where each cgroup <em>comes from</em>: its three subviews bridge the runtime cgroup hierarchy, the raw controller files, and the static systemd unit definitions that shape those limits &ndash; all by reading the filesystem directly, with no libcgroup or systemd API in the data path.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-what-the-page-shows">What the page shows</a></li>
+<li><a href="#2-the-three-subviews-and-their-sources">The three subviews and their sources</a></li>
+<li><a href="#3-tree-browsing-the-live-hierarchy">Tree: browsing the live hierarchy</a></li>
+<li><a href="#4-files-controller-state">Files: controller state</a></li>
+<li><a href="#5-config-the-units-behind-the-limits">Config: the units behind the limits</a></li>
+<li><a href="#6-editing-and-the-snapshot-model">Editing and the snapshot model</a></li>
+<li><a href="#7-why-this-matters-to-the-scheduler">Why this matters to the scheduler</a></li>
+<li><a href="#8-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-what-the-page-shows">1. What the page shows</h2>
+
+<p><code>CGROUPS</code> makes cgroup state and configuration visible without leaving the TUI. The interesting design choice is that it reaches the same subject &ndash; resource control &ndash; from two completely different angles: the live cgroup filesystem on one side, and the systemd unit files that produce those cgroups on the other.</p>
+
+<p>Like the systemd, udev, and tune pages, it runs on the client/daemon split: a worker-thread backend in the frontend talks to <code>lulod</code> over a socket, and the frontend only ever consumes cached snapshots (see <a href="process-model-ipc.gen.html">Process Model &amp; IPC</a>).</p>
+
+<h2 id="2-the-three-subviews-and-their-sources">2. The three subviews and their sources</h2>
+
+<p>Each subview reads a distinct part of the system, which is what makes the page more than a directory listing.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 360" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .view    { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .src     { fill: #1f2535; stroke: #565f89; stroke-width: 1; }
+    .note    { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.4; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="360" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">CGROUPS: three views, three filesystem sources</text>
+
+  <rect x="40"  y="60" width="270" height="54" class="view" rx="6"/>
+  <text x="175" y="82"  text-anchor="middle" class="lbl-blu">Tree</text>
+  <text x="175" y="100" text-anchor="middle" class="lbl-mut">live hierarchy browser</text>
+  <rect x="355" y="60" width="270" height="54" class="view" rx="6"/>
+  <text x="490" y="82"  text-anchor="middle" class="lbl-blu">Files</text>
+  <text x="490" y="100" text-anchor="middle" class="lbl-mut">controller pseudo-files</text>
+  <rect x="670" y="60" width="270" height="54" class="view" rx="6"/>
+  <text x="805" y="82"  text-anchor="middle" class="lbl-blu">Config</text>
+  <text x="805" y="100" text-anchor="middle" class="lbl-mut">unit definitions</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="175" y1="114" x2="175" y2="170" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="114" x2="490" y2="170" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="805" y1="114" x2="805" y2="170" class="ln"/>
+
+  <rect x="40"  y="172" width="270" height="50" class="src" rx="6"/>
+  <text x="175" y="194" text-anchor="middle" class="lbl-sm">/sys/fs/cgroup/&lt;path&gt;</text>
+  <text x="175" y="210" text-anchor="middle" class="lbl-mut">child dirs, cgroup.type/controllers</text>
+  <rect x="355" y="172" width="270" height="50" class="src" rx="6"/>
+  <text x="490" y="194" text-anchor="middle" class="lbl-sm">cgroup control files</text>
+  <text x="490" y="210" text-anchor="middle" class="lbl-mut">value + access(W_OK)</text>
+  <rect x="670" y="172" width="270" height="50" class="src" rx="6"/>
+  <text x="805" y="194" text-anchor="middle" class="lbl-sm">/etc + /usr/lib systemd dirs</text>
+  <text x="805" y="210" text-anchor="middle" class="lbl-mut">.slice / .service / dropins</text>
+
+  <rect x="670" y="250" width="270" height="74" class="note" rx="6"/>
+  <text x="805" y="272" text-anchor="middle" class="lbl-sm">filtered to resource directives</text>
+  <text x="805" y="290" text-anchor="middle" class="lbl-mut">CPUQuota= / MemoryMax= / IOWeight= ...</text>
+  <text x="805" y="304" text-anchor="middle" class="lbl-mut">38-entry directive table</text>
+  <text x="805" y="318" text-anchor="middle" class="lbl-mut">only units that actually set a limit</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="805" y1="222" x2="805" y2="250" class="ln"/>
+</svg>
+</div>
+
+
+<h2 id="3-tree-browsing-the-live-hierarchy">3. Tree: browsing the live hierarchy</h2>
+
+<p>The Tree view is a real directory browser over <code>/sys/fs/cgroup</code>, walked with <code>opendir</code> / <code>readdir</code> / <code>lstat</code> &ndash; there is no libcgroup dependency. For the current browse path it lists child cgroups and reads each one&rsquo;s pseudo-files: <code>cgroup.type</code>, <code>cgroup.controllers</code>, and line counts of <code>cgroup.procs</code> and <code>cgroup.threads</code> for the process and thread tallies. The child-directory count becomes the <code>sub</code> column.</p>
+
+<table>
+<thead>
+<tr>
+<th> Column </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>typ</code> </td>
+<td> <code>cgroup.type</code> (domain / threaded / &hellip;) </td>
+</tr>
+<tr>
+<td> <code>p</code> </td>
+<td> Process count (lines in <code>cgroup.procs</code>) </td>
+</tr>
+<tr>
+<td> <code>t</code> </td>
+<td> Thread count (lines in <code>cgroup.threads</code>) </td>
+</tr>
+<tr>
+<td> <code>sub</code> </td>
+<td> Number of child cgroups </td>
+</tr>
+<tr>
+<td> <code>name</code> </td>
+<td> Cgroup directory name </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>When you are not at the root, a synthetic <code>..</code> row is prepended so you can navigate up; parent rows sort first and render in a distinct color. Opening a directory descends into it and triggers a full re-gather for the new path. The browse path is sanitized with <code>realpath</code> and rejected if it would escape <code>/sys/fs/cgroup</code>, so the browser can never wander outside the hierarchy.</p>
+
+<p>The Tree preview pane is the richest part: it shows the path, type, controllers, <code>subtree_control</code>, and counts, then <code>cgroup.events</code>, then up to a dozen each of the member processes and threads &ndash; with their PIDs/TIDs resolved to command names via the shared proc-metadata reader.</p>
+
+<p><figure class="screenshot">
+  <img src="img/cgroups-tree.png" alt="Lulo CGROUPS Tree view with hierarchy and member processes">
+  <figcaption>The Tree view browsing the live cgroup hierarchy; selecting a cgroup previews its type, controllers, events, and member processes.</figcaption>
+</figure></p>
+
+<h2 id="4-files-controller-state">4. Files: controller state</h2>
+
+<p>The Files view drops from &ldquo;which cgroup&rdquo; to &ldquo;what is this cgroup configured to do.&rdquo; It lists the regular files in the selected cgroup directory &ndash; the controller interface files &ndash; reading each file&rsquo;s first line as its current value and probing <code>access(W_OK)</code> to mark whether it is writable.</p>
+
+<table>
+<thead>
+<tr>
+<th> Column </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>rw</code> </td>
+<td> Writable (green) vs read-only (dim) </td>
+</tr>
+<tr>
+<td> <code>name</code> </td>
+<td> Control file name (e.g. <code>cpu.max</code>, <code>memory.high</code>) </td>
+</tr>
+<tr>
+<td> <code>value/path</code> </td>
+<td> Current value, or path </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Selecting a file previews its access mode, current value, and a raw dump of the file (capped to keep the snapshot bounded). This is where you confirm the live, effective value of a controller &ndash; as opposed to the Config view, which shows what <em>should</em> set it.</p>
+
+<h2 id="5-config-the-units-behind-the-limits">5. Config: the units behind the limits</h2>
+
+<p>The Config view does not read cgroupfs at all. It scans the systemd unit directories (eight roots under <code>/etc/systemd/*</code> and <code>/usr/lib/systemd/*</code> plus <code>/lib</code>), recursively, and includes a file only if it is a <code>.slice</code>, or a <code>.service</code> / <code>.scope</code> / drop-in <code>.conf</code> that <strong>actually contains a cgroup resource directive</strong>.</p>
+
+<p>That filter is the clever bit: rather than dumping every unit, it matches file contents against a 38-entry table of resource-control directives &ndash; <code>CPUQuota=</code>, <code>MemoryMax=</code>, <code>IOWeight=</code>, and the rest &ndash; so the Config list is exactly the set of units that impose a cgroup limit. Sources are ranked and colored (<code>/etc</code> overrides green, vendor <code>/usr/lib</code> cyan), and the kind column distinguishes slice / service / scope / dropin / conf. Selecting one previews the unit file.</p>
+
+<p>So the page answers two different questions with two different data paths: <em>Tree/Files</em> = &ldquo;what is the kernel doing right now,&rdquo; <em>Config</em> = &ldquo;which unit declared that limit, and where do I edit it.&rdquo;</p>
+
+<h2 id="6-editing-and-the-snapshot-model">6. Editing and the snapshot model</h2>
+
+<p>There is no inline editing on this page. The Files and Config rows expose a path through the shared external-editor handoff: pressing <code>i</code> collects the active edit path, suspends the TUI, runs <code>$VISUAL</code> / <code>$EDITOR</code> on it, and resumes. The Tree view is not editable (it is a navigator). Writes that target privileged paths go through <code>lulod-system</code>&rsquo;s atomic, allowlist-scoped edit protocol; cgroup pseudo-files are written in place rather than via rename, because atomic rename is not meaningful for kernel interface files.</p>
+
+<p>The snapshot the daemon caches holds the tree rows, file rows, configs, and the active preview lines, plus the current browse path. The config scan runs once and is cached (<code>configs_loaded</code>); the daemon re-gathers the tree when the TTL expires or the browse path changes, and re-renders just the preview when the selection moves.</p>
+
+<h2 id="7-why-this-matters-to-the-scheduler">7. Why this matters to the scheduler</h2>
+
+<p><code>CGROUPS</code> is the map that the <a href="scheduler.gen.html">scheduler</a> reads against. Scheduler rules can match on cgroup path, systemd slice, and unit &ndash; so understanding the shape of the cgroup tree here tells you what those matchers will see. The Tree view shows where a workload actually lives; the Config view shows the slices and services that define it; and the scheduler uses exactly those concepts to decide how a process should be prioritized.</p>
+
+<h2 id="8-see-also">8. See also</h2>
+
+<ul>
+<li><a href="scheduler.gen.html">Scheduler</a> &ndash; cgroup / slice / unit matchers</li>
+<li><a href="systemd.gen.html">Systemd View</a> &ndash; the units whose definitions appear in Config</li>
+<li><a href="tune.gen.html">Tune View</a> &ndash; editing <code>/sys/fs/cgroup</code> controllers as bundles</li>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

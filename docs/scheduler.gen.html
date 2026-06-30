@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Scheduler</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--scheduler">Lulo &ndash; Scheduler</h1>
+
+<p>The scheduler is Lulo&rsquo;s most substantial subsystem: a privileged, continuously re-enforcing <code>/proc</code> watcher that resolves each process to exactly one sparse profile &ndash; by exclusion, window focus, explicit rule, or background fallback &ndash; and applies nice, scheduling policy, RT priority, and I/O priority directly through syscalls every interval.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-the-shape-of-the-scheduler">The shape of the scheduler</a></li>
+<li><a href="#2-config-model">Config model</a></li>
+<li><a href="#3-profiles-as-sparse-overlays">Profiles as sparse overlays</a></li>
+<li><a href="#4-rules-and-matchers">Rules and matchers</a></li>
+<li><a href="#5-policy-resolution-order">Policy resolution order</a></li>
+<li><a href="#6-the-enforcement-loop">The enforcement loop</a></li>
+<li><a href="#7-how-policy-is-applied">How policy is applied</a></li>
+<li><a href="#8-dynamic-policy-focus-and-background">Dynamic policy: focus and background</a></li>
+<li><a href="#9-tunables-and-presets">Tunables and presets</a></li>
+<li><a href="#10-the-sched-page">The SCHED page</a></li>
+<li><a href="#11-design-notes">Design notes</a></li>
+<li><a href="#12-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-the-shape-of-the-scheduler">1. The shape of the scheduler</h2>
+
+<p>Lulo&rsquo;s scheduler is a policy layer for Linux process priority. It is closer to a compact policy daemon than a one-shot <code>chrt</code> / <code>renice</code> wrapper: it loads file-backed config, scans every process on a fixed interval, classifies each one, and applies scheduling attributes &ndash; then does it all again on the next tick so policy stays enforced as processes come and go.</p>
+
+<table>
+<thead>
+<tr>
+<th> Process </th>
+<th> Scheduler role </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>lulo</code> </td>
+<td> Renders the <code>SCHED</code> page and opens config files in <code>$VISUAL</code> / <code>$EDITOR</code> </td>
+</tr>
+<tr>
+<td> <code>lulod</code> </td>
+<td> Serves scheduler snapshots to the TUI and forwards focused-PID updates </td>
+</tr>
+<tr>
+<td> <code>lulod-system</code> </td>
+<td> Loads config, scans <code>/proc</code>, applies policy, and re-enforces over time </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Only the privileged daemon <code>lulod-system</code> ever issues a scheduling syscall. The engine lives in <code>src/daemon/lulod_system_sched.c</code> (about 2,000 lines); per-process metadata collection is shared code in <code>src/shared/lulo_proc_meta.c</code>.</p>
+
+<h2 id="2-config-model">2. Config model</h2>
+
+<p>The config is a directory tree, not one large DSL file. The root is <code>/etc/lulo/scheduler</code> (overridable via <code>LULOD_SYSTEM_CONFIG_DIR</code>).</p>
+
+<table>
+<thead>
+<tr>
+<th> Path </th>
+<th> Purpose </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>scheduler.conf</code> </td>
+<td> Global settings </td>
+</tr>
+<tr>
+<td> <code>profiles.d/*.conf</code> </td>
+<td> Profile definitions </td>
+</tr>
+<tr>
+<td> <code>rules.d/*.conf</code> </td>
+<td> Rule definitions </td>
+</tr>
+<tr>
+<td> <code>tunables-presets.d/*.conf</code> </td>
+<td> Kernel-tunable presets </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Only regular files ending in <code>.conf</code> (and not dot-files) are loaded, gathered with <code>scandir</code> + <code>alphasort</code> so the load order is lexical &ndash; which is why the shipped files are numbered (<code>10-audio-rt.conf</code>, <code>14-exclude-lulo.conf</code>, &hellip;). All three parsers share the same strict line handling: trim, skip blanks and <code>#</code>/<code>;</code> comments, require <code>key=value</code>, and treat an <strong>unknown key as a hard parse error</strong>. A missing <code>scheduler.conf</code> is non-fatal; the defaults below are seeded before parsing.</p>
+
+<h3 id="global-settings">Global settings</h3>
+
+<table>
+<thead>
+<tr>
+<th> Setting </th>
+<th> Default </th>
+<th> Purpose </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>watcher_interval_ms</code> </td>
+<td> <code>1000</code> </td>
+<td> Rescan + reapply cadence (range 100&ndash;10000) </td>
+</tr>
+<tr>
+<td> <code>focus_enabled</code> </td>
+<td> <code>1</code> </td>
+<td> Enable focused-window boosting </td>
+</tr>
+<tr>
+<td> <code>focus_profile</code> </td>
+<td> <code>focused</code> </td>
+<td> Profile applied to the focused app </td>
+</tr>
+<tr>
+<td> <code>background_enabled</code> </td>
+<td> <code>1</code> </td>
+<td> Enable the app-scope fallback </td>
+</tr>
+<tr>
+<td> <code>background_profile</code> </td>
+<td> <code>background</code> </td>
+<td> Fallback profile </td>
+</tr>
+<tr>
+<td> <code>background_match_app_slice</code> </td>
+<td> <code>1</code> </td>
+<td> Treat <code>/app.slice/</code> cgroups as app-scope </td>
+</tr>
+<tr>
+<td> <code>background_match_background_slice</code> </td>
+<td> <code>1</code> </td>
+<td> Treat <code>/background.slice/</code> cgroups as app-scope </td>
+</tr>
+<tr>
+<td> <code>background_match_app_unit_prefix</code> </td>
+<td> <code>1</code> </td>
+<td> Treat <code>app-*</code> units as app-scope </td>
+</tr>
+<tr>
+<td> <code>tunables_startup_preset</code> </td>
+<td> <em>(none)</em> </td>
+<td> Preset auto-applied on reload </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>The shipped example lowers the cadence to <code>watcher_interval_ms=750</code>.</p>
+
+<h2 id="3-profiles-as-sparse-overlays">3. Profiles as sparse overlays</h2>
+
+<p>A profile describes how a matched process should be treated &ndash; but only the fields it actually sets. Every value field is paired with a <code>has_*</code> flag, and an unset field means &ldquo;leave this attribute unchanged.&rdquo; A profile is therefore a <strong>sparse overlay</strong>, not a full scheduling spec.</p>
+
+<table>
+<thead>
+<tr>
+<th> Field </th>
+<th> Range / values </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>name</code> </td>
+<td> string </td>
+<td> Profile identifier (defaults to the filename stem) </td>
+</tr>
+<tr>
+<td> <code>enabled</code> </td>
+<td> bool (default 1) </td>
+<td> Enables or disables the profile </td>
+</tr>
+<tr>
+<td> <code>nice</code> </td>
+<td> -20 .. 19 </td>
+<td> Linux nice level </td>
+</tr>
+<tr>
+<td> <code>policy</code> </td>
+<td> <code>other</code> / <code>batch</code> / <code>idle</code> / <code>fifo</code> / <code>rr</code> </td>
+<td> Scheduling policy </td>
+</tr>
+<tr>
+<td> <code>rt_priority</code> </td>
+<td> 1 .. 99 </td>
+<td> RT priority for <code>fifo</code> / <code>rr</code> </td>
+</tr>
+<tr>
+<td> <code>io_class</code> </td>
+<td> <code>none</code> / <code>realtime</code> / <code>best-effort</code> / <code>idle</code> </td>
+<td> Linux I/O class </td>
+</tr>
+<tr>
+<td> <code>io_priority</code> </td>
+<td> 0 .. 7 </td>
+<td> I/O priority level </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Profiles are sorted by a synthetic &ldquo;aggressiveness&rdquo; score (policy rank, plus RT priority, plus <code>20 − nice</code>, with disabled profiles pushed down) so the more forceful ones sort first in the UI. Some shipped examples:</p>
+
+<table>
+<thead>
+<tr>
+<th> Profile </th>
+<th> Settings </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>audio-rt</code> </td>
+<td> <code>nice=-16, policy=fifo, rt_priority=70, io_class=best-effort, io_priority=0</code> </td>
+</tr>
+<tr>
+<td> <code>desktop-rt</code> </td>
+<td> <code>policy=rr, rt_priority=8</code> (compositor-critical processes) </td>
+</tr>
+<tr>
+<td> <code>focused</code> </td>
+<td> <code>nice=-20, io_class=best-effort, io_priority=0</code> </td>
+</tr>
+<tr>
+<td> <code>background</code> </td>
+<td> lower-priority fallback for app-scope processes </td>
+</tr>
+<tr>
+<td> <code>idle</code> </td>
+<td> <code>nice=19, policy=idle, io_class=idle</code> (yields aggressively) </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Because a profile only writes the dimensions it sets, different profiles compose on orthogonal axes instead of clobbering each other &ndash; and resolution always picks exactly one winner per process, so there is no double-apply.</p>
+
+<h2 id="4-rules-and-matchers">4. Rules and matchers</h2>
+
+<p>Rules decide which profile applies to which processes. A rule is enabled by default and carries a matcher kind, a glob pattern, and a target profile (or an <code>exclude</code> flag).</p>
+
+<table>
+<thead>
+<tr>
+<th> Field </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>enabled</code> </td>
+<td> Enables or disables the rule (default 1) </td>
+</tr>
+<tr>
+<td> <code>exclude</code> </td>
+<td> If set, matched processes are dropped entirely (profile is cleared) </td>
+</tr>
+<tr>
+<td> <code>match</code> </td>
+<td> Matcher kind (default <code>comm</code>) </td>
+</tr>
+<tr>
+<td> <code>pattern</code> </td>
+<td> <code>fnmatch</code> glob &ndash; <strong>required</strong> </td>
+</tr>
+<tr>
+<td> <code>profile</code> </td>
+<td> Target profile &ndash; required unless <code>exclude</code> </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Matching is plain <code>fnmatch</code> glob against a field of the process&rsquo;s metadata. Six matcher kinds map to six fields:</p>
+
+<table>
+<thead>
+<tr>
+<th> Matcher </th>
+<th> Field matched </th>
+<th> Source </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>comm</code> </td>
+<td> Command name </td>
+<td> <code>/proc/PID/stat</code> </td>
+</tr>
+<tr>
+<td> <code>exe</code> </td>
+<td> Executable path (falls back to basename) </td>
+<td> <code>readlink /proc/PID/exe</code> </td>
+</tr>
+<tr>
+<td> <code>cmdline</code> </td>
+<td> Full command line </td>
+<td> <code>/proc/PID/cmdline</code> </td>
+</tr>
+<tr>
+<td> <code>unit</code> </td>
+<td> systemd unit </td>
+<td> Derived from the cgroup path suffix (<code>.service</code> / <code>.scope</code>) </td>
+</tr>
+<tr>
+<td> <code>slice</code> </td>
+<td> systemd slice </td>
+<td> Derived from the cgroup path suffix (<code>.slice</code>) </td>
+</tr>
+<tr>
+<td> <code>cgroup</code> </td>
+<td> Full cgroup path </td>
+<td> <code>/proc/PID/cgroup</code> (unified v2 line) </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>The <code>exe</code> matcher tries the full path and then the basename, so <code>pattern=jackd</code> matches <code>/usr/bin/jackd</code>. Crucially, <code>unit</code> and <code>slice</code> are <strong>derived from the cgroup path</strong>, not queried from systemd &ndash; so the whole scheduler stays systemd-API-free while still classifying by unit and slice. This is the same cgroup structure you can browse on the <a href="cgroups.gen.html">Cgroups page</a>.</p>
+
+<p>Rules are scanned in a sorted order and the <strong>first enabled match wins</strong>. An <code>exclude</code> match drops the process completely (no profile, no focus, no background). A non-exclude match whose target profile is disabled or missing is skipped, so a lower-priority rule can still apply.</p>
+
+<h2 id="5-policy-resolution-order">5. Policy resolution order</h2>
+
+<p>For every process, the scan resolves a single effective profile in a strict precedence: <strong>exclusion → focus override → explicit rule → background fallback</strong>.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 470" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .step    { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .focus   { fill: #2a2438; stroke: #e0af68; stroke-width: 1.5; }
+    .rule    { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .bgf     { fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .drop    { fill: #2a1a1f; stroke: #f7768e; stroke-width: 1.5; }
+    .lbl     { fill: #c0caf5; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-red { fill: #f7768e; font-size: 10px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 10px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.5; fill: none; }
+    .ln-no   { stroke: #565f89; stroke-width: 1.2; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="470" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">Per-process policy resolution</text>
+
+  <rect x="380" y="46" width="220" height="38" class="step" rx="6"/>
+  <text x="490" y="69" text-anchor="middle" class="lbl">process from /proc scan</text>
+
+  <rect x="380" y="110" width="220" height="44" class="step" rx="6"/>
+  <text x="490" y="130" text-anchor="middle" class="lbl-sm">1. matching rule?</text>
+  <text x="490" y="145" text-anchor="middle" class="lbl-mut">first enabled fnmatch wins</text>
+
+  <rect x="700" y="112" width="240" height="40" class="drop" rx="6"/>
+  <text x="820" y="130" text-anchor="middle" class="lbl-red">exclude -> drop process</text>
+  <text x="820" y="144" text-anchor="middle" class="lbl-mut">unmanaged, no profile</text>
+
+  <rect x="380" y="184" width="220" height="44" class="focus" rx="6"/>
+  <text x="490" y="204" text-anchor="middle" class="lbl-sm">2. focus override?</text>
+  <text x="490" y="219" text-anchor="middle" class="lbl-mut">pid+start / unit / cgroup</text>
+
+  <rect x="700" y="186" width="240" height="40" class="focus" rx="6"/>
+  <text x="820" y="210" text-anchor="middle" class="lbl-grn">apply focus_profile  (focused)</text>
+
+  <rect x="380" y="258" width="220" height="44" class="rule" rx="6"/>
+  <text x="490" y="278" text-anchor="middle" class="lbl-sm">3. explicit rule matched?</text>
+  <text x="490" y="293" text-anchor="middle" class="lbl-mut">from step 1</text>
+
+  <rect x="700" y="260" width="240" height="40" class="rule" rx="6"/>
+  <text x="820" y="284" text-anchor="middle" class="lbl-grn">apply the rule's profile</text>
+
+  <rect x="380" y="332" width="220" height="44" class="bgf" rx="6"/>
+  <text x="490" y="352" text-anchor="middle" class="lbl-sm">4. app-scope process?</text>
+  <text x="490" y="367" text-anchor="middle" class="lbl-mut">app.slice / background.slice / app-*</text>
+
+  <rect x="700" y="334" width="240" height="40" class="bgf" rx="6"/>
+  <text x="820" y="358" text-anchor="middle" class="lbl-grn">apply background_profile</text>
+
+  <rect x="380" y="406" width="220" height="40" class="step" rx="6"/>
+  <text x="490" y="430" text-anchor="middle" class="lbl-mut">unmanaged (left as-is)</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="84"  x2="490" y2="110" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="154" x2="490" y2="184" class="ln-no"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="132" x2="700" y2="132" class="ln"/>
+  <text x="612" y="126" class="lbl-red">exclude</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="228" x2="490" y2="258" class="ln-no"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="206" x2="700" y2="206" class="ln"/>
+  <text x="624" y="200" class="lbl-grn">yes</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="302" x2="490" y2="332" class="ln-no"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="280" x2="700" y2="280" class="ln"/>
+  <text x="624" y="274" class="lbl-grn">yes</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="376" x2="490" y2="406" class="ln-no"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="600" y1="354" x2="700" y2="354" class="ln"/>
+  <text x="624" y="348" class="lbl-grn">yes</text>
+</svg>
+</div>
+
+
+<p>Focus matches a process when it is the exact focused PID (verified by start-time), <strong>or</strong> shares the focused window&rsquo;s systemd unit, <strong>or</strong> shares its cgroup &ndash; so focusing an app boosts its whole unit/cgroup, not just the one window-owning thread. A process is &ldquo;app-scope&rdquo; for the background fallback when its cgroup contains <code>/app.slice/</code> or <code>/background.slice/</code>, or its unit begins with <code>app-</code> (each gated by the matching <code>background_match_*</code> flag). Anything that falls through all four steps is left exactly as the kernel had it.</p>
+
+<h2 id="6-the-enforcement-loop">6. The enforcement loop</h2>
+
+<p><code>lulod-system</code> runs one <code>poll()</code> loop over its control socket with a computed timeout. When the timeout expires it rescans <code>/proc</code> and reapplies policy, then reschedules for <code>watcher_interval_ms</code> later (clamped to at least 100ms). A focus update or a config reload triggers an <strong>immediate</strong> rescan rather than waiting for the next tick.</p>
+
+<p>Each scan drops any stale focus target (start-time mismatch), iterates the numeric <code>/proc</code> entries, collects each process&rsquo;s metadata, resolves its profile, reads its current scheduling state, applies the target, and records a live row. The whole tree is re-evaluated every interval &ndash; that continuous re-enforcement is what makes the scheduler hold policy over time instead of losing it the moment a process re-execs or a new one spawns.</p>
+
+<h2 id="7-how-policy-is-applied">7. How policy is applied</h2>
+
+<p>Applying a profile is <strong>idempotent</strong>: each attribute is written only when the current value differs from the target, so a steady-state system issues almost no syscalls. Three mechanisms cover the four dimensions:</p>
+
+<table>
+<thead>
+<tr>
+<th> Dimension </th>
+<th> Syscall </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> nice </td>
+<td> <code>setpriority(PRIO_PROCESS, pid, nice)</code> </td>
+</tr>
+<tr>
+<td> policy + RT priority </td>
+<td> <code>sched_setscheduler(pid, policy, &amp;param)</code> </td>
+</tr>
+<tr>
+<td> I/O class + priority </td>
+<td> <code>ioprio_set(IOPRIO_WHO_PROCESS, pid, value)</code> </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>For <code>fifo</code> / <code>rr</code> the RT priority is the profile&rsquo;s <code>rt_priority</code> (or a floor of 1 if unset); non-RT policies force priority 0. The I/O target has a subtle promotion: setting only <code>io_priority</code> promotes a <code>none</code>-class process to <code>best-effort</code>, and setting only <code>io_class</code> defaults the priority to 4. After applying, the engine re-queries the actual state and reports <code>applied</code> / <code>ok</code> or a per-syscall error &ndash; and it suppresses a spurious error when a write &ldquo;failed&rdquo; only because the value was already correct (for example an <code>EPERM</code> on a setting that already matched), which keeps the status column quiet for processes it cannot or need not change.</p>
+
+<blockquote><p><strong>One caveat worth knowing:</strong> <code>SCHED_DEADLINE</code> is ranked and labeled (<code>DLN</code>) in the code, but the apply path only ever calls <code>sched_setscheduler</code> with a plain <code>sched_param</code>. It never builds the <code>sched_attr</code> (runtime / deadline / period) that <code>SCHED_DEADLINE</code> requires, and there is no <code>sched_setattr</code> call anywhere &ndash; so a profile requesting deadline scheduling would fail to apply. The five working policies are <code>other</code>, <code>batch</code>, <code>idle</code>, <code>fifo</code>, and <code>rr</code>.</p></blockquote>
+
+<h2 id="8-dynamic-policy-focus-and-background">8. Dynamic policy: focus and background</h2>
+
+<p>Two built-in policies are exposed in <code>SCHED → Rules</code> as the synthetic, display-only rows <code>(focus)</code> and <code>(background)</code>. They are configured through <code>scheduler.conf</code>, not separate rule files.</p>
+
+<p><strong>Focus.</strong> The focus monitor runs in <code>lulod</code>, which forwards the focused-window PID (and its start-time and provider) to <code>lulod-system</code>. The system daemon re-collects metadata for that PID, verifies the start-time matches (a PID-reuse guard), records the focus target, and runs an immediate rescan. From then on, any process matching that target by PID, unit, or cgroup gets <code>focus_profile</code>. See <a href="focus-providers.gen.html">Focus Providers</a> for how the PID is detected on KDE and GNOME.</p>
+
+<p><strong>Background.</strong> Any app-scope process not already excluded, focused, or matched by an explicit rule falls through to <code>background_profile</code>. &ldquo;App-scope&rdquo; is decided purely from the cgroup and unit, as described in the resolution order above.</p>
+
+<p><strong>Self-exclusion is config, not code.</strong> There is no hardcoded guard preventing the scheduler from renicing its own processes &ndash; protection comes entirely from the shipped exclude rules: <code>14-exclude-lulo.conf</code> (<code>comm</code> glob <code>lulo*</code>), <code>13-exclude-prio-tools.conf</code> (<code>chrt</code>), plus excludes for <code>dbus</code>, <code>systemd</code>, and <code>rtkit</code>. A deployment that deletes these would let the scheduler manage those processes, so they are part of the contract, not incidental.</p>
+
+<h2 id="9-tunables-and-presets">9. Tunables and presets</h2>
+
+<p>The scheduler controls grew a kernel-tunables layer (commit <code>a3d9b10</code>): <code>lulod-system</code> discovers a curated, allowlisted set of read/write knobs &ndash; <code>/proc/sys/kernel/sched_*</code>, <code>cpufreq</code>, <code>intel_pstate</code> / <code>amd_pstate</code>, <code>cpuidle</code>, and SMT control &ndash; with every path re-validated through <code>realpath</code> and a prefix check so symlink or traversal escapes are rejected.</p>
+
+<p>Presets are <code>key=value</code> files of absolute tunable paths applied atomically, each path re-validated at apply time. The <code>tunables_startup_preset</code> setting auto-applies a named preset on every reload, and preset application is gated behind the RW authorization lease (see <a href="process-model-ipc.gen.html">Process Model &amp; IPC</a>). This is the scheduler-side counterpart to the standalone <a href="tune.gen.html">Tune page</a>; notably, the RT-throttling knobs (<code>sched_rt_runtime_us</code> / <code>sched_rt_period_us</code>) are <em>exposed</em> here for you to set, but the watcher never auto-tunes them &ndash; protection against RT starvation is left to your <code>rt_priority</code> choices and these knobs.</p>
+
+<h2 id="10-the-sched-page">10. The SCHED page</h2>
+
+<p>The <code>SCHED</code> page has five subviews, switched with Shift-Tab.</p>
+
+<table>
+<thead>
+<tr>
+<th> Subview </th>
+<th> List columns </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>Profiles</code> </td>
+<td> <code>on</code>, <code>profile</code>, <code>nice</code>, <code>pol</code>, <code>rt</code>, <code>io</code> </td>
+</tr>
+<tr>
+<td> <code>Rules</code> </td>
+<td> <code>on</code>, <code>match</code>, <code>pattern</code>, <code>target</code> (plus the synthetic <code>(focus)</code> / <code>(background)</code>) </td>
+</tr>
+<tr>
+<td> <code>Live</code> </td>
+<td> <code>pid</code>, <code>comm</code>, <code>profile</code>, <code>pol</code>, <code>ni</code>, <code>rt</code>, <code>io</code>, <code>status</code> </td>
+</tr>
+<tr>
+<td> <code>Tunables</code> </td>
+<td> <code>src</code>, <code>group</code>, <code>rw</code>, <code>name</code>, <code>value</code> </td>
+</tr>
+<tr>
+<td> <code>Presets</code> </td>
+<td> <code>created</code>, <code>itms</code>, <code>boot</code>, <code>name</code> </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>The Live list shows the resolved profile and applied state per process, but <strong>not</strong> which rule won &ndash; the <code>(focus)</code> / <code>(background)</code> rule name and the <code>focused: yes/no</code> flag appear only in the detail pane and the status bar (which reads <code>view ... pane ... focused ... watcher &lt;ms&gt;</code>).</p>
+
+<p><figure class="screenshot">
+  <img src="img/sched-live.png" alt="Lulo SCHED Live view showing resolved per-process policy">
+  <figcaption>SCHED → Live: each process with its resolved profile, policy, nice, RT, I/O, and apply status.</figcaption>
+</figure></p>
+
+<h3 id="editing-workflow">Editing workflow</h3>
+
+<p><code>lulo</code> is not a text editor; it uses structured navigation plus external-editor handoff.</p>
+
+<table>
+<thead>
+<tr>
+<th> Key </th>
+<th> Effect </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>i</code> </td>
+<td> Edit the selected profile / rule file (or <code>scheduler.conf</code> for <code>(focus)</code> / <code>(background)</code>) </td>
+</tr>
+<tr>
+<td> <code>n</code> </td>
+<td> Create a new profile or rule file and open it in the editor </td>
+</tr>
+<tr>
+<td> <code>d</code> </td>
+<td> Delete the selected file-backed profile or rule </td>
+</tr>
+<tr>
+<td> <code>R</code> </td>
+<td> Reload scheduler config </td>
+</tr>
+<tr>
+<td> <code>a</code> </td>
+<td> Apply the selected preset </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>System files are committed through the privileged path, so editing <code>/etc/lulo</code> config never requires the TUI itself to run as root.</p>
+
+<h2 id="11-design-notes">11. Design notes</h2>
+
+<ul>
+<li><strong>Continuous, idempotent re-enforcement.</strong> The full <code>/proc</code> tree is rescanned and reapplied every interval, but syscalls fire only when a value actually needs changing &ndash; so policy is held without log churn or wasted writes.</li>
+<li><strong>One winner per process.</strong> Sparse-overlay profiles plus single-winner resolution mean mechanisms compose on orthogonal dimensions and never fight each other.</li>
+<li><strong>PID-reuse safety.</strong> Focus targeting is keyed on PID <em>and</em> <code>/proc</code> start-time; a mismatch drops the target instantly.</li>
+<li><strong>systemd-aware without systemd APIs.</strong> Unit and slice classification is derived from the cgroup path, so the engine needs no D-Bus or libsystemd in the hot path.</li>
+<li><strong>A compact policy daemon.</strong> Continuous scanning, dynamic focus/background policy, and live reporting make this much more than a <code>chrt</code>/<code>renice</code> front-end.</li>
+</ul>
+
+
+<h2 id="12-see-also">12. See also</h2>
+
+<ul>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+<li><a href="focus-providers.gen.html">Focus Providers</a> &ndash; how the focused PID reaches the scheduler</li>
+<li><a href="process-model-ipc.gen.html">Process Model &amp; IPC</a> &ndash; the privileged path and RW lease</li>
+<li><a href="cgroups.gen.html">Cgroups View</a> &ndash; the cgroup/slice/unit structure matchers read against</li>
+<li><a href="cpu.gen.html">CPU &amp; Process View</a> &ndash; the live processes being managed</li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

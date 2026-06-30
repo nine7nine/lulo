@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Focus Providers</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--focus-providers">Lulo &ndash; Focus Providers</h1>
+
+<p>Focus detection is how the scheduler learns which window is active so it can boost that app. Lulo treats it as an <em>external helper subprocess speaking a one-PID-per-line protocol</em> &ndash; a deliberately desktop-agnostic design that supports KDE and GNOME today through the same session-bus contract, with the data flowing in opposite directions on each.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-the-provider-contract">The provider contract</a></li>
+<li><a href="#2-selection-and-auto-detection">Selection and auto-detection</a></li>
+<li><a href="#3-the-kde-provider">The KDE provider</a></li>
+<li><a href="#4-the-gnome-provider">The GNOME provider</a></li>
+<li><a href="#5-why-the-two-differ">Why the two differ</a></li>
+<li><a href="#6-end-to-end-focus-flow">End-to-end focus flow</a></li>
+<li><a href="#7-resilience-and-fail-safe">Resilience and fail-safe</a></li>
+<li><a href="#8-security-considerations">Security considerations</a></li>
+<li><a href="#9-adding-a-provider">Adding a provider</a></li>
+<li><a href="#10-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-the-provider-contract">1. The provider contract</h2>
+
+<p>The core never links a compositor SDK. <code>lulod</code> runs a focus <em>monitor</em> that forks a provider helper binary and reads its stdout; the entire contract is: <strong>the helper prints one decimal PID per line</strong>, where each line is the PID that currently owns window focus (and <code>0</code> means &ldquo;nothing focused&rdquo;). The monitor holds the helper&rsquo;s read fd, child PID, a restart timer, a line-assembly buffer, and the last reported <code>(pid, start_time)</code> for de-duplication.</p>
+
+<p>That single design decision &ndash; a process boundary plus a line protocol instead of a C interface &ndash; is what keeps the scheduler core desktop-agnostic. The KDE and GNOME specifics live entirely in separate helper binaries (and a KWin script / Shell extension); <code>lulod</code> just reads integers.</p>
+
+<h2 id="2-selection-and-auto-detection">2. Selection and auto-detection</h2>
+
+<p>The provider is chosen by <code>focus_provider_from_env</code>, which first honors the <code>LULOD_FOCUS_PROVIDER</code> override and otherwise auto-detects from the session.</p>
+
+<table>
+<thead>
+<tr>
+<th> <code>LULOD_FOCUS_PROVIDER</code> </th>
+<th> Result </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>none</code> </td>
+<td> Focus tracking disabled </td>
+</tr>
+<tr>
+<td> <code>kde</code> </td>
+<td> Force the KDE provider </td>
+</tr>
+<tr>
+<td> <code>gnome</code> </td>
+<td> Force the GNOME provider </td>
+</tr>
+<tr>
+<td> <code>auto</code> (or unset) </td>
+<td> Auto-detect </td>
+</tr>
+<tr>
+<td> anything else </td>
+<td> Disabled (an unrecognized value turns focus off) </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Auto-detection is <strong>Wayland-gated</strong>: if the session is not Wayland (<code>XDG_SESSION_TYPE != "wayland"</code> and no <code>WAYLAND_DISPLAY</code>), it returns no provider &ndash; on a pure X11 session focus tracking is off by default, because no X11 helper is implemented. Otherwise it scans <code>XDG_CURRENT_DESKTOP</code>, <code>XDG_SESSION_DESKTOP</code>, <code>DESKTOP_SESSION</code>, <code>KDE_FULL_SESSION</code>, and <code>KDE_SESSION_VERSION</code> case-insensitively: a <code>kde</code>/<code>plasma</code> hit selects KDE, a <code>gnome</code> hit selects GNOME.</p>
+
+<p>The helper binary is resolved across several install layouts in order &ndash; next to the running <code>lulod</code> (dev checkout), <code>&lt;prefix&gt;/libexec/lulo/</code>, the compile-time <code>LULO_HELPERDIR</code>, then <code>/usr/libexec/lulo/</code> &ndash; so the same daemon works in-tree or installed. If the binary cannot be found the monitor disables itself permanently; if a spawn fails it retries after 5 seconds.</p>
+
+<h2 id="3-the-kde-provider">3. The KDE provider</h2>
+
+<p>The KDE helper <code>lulod-focus-kde</code> is a Qt program that bridges KWin&rsquo;s scripting engine to the line protocol. On startup it:</p>
+
+<ol>
+<li><strong>Registers a session-bus service</strong> <code>org.ninez.LulodFocus</code> at object path <code>/LulodFocus</code>, exporting a single method <code>UpdateFocusedPid(int)</code>.</li>
+<li><strong>Injects a KWin script at runtime</strong> by calling KWin&rsquo;s scripting D-Bus API (<code>org.kde.KWin</code> / <code>/Scripting</code> / <code>loadScript</code> + <code>start</code>) to load <code>lulod_focus_kde.js</code>.</li>
+</ol>
+
+
+<p>The injected script runs <em>inside</em> KWin&rsquo;s JS engine. It connects to <code>workspace.windowActivated</code> and <code>workspace.windowAdded</code>, and on each event calls back over D-Bus to the helper&rsquo;s <code>UpdateFocusedPid</code> with the focused window&rsquo;s PID &ndash; returning <code>0</code> for chrome and non-app surfaces (the desktop, docks, popups, input methods, and so on). The helper&rsquo;s <code>UpdateFocusedPid</code> slot clamps negatives to <code>0</code>, de-dupes, and writes <code>pid\n</code> to stdout, which is exactly what <code>lulod</code> reads.</p>
+
+<p>So the KDE path is: <strong>KWin event → KWin JS script → D-Bus push to the helper → helper stdout → <code>lulod</code> pipe.</strong></p>
+
+<h2 id="4-the-gnome-provider">4. The GNOME provider</h2>
+
+<p>The GNOME provider (added in commit <code>54f91ef</code>) mirrors the same bus contract from the other side. A GNOME Shell extension publishes the service, and the helper subscribes to it.</p>
+
+<p>The <strong>Shell extension</strong> (<code>lulod-focus@ninez.org</code>) owns the bus name <code>org.ninez.LulodFocus</code> at <code>/LulodFocus</code>, exporting a method <code>GetFocusedPid() -&gt; i</code> and a signal <code>FocusedPidChanged(i)</code>. On enable it connects to <code>global.display</code>&rsquo;s <code>notify::focus-window</code>; <code>_focusedPid()</code> reads <code>global.display.focus_window.get_pid()</code> (returning <code>0</code> when nothing reportable owns focus) and emits <code>FocusedPidChanged</code> on change.</p>
+
+<p>The <strong>helper</strong> <code>lulod-focus-gnome</code> is a GIO program that connects to the session bus, subscribes to the <code>FocusedPidChanged</code> signal, and &ndash; crucially &ndash; <em>watches</em> the bus name. When the name appears it calls <code>GetFocusedPid</code> synchronously to learn the current focus immediately; when the name vanishes it reports <code>0</code>. This &ldquo;watch, don&rsquo;t require&rdquo; design means the helper works whether the extension loads before or after it, and withdraws focus if the extension goes away. Each reported PID is written as <code>pid\n</code> &ndash; the identical line contract as KDE, so <code>lulod</code> consumes both with the same parser.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 430" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .kde     { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .gnome   { fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .helper  { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .sess    { fill: #2a1f35; stroke: #bb9af7; stroke-width: 1.5; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-pur { fill: #bb9af7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-cy  { fill: #7dcfff; font-size: 9px; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.5; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="430" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">Same bus name, opposite directions, one line protocol</text>
+
+  <!-- KDE column -->
+  <rect x="40"  y="56" width="230" height="44" class="kde" rx="6"/>
+  <text x="155" y="74"  text-anchor="middle" class="lbl-blu">KWin (compositor)</text>
+  <text x="155" y="90"  text-anchor="middle" class="lbl-mut">windowActivated / windowAdded</text>
+  <rect x="40"  y="130" width="230" height="44" class="kde" rx="6"/>
+  <text x="155" y="148" text-anchor="middle" class="lbl-sm">lulod_focus_kde.js</text>
+  <text x="155" y="164" text-anchor="middle" class="lbl-mut">injected at runtime via D-Bus</text>
+  <rect x="40"  y="204" width="230" height="50" class="helper" rx="6"/>
+  <text x="155" y="224" text-anchor="middle" class="lbl-sm">lulod-focus-kde</text>
+  <text x="155" y="240" text-anchor="middle" class="lbl-mut">owns service, recv UpdateFocusedPid</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="155" y1="100" x2="155" y2="130" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="155" y1="174" x2="155" y2="204" class="ln"/>
+  <text x="166" y="192" class="lbl-cy">push pid (D-Bus)</text>
+
+  <!-- GNOME column -->
+  <rect x="710" y="56" width="230" height="44" class="gnome" rx="6"/>
+  <text x="825" y="74"  text-anchor="middle" class="lbl-grn">gnome-shell / Mutter</text>
+  <text x="825" y="90"  text-anchor="middle" class="lbl-mut">notify::focus-window</text>
+  <rect x="710" y="130" width="230" height="44" class="gnome" rx="6"/>
+  <text x="825" y="148" text-anchor="middle" class="lbl-sm">lulod-focus@ninez.org</text>
+  <text x="825" y="164" text-anchor="middle" class="lbl-mut">installed extension, owns service</text>
+  <rect x="710" y="204" width="230" height="50" class="helper" rx="6"/>
+  <text x="825" y="224" text-anchor="middle" class="lbl-sm">lulod-focus-gnome</text>
+  <text x="825" y="240" text-anchor="middle" class="lbl-mut">subscribes FocusedPidChanged</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="825" y1="100" x2="825" y2="130" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="825" y1="174" x2="825" y2="204" class="ln"/>
+  <text x="836" y="192" class="lbl-cy">signal/query (D-Bus)</text>
+
+  <!-- converge -->
+  <rect x="330" y="300" width="320" height="46" class="helper" rx="6"/>
+  <text x="490" y="320" text-anchor="middle" class="lbl-sm">helper stdout: one PID per line</text>
+  <text x="490" y="335" text-anchor="middle" class="lbl-mut">pipe2(O_CLOEXEC | O_NONBLOCK)</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="155" y1="254" x2="430" y2="300" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="825" y1="254" x2="550" y2="300" class="ln"/>
+
+  <rect x="330" y="372" width="320" height="42" class="sess" rx="6"/>
+  <text x="490" y="392" text-anchor="middle" class="lbl-pur">lulod focus monitor</text>
+  <text x="490" y="406" text-anchor="middle" class="lbl-mut">de-dup (pid, start_time) -> forward to lulod-system</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="346" x2="490" y2="372" class="ln"/>
+</svg>
+</div>
+
+
+<h2 id="5-why-the-two-differ">5. Why the two differ</h2>
+
+<p>The inversion is not arbitrary &ndash; it follows each compositor&rsquo;s extension model. KWin exposes a <em>runtime</em> scripting D-Bus API, so any session process (the helper) can inject JS on the fly; no pre-installation is needed, and the script pushes PIDs to the helper. GNOME/Mutter deliberately hides window PIDs from external processes &ndash; its <code>Introspect.GetWindows</code> API is whitelist-gated and <code>Shell.Eval</code> is disabled in production &ndash; and it only loads JS from its own extension directories. The focused PID can therefore only be obtained by code running <em>inside</em> gnome-shell, which must be installed and enabled once as a Shell extension. That extension then exports the service, and the helper subscribes. Same bus name <code>org.ninez.LulodFocus</code>, opposite roles.</p>
+
+<p>This is why GNOME needs the one-time <code>install-lulo-gnome-extension.sh</code> step (and a logout/login on Wayland so the Shell loads it), while KDE works with just its script shipped under <code>share/lulo/kwin</code>.</p>
+
+<h2 id="6-end-to-end-focus-flow">6. End-to-end focus flow</h2>
+
+<p>Putting it together, a focus change travels from the compositor to an applied scheduling policy:</p>
+
+<ol>
+<li>The compositor signals a focus change; the KWin script or Shell extension produces the focused PID.</li>
+<li>The helper prints <code>pid\n</code>; <code>lulod</code>&rsquo;s main loop polls the helper fd and parses the line.</li>
+<li>On a debounced cadence (about 5s on success, 1s after a failure), <code>lulod</code> forwards the <code>(pid, start_time, provider)</code> to <code>lulod-system</code> as a <code>SCHED_FOCUS_UPDATE</code> request. <strong>This is the point where the PID crosses the privilege boundary</strong> &ndash; from the unprivileged user daemon to the root system daemon.</li>
+<li><code>lulod-system</code> re-collects metadata for the PID, <strong>verifies the start-time matches</strong> (a PID-reuse guard), records the focus target (PID, comm, exe, unit, slice, cgroup), and runs an immediate rescan.</li>
+<li>During the scan, any process matching that target by PID, <strong>unit, or cgroup</strong> receives <code>focus_profile</code> &ndash; so the entire focused app&rsquo;s cgroup is boosted, not just the one window-owning thread. See <a href="scheduler.gen.html">Scheduler</a> for the resolution detail.</li>
+</ol>
+
+
+<h2 id="7-resilience-and-fail-safe">7. Resilience and fail-safe</h2>
+
+<p>The monitor is built to fail safe. When a helper dies, EOFs, or errors, it closes the fd, reaps the child, schedules a restart (2-second backoff), and <strong>commits PID 0</strong> &ndash; so a focused profile is <em>withdrawn</em> rather than left applied to a stale window. The same zero-on-vanish behavior happens when the GNOME bus name disappears. Reported PIDs are de-duplicated by <code>(pid, start_time)</code> and verified to still exist before a change is reported, guarding against PID reuse at the monitor level as well.</p>
+
+<h2 id="8-security-considerations">8. Security considerations</h2>
+
+<p>Enabling focus tracking is an opt-in trust decision, most visibly on GNOME. The Shell extension deliberately routes around Mutter&rsquo;s hardening (which withholds window PIDs from external processes) by <em>re-publishing</em> the focused PID on the session bus to any peer that owns or queries <code>org.ninez.LulodFocus</code>. So installing the extension widens session-local visibility: any process on your session bus can observe the focused-window PID stream. That is why it requires an explicit install + enable rather than shipping on by default.</p>
+
+<p>On the privilege axis, the unprivileged <code>lulod</code> forwards a PID to root <code>lulod-system</code>, which then re-validates the PID&rsquo;s start-time before acting, and applies scheduling policy as root. The relevant threat is a forged or raced PID, mitigated by the start-time check at both the monitor and the system daemon, and by the PID-existence verification in the monitor.</p>
+
+<h2 id="9-adding-a-provider">9. Adding a provider</h2>
+
+<p>Because the contract is just &ldquo;a process that prints PIDs,&rdquo; supporting a new compositor means writing one helper that emits the focused PID per line &ndash; no change to <code>lulod</code>&rsquo;s monitor or to the scheduler. The current support matrix:</p>
+
+<table>
+<thead>
+<tr>
+<th> Provider </th>
+<th> Status </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> KDE / Plasma (<code>lulod-focus-kde</code>) </td>
+<td> Implemented </td>
+</tr>
+<tr>
+<td> GNOME (<code>lulod-focus-gnome</code> + Shell extension) </td>
+<td> Implemented </td>
+</tr>
+<tr>
+<td> sway / wlroots, Hyprland, X11 </td>
+<td> Not implemented (the architecture is built for it) </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="10-see-also">10. See also</h2>
+
+<ul>
+<li><a href="scheduler.gen.html">Scheduler</a> &ndash; how the focused PID becomes an applied profile</li>
+<li><a href="process-model-ipc.gen.html">Process Model &amp; IPC</a> &ndash; the <code>SCHED_FOCUS_UPDATE</code> boundary crossing</li>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+<li><a href="install.gen.html">Install &amp; Packaging</a> &ndash; installing the GNOME extension</li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

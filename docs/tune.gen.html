@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Tune View</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--tune-view">Lulo &ndash; Tune View</h1>
+
+<p>The <code>TUNE</code> page is a live explorer over <code>/proc/sys</code>, <code>/sys</code>, and <code>/sys/fs/cgroup</code> with the most elaborate editing model in the app: edits are <em>staged</em> in the UI, captured into portable <code>.ltune</code> bundles, and applied through a dedicated privileged helper &ndash; so the same file format round-trips capture and restore of kernel tunables.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-what-the-page-shows">What the page shows</a></li>
+<li><a href="#2-explore-a-live-tunables-browser">Explore: a live tunables browser</a></li>
+<li><a href="#3-the-three-stage-editing-model">The three-stage editing model</a></li>
+<li><a href="#4-snapshots-and-presets">Snapshots and presets</a></li>
+<li><a href="#5-the-ltune-bundle-format">The .ltune bundle format</a></li>
+<li><a href="#6-the-privileged-apply-path">The privileged apply path</a></li>
+<li><a href="#7-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-what-the-page-shows">1. What the page shows</h2>
+
+<p><code>TUNE</code> is built around browsing real kernel state, editing values, and saving reusable bundles. It runs on the client/daemon split: a backend thread requests snapshots from <code>lulod</code>, which does the filesystem work and caches it (see <a href="process-model-ipc.gen.html">Process Model &amp; IPC</a>).</p>
+
+<table>
+<thead>
+<tr>
+<th> Subview </th>
+<th> Purpose </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>Explore</code> </td>
+<td> Live filesystem-style browser for tunable sources </td>
+</tr>
+<tr>
+<td> <code>Snapshots</code> </td>
+<td> Saved point-in-time bundles </td>
+</tr>
+<tr>
+<td> <code>Presets</code> </td>
+<td> Named reusable bundles intended for repeated application </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="2-explore-a-live-tunables-browser">2. Explore: a live tunables browser</h2>
+
+<p>Explore is a directory navigator over three roots, each tagged by source: <code>/proc/sys</code> (<code>proc</code>), <code>/sys</code> (<code>sys</code>), and <code>/sys/fs/cgroup</code> (<code>cgroup</code>). At the root it lists the three sources; inside a directory it <code>stat</code>s entries, reads each regular file&rsquo;s first line as its current value, and probes <code>access(W_OK)</code> to mark writability. A synthesized <code>..</code> row provides upward navigation. Because it is path-oriented rather than a fixed list of known knobs, it reaches anything exposed under those trees.</p>
+
+<table>
+<thead>
+<tr>
+<th> Column </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>src</code> </td>
+<td> Source: proc (cyan) / sys (green) / cgroup (orange) </td>
+</tr>
+<tr>
+<td> <code>rw</code> </td>
+<td> Writable vs read-only </td>
+</tr>
+<tr>
+<td> <code>typ</code> </td>
+<td> <code>dir</code>, <code>val</code>, <code>stg</code> (staged), or <code>edt</code> (editing) </td>
+</tr>
+<tr>
+<td> <code>name</code> </td>
+<td> Entry name </td>
+</tr>
+<tr>
+<td> <code>value/path</code> </td>
+<td> Current value or path </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Many tunables get a human-readable note from a built-in path-to-description table (for example <code>vm/swappiness</code>, <code>transparent_hugepage/enabled</code>, <code>block/*/queue/scheduler</code>, and cgroup <code>cpu.max</code>), shown in the preview alongside the raw file contents.</p>
+
+<p><figure class="screenshot">
+  <img src="img/tune-explore.png" alt="Lulo TUNE Explore view browsing /proc/sys with a staged value">
+  <figcaption>The Explore browser over /proc/sys, /sys, and /sys/fs/cgroup, with an inline value edit in progress (staged on submit, applied separately).</figcaption>
+</figure></p>
+
+<h2 id="3-the-three-stage-editing-model">3. The three-stage editing model</h2>
+
+<p><code>TUNE</code> deliberately separates <em>editing</em> a value from <em>writing</em> it to the kernel. There are three distinct mechanisms, and understanding the split is the key to the page.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 320" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .stage   { fill: #1a2a1a; stroke: #9ece6a; stroke-width: 1.5; }
+    .stash   { fill: #2a2438; stroke: #e0af68; stroke-width: 1.5; }
+    .bundle  { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .apply   { fill: #2a1f35; stroke: #bb9af7; stroke-width: 1.5; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-grn { fill: #9ece6a; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-yel { fill: #e0af68; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-pur { fill: #bb9af7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.5; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="320" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">TUNE: stage -> bundle -> privileged apply</text>
+
+  <rect x="30"  y="120" width="180" height="70" class="stage" rx="6"/>
+  <text x="120" y="148" text-anchor="middle" class="lbl-grn">inline edit (i)</text>
+  <text x="120" y="166" text-anchor="middle" class="lbl-mut">edit a value in Explore</text>
+  <text x="120" y="179" text-anchor="middle" class="lbl-mut">nothing written yet</text>
+
+  <rect x="270" y="120" width="180" height="70" class="stash" rx="6"/>
+  <text x="360" y="148" text-anchor="middle" class="lbl-yel">staged value</text>
+  <text x="360" y="166" text-anchor="middle" class="lbl-mut">staged_path / staged_value</text>
+  <text x="360" y="179" text-anchor="middle" class="lbl-mut">row shows stg / staged:</text>
+
+  <rect x="510" y="80"  width="190" height="60" class="bundle" rx="6"/>
+  <text x="605" y="104" text-anchor="middle" class="lbl-blu">save snapshot (s)</text>
+  <text x="605" y="122" text-anchor="middle" class="lbl-mut">.ltune in snapshots/</text>
+  <rect x="510" y="170" width="190" height="60" class="bundle" rx="6"/>
+  <text x="605" y="194" text-anchor="middle" class="lbl-blu">save preset (S)</text>
+  <text x="605" y="212" text-anchor="middle" class="lbl-mut">.ltune in presets/</text>
+
+  <rect x="760" y="120" width="190" height="70" class="apply" rx="6"/>
+  <text x="855" y="148" text-anchor="middle" class="lbl-pur">apply (a)</text>
+  <text x="855" y="166" text-anchor="middle" class="lbl-mut">pkexec lulo-admin</text>
+  <text x="855" y="179" text-anchor="middle" class="lbl-mut">writes to kernel</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="210" y1="155" x2="270" y2="155" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="450" y1="150" x2="510" y2="110" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="450" y1="160" x2="510" y2="200" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="700" y1="110" x2="760" y2="148" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="700" y1="200" x2="760" y2="162" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="450" y1="155" x2="760" y2="155" class="ln"/>
+</svg>
+</div>
+
+
+<ul>
+<li><strong>Inline value editing</strong> (Explore only): pressing <code>i</code> opens an in-app text editor on the value. On submit the new value is <strong>staged</strong> into <code>staged_path</code> / <code>staged_value</code> &ndash; it is <em>not</em> written to the kernel. Staged rows render green with a <code>stg</code> type and a <code>staged:</code> value, so pending changes are visible before you commit to them.</li>
+<li><strong>External editor</strong> for bundle files: snapshot and preset <code>.ltune</code> files are edited through the shared <code>$VISUAL</code> / <code>$EDITOR</code> handoff.</li>
+<li><strong>Bundle save / apply / rename / create</strong>: each is a dedicated request type, so saving a snapshot, saving a preset, and applying a selection are explicit operations rather than implicit side effects of editing.</li>
+</ul>
+
+
+<p>This split is intentional: kernel pseudo-files are not ordinary config documents, so inline editing (with an explicit staging step) is the right UX there, while reusable bundles are real files and get the editor.</p>
+
+<h2 id="4-snapshots-and-presets">4. Snapshots and presets</h2>
+
+<p>Both subviews list saved <code>.ltune</code> bundles with the same columns:</p>
+
+<table>
+<thead>
+<tr>
+<th> Column </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>created</code> </td>
+<td> Bundle creation timestamp </td>
+</tr>
+<tr>
+<td> <code>itms</code> </td>
+<td> Number of tunables captured </td>
+</tr>
+<tr>
+<td> <code>name</code> </td>
+<td> Display name </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>The difference is intent: <strong>Snapshots</strong> are state captured from exploration work (a point-in-time record you might restore), while <strong>Presets</strong> are named bundles meant for repeated application. Selecting a bundle previews each captured tunable as <code>[src] rw/ro group path = value</code>. Bundles can be created, edited, renamed, deleted, and applied; &ldquo;new&rdquo; can also copy an existing bundle, cloning its body and appending &ldquo; copy&rdquo; to the name.</p>
+
+<h2 id="5-the-ltune-bundle-format">5. The .ltune bundle format</h2>
+
+<p>Bundles are plain-text <code>.ltune</code> files under <code>$XDG_DATA_HOME/lulod/tunables/</code> (or <code>~/.local/share/lulod/tunables/</code>), split into <code>snapshots/</code> and <code>presets/</code> subdirectories. The format is a small header block followed by a blank line and one tab-separated row per tunable:</p>
+
+<pre><code class="language-text code-block">
+type=snapshot
+id=20260629-203145
+name=audio latency tweaks
+created=2026-06-29 20:31:45
+count=3
+
+source  writable    path    name    group   value
+</code></pre>
+
+
+<p>The <code>id</code> is a <code>%Y%m%d-%H%M%S</code> timestamp; the body rows are tab-separated <code>source / writable / path / name / group / value</code>. Listing a directory parses only the header for the metadata list (sorted newest-first), so the Snapshots and Presets lists are cheap to build even with many bundles.</p>
+
+<h2 id="6-the-privileged-apply-path">6. The privileged apply path</h2>
+
+<p>Applying a tunable is the only place <code>TUNE</code> writes to the kernel, and it uses a <strong>different privilege route than the rest of the app</strong>. Where scheduler edits go through <code>lulod-system</code>&rsquo;s session-based RW lease, tune-apply builds a <code>LuloAdminTunePlan</code> and runs it through <code>pkexec lulo-admin apply-tune</code>, piping the plan to the helper on stdin.</p>
+
+<p>The plan is a tiny line protocol (<code>lulo-admin-tune-v1</code> header plus <code>path&lt;TAB&gt;value</code> lines). The <code>lulo-admin</code> helper refuses to run unless it is root and the action is <code>apply-tune</code>, and it validates every target path against a strict allowlist &ndash; <code>realpath</code> then a prefix check limited to <code>/proc/sys</code>, <code>/sys</code>, and <code>/sys/fs/cgroup</code> &ndash; before writing the raw value. polkit gates the helper via the <code>io.lulo.admin.pkexec.apply-tune</code> action. Apply uses either the single staged value (when the staged path matches the selected Explore row) or every <code>path=value</code> pair parsed from the selected bundle, so one keystroke can re-apply a whole preset.</p>
+
+<h2 id="7-see-also">7. See also</h2>
+
+<ul>
+<li><a href="process-model-ipc.gen.html">Process Model &amp; IPC</a> &ndash; the two privilege paths (RW lease vs pkexec)</li>
+<li><a href="cgroups.gen.html">Cgroups View</a> &ndash; <code>/sys/fs/cgroup</code> controllers</li>
+<li><a href="disk.gen.html">Disk View</a> &ndash; the <code>/sys/block/*/queue</code> tunables this page can capture</li>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Systemd View</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--systemd-view">Lulo &ndash; Systemd View</h1>
+
+<p>The <code>SYSTEMD</code> page talks to systemd the way systemd&rsquo;s own tools do &ndash; over <strong>sd-bus</strong>, not by shelling out to <code>systemctl</code> &ndash; querying both the system and user managers, merging file-enablement with runtime state, and computing true reverse-dependency closures from the bus interface&rsquo;s inverse-relation properties.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-what-the-page-shows">What the page shows</a></li>
+<li><a href="#2-how-the-inventory-is-gathered">How the inventory is gathered</a></li>
+<li><a href="#3-services-view">Services view</a></li>
+<li><a href="#4-deps-view-real-reverse-dependencies">Deps view: real reverse dependencies</a></li>
+<li><a href="#5-config-view">Config view</a></li>
+<li><a href="#6-editing-and-snapshots">Editing and snapshots</a></li>
+<li><a href="#7-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-what-the-page-shows">1. What the page shows</h2>
+
+<p><code>SYSTEMD</code> is a service inspection and editing surface built for visibility first, with safe file-backed editing before any broader lifecycle management. It runs on the standard client/daemon split: a backend thread in the frontend requests a snapshot from <code>lulod</code>, which does the actual sd-bus work and caches the result (see <a href="process-model-ipc.gen.html">Process Model &amp; IPC</a>).</p>
+
+<table>
+<thead>
+<tr>
+<th> Subview </th>
+<th> Purpose </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>Services</code> </td>
+<td> The merged system + user unit inventory with state and enablement </td>
+</tr>
+<tr>
+<td> <code>Deps</code> </td>
+<td> Reverse dependencies for the selected unit </td>
+</tr>
+<tr>
+<td> <code>Config</code> </td>
+<td> systemd config files and drop-ins under <code>/etc/systemd</code> </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="2-how-the-inventory-is-gathered">2. How the inventory is gathered</h2>
+
+<p>The daemon links <code>libsystemd</code> and opens <strong>both</strong> buses &ndash; <code>sd_bus_open_system</code> and <code>sd_bus_open_user</code> &ndash; gathering each scope separately. For each manager it makes two pattern-filtered calls (the pattern restricts results to <code>*.service</code>):</p>
+
+<ul>
+<li><code>ListUnitFilesByPatterns</code> -> the unit <em>file</em> enablement state (enabled / disabled / static / &hellip;).</li>
+<li><code>ListUnitsByPatterns</code> -> the <em>runtime</em> state: load, active, sub, description, and the unit&rsquo;s D-Bus object path.</li>
+</ul>
+
+
+<p>The two result sets are merged per <code>(scope, unit)</code>, unit names are <code>\xNN</code>-decoded back to their human form, and the list is sorted by a health rank so failed and running units float to the top, inactive ones sink.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 340" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .bus     { fill: #2a1f35; stroke: #bb9af7; stroke-width: 1.5; }
+    .call    { fill: #24283b; stroke: #3b4261; stroke-width: 1; }
+    .merge   { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-pur { fill: #bb9af7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.4; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="340" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">SYSTEMD inventory: two buses, two calls, one merged list</text>
+
+  <rect x="40"  y="56" width="200" height="40" class="bus" rx="6"/>
+  <text x="140" y="80" text-anchor="middle" class="lbl-pur">sd_bus_open_system</text>
+  <rect x="40"  y="200" width="200" height="40" class="bus" rx="6"/>
+  <text x="140" y="224" text-anchor="middle" class="lbl-pur">sd_bus_open_user</text>
+
+  <rect x="300" y="44" width="250" height="40" class="call" rx="6"/>
+  <text x="425" y="64" text-anchor="middle" class="lbl-sm">ListUnitFilesByPatterns</text>
+  <text x="425" y="78" text-anchor="middle" class="lbl-mut">enablement / preset</text>
+  <rect x="300" y="96" width="250" height="40" class="call" rx="6"/>
+  <text x="425" y="116" text-anchor="middle" class="lbl-sm">ListUnitsByPatterns</text>
+  <text x="425" y="130" text-anchor="middle" class="lbl-mut">load / active / sub / obj path</text>
+  <rect x="300" y="200" width="250" height="40" class="call" rx="6"/>
+  <text x="425" y="220" text-anchor="middle" class="lbl-sm">(same two calls, user bus)</text>
+  <text x="425" y="234" text-anchor="middle" class="lbl-mut">*.service pattern filter</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="240" y1="76"  x2="300" y2="64"  class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="240" y1="76"  x2="300" y2="116" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="240" y1="220" x2="300" y2="220" class="ln"/>
+
+  <rect x="640" y="110" width="300" height="80" class="merge" rx="6"/>
+  <text x="790" y="138" text-anchor="middle" class="lbl-blu">merge by (scope, unit)</text>
+  <text x="790" y="158" text-anchor="middle" class="lbl-mut">decode \xNN names</text>
+  <text x="790" y="174" text-anchor="middle" class="lbl-mut">sort by health rank</text>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="550" y1="90"  x2="640" y2="150" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="550" y1="116" x2="640" y2="150" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="550" y1="220" x2="640" y2="150" class="ln"/>
+</svg>
+</div>
+
+
+<h2 id="3-services-view">3. Services view</h2>
+
+<p>The Services list is the merged inventory. The same list backs both Services and Deps &ndash; only the preview pane differs between them.</p>
+
+<table>
+<thead>
+<tr>
+<th> Column </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>scp</code> </td>
+<td> Scope: system (cyan) vs user (orange) </td>
+</tr>
+<tr>
+<td> <code>state</code> </td>
+<td> Active state / sub-state, health-colored </td>
+</tr>
+<tr>
+<td> <code>file</code> </td>
+<td> File enablement (enabled / disabled / static / &hellip;), colored </td>
+</tr>
+<tr>
+<td> <code>unit</code> </td>
+<td> Decoded unit name </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Selecting a unit previews its actual on-disk definition. The daemon resolves the unit&rsquo;s object path (via <code>LoadUnit</code>), reads the <code>FragmentPath</code>, <code>SourcePath</code>, <code>Following</code>, and <code>DropInPaths</code> properties over the bus, and dumps each of those files &ndash; so the preview is the real fragment plus its drop-ins, not a synthesized summary.</p>
+
+<p><figure class="screenshot">
+  <img src="img/systemd-services.png" alt="Lulo SYSTEMD Services view with unit list and fragment preview">
+  <figcaption>The Services view: merged system + user inventory on the left, the resolved unit fragment and drop-ins previewed on the right.</figcaption>
+</figure></p>
+
+<h2 id="4-deps-view-real-reverse-dependencies">4. Deps view: real reverse dependencies</h2>
+
+<p>The Deps view is the technical standout. Rather than parsing <code>systemctl list-dependencies --reverse</code>, it asks systemd&rsquo;s Unit interface directly for the <strong>inverse</strong> of every dependency relation &ndash; reading twelve reverse-relation properties over the bus:</p>
+
+<p><code>RequiredBy</code>, <code>RequisiteOf</code>, <code>WantedBy</code>, <code>BoundBy</code>, <code>UpheldBy</code>, <code>ConsistsOf</code>, <code>TriggeredBy</code>, <code>OnSuccessOf</code>, <code>OnFailureOf</code>, <code>ReloadPropagatedFrom</code>, <code>StopPropagatedFrom</code>, <code>ConflictedBy</code>.</p>
+
+<p>Each list is sorted and printed under a <code># &lt;Property&gt;</code> header, with dependency lines colored by unit suffix (<code>.target</code>, <code>.service</code>, <code>.socket</code>, <code>.timer</code>). The result is the full reverse closure across all twelve relation types in a single pass &ndash; the answer to &ldquo;what else depends on this, and how?&rdquo; before you change or remove a unit.</p>
+
+<h2 id="5-config-view">5. Config view</h2>
+
+<p>The Config view lists <code>.conf</code> (and <code>.conf.pacnew</code>) files under <code>/etc/systemd</code>, scanned lazily only when you enter the view. <code>.pacnew</code> files &ndash; pending package-manager config updates &ndash; are highlighted in orange so you notice config that needs reconciling. Selecting a file previews its contents with <code>key=value</code> lines colored.</p>
+
+<h2 id="6-editing-and-snapshots">6. Editing and snapshots</h2>
+
+<p><code>SYSTEMD</code> uses the shared external-editor handoff exclusively &ndash; there is no inline editing. The edit path is the selected unit&rsquo;s <code>FragmentPath</code> (in Services / Deps) or the config-row path (in Config). Pressing <code>i</code> opens it in <code>$VISUAL</code> / <code>$EDITOR</code>; privileged writes are committed through <code>lulod-system</code>&rsquo;s atomic, allowlist-scoped edit protocol, so editing a unit under <code>/etc/systemd</code> or <code>/usr/lib/systemd</code> never requires the TUI itself to run as root.</p>
+
+<p>The cached snapshot carries the merged rows plus three separate preview buffers &ndash; one each for the Services fragment, the Deps closure, and the Config file &ndash; so switching views does not re-fetch. The unit list refreshes on a TTL; the preview is re-rendered cheaply when the selection moves.</p>
+
+<h3 id="current-scope">Current scope</h3>
+
+<table>
+<thead>
+<tr>
+<th> What exists today </th>
+<th> Not the main workflow yet </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> Browse merged system + user units </td>
+<td> Broad start / stop / restart lifecycle from the TUI </td>
+</tr>
+<tr>
+<td> Inspect reverse-dependency closures </td>
+<td> A full <code>systemctl</code> replacement </td>
+</tr>
+<tr>
+<td> Inspect and edit unit and config files </td>
+<td> Enable / disable as a polished end-user flow </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="7-see-also">7. See also</h2>
+
+<ul>
+<li><a href="cgroups.gen.html">Cgroups View</a> &ndash; the slices and resource directives these units declare</li>
+<li><a href="scheduler.gen.html">Scheduler</a> &ndash; <code>unit</code> and <code>slice</code> matchers source from systemd</li>
+<li><a href="udev.gen.html">Udev View</a></li>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

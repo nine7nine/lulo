@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lulo -- Udev View</title>
+<style>
+  :root {
+    --bg: #1a1b26; --fg: #c0caf5; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68;
+    --surface: #24283b; --border: #3b4261; --muted: #8c92b3;
+    --purple: #bb9af7; --orange: #ff9e64; --cyan: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg); color: var(--fg);
+    max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+    line-height: 1.7;
+  }
+  .page-nav {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+  .page-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(36, 40, 59, 0.9);
+    color: var(--accent);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .page-nav a:hover {
+    background: var(--surface);
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  h1 { color: var(--accent); font-size: 1.5rem; margin: 1.5rem 0 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.2rem; margin: 2rem 0 0.75rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--yellow); font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  h4 { color: var(--cyan); font-size: 0.95rem; margin: 1rem 0 0.4rem; }
+  p, li { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 0.75rem 0 1rem; font-size: 0.8rem;
+  }
+  th, td {
+    padding: 0.4rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg); }
+  code {
+    background: var(--surface); padding: 0.15rem 0.4rem;
+    border-radius: 3px; font-size: 0.82rem; color: var(--cyan);
+  }
+  pre {
+    background: var(--surface); padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    border: 1px solid var(--border);
+  }
+  pre code {
+    display: block; background: transparent; padding: 0;
+    font-size: 0.8rem; color: inherit;
+  }
+  pre code.hljs,
+  code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+  blockquote {
+    background: var(--surface); border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+  }
+  blockquote strong { color: var(--yellow); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  strong { color: var(--fg); }
+  em { color: var(--muted); font-style: italic; }
+  .diagram-container {
+    display: flex; justify-content: center;
+    margin: 1.25rem auto 1.5rem; padding: 0.75rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    display: block;
+    width: 100% !important;
+    max-width: 100%;
+    height: auto !important;
+    margin: 0 auto;
+    flex: 0 0 auto;
+  }
+  figure.screenshot {
+    margin: 1.25rem auto 1.5rem;
+    padding: 0.6rem;
+    background: rgba(36, 40, 59, 0.55);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  figure.screenshot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  figure.screenshot figcaption {
+    color: var(--muted); font-size: 0.78rem;
+    text-align: center; margin-top: 0.5rem;
+  }
+</style>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+</head><body>
+<div class="page-nav"><a href="index.html">Docs Home</a></div>
+<h1 id="lulo--udev-view">Lulo &ndash; Udev View</h1>
+
+<p>The <code>UDEV</code> page brings rule files, the hardware database, and live device records into one surface &ndash; and it does so entirely by reading the filesystem, including the resolved device state in <code>/run/udev/data</code>, with no libudev dependency.</p>
+
+<h2 id="table-of-contents">Table of Contents</h2>
+
+<ol>
+<li><a href="#1-what-the-page-shows">What the page shows</a></li>
+<li><a href="#2-three-views-three-filesystem-sources">Three views, three filesystem sources</a></li>
+<li><a href="#3-rules-and-hwdb">Rules and Hwdb</a></li>
+<li><a href="#4-devices-reading-the-udev-runtime-database">Devices: reading the udev runtime database</a></li>
+<li><a href="#5-editing">Editing</a></li>
+<li><a href="#6-see-also">See also</a></li>
+</ol>
+
+
+<hr />
+
+<h2 id="1-what-the-page-shows">1. What the page shows</h2>
+
+<p><code>UDEV</code> is an inspection and configuration surface for device handling. Like the cgroups, systemd, and tune pages it runs on the client/daemon split: a backend thread requests a snapshot from <code>lulod</code>, which gathers the data and caches it (see <a href="process-model-ipc.gen.html">Process Model &amp; IPC</a>).</p>
+
+<table>
+<thead>
+<tr>
+<th> Subview </th>
+<th> Purpose </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>Rules</code> </td>
+<td> Installed udev <code>.rules</code> files </td>
+</tr>
+<tr>
+<td> <code>Hwdb</code> </td>
+<td> Installed <code>.hwdb</code> hardware-database files </td>
+</tr>
+<tr>
+<td> <code>Devices</code> </td>
+<td> Live device records from udev&rsquo;s runtime state </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="2-three-views-three-filesystem-sources">2. Three views, three filesystem sources</h2>
+
+<p>Each view is a directory scan or file parse &ndash; there is no <code>udevadm</code> subprocess and no libudev linkage.</p>
+
+<div class="diagram-container">
+<svg width="100%" viewBox="0 0 980 260" xmlns="http://www.w3.org/2000/svg" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+  <style>
+    .bg      { fill: #1a1b26; }
+    .view    { fill: #1a2235; stroke: #7aa2f7; stroke-width: 1.5; }
+    .src     { fill: #1f2535; stroke: #565f89; stroke-width: 1; }
+    .lbl-sm  { fill: #c0caf5; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .lbl-mut { fill: #a9b1d6; font-size: 9px;  font-family: 'JetBrains Mono', monospace; }
+    .lbl-blu { fill: #7aa2f7; font-size: 11px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+    .ln      { stroke: #7dcfff; stroke-width: 1.4; fill: none; }
+    .title   { fill: #7aa2f7; font-size: 14px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+  </style>
+  <rect x="0" y="0" width="980" height="260" class="bg" rx="6"/>
+  <text x="490" y="26" text-anchor="middle" class="title">UDEV: filesystem-only data sources</text>
+
+  <rect x="40"  y="56" width="270" height="48" class="view" rx="6"/>
+  <text x="175" y="78"  text-anchor="middle" class="lbl-blu">Rules</text>
+  <text x="175" y="95"  text-anchor="middle" class="lbl-mut">.rules in rule_roots[]</text>
+  <rect x="355" y="56" width="270" height="48" class="view" rx="6"/>
+  <text x="490" y="78"  text-anchor="middle" class="lbl-blu">Hwdb</text>
+  <text x="490" y="95"  text-anchor="middle" class="lbl-mut">.hwdb in hwdb_roots[]</text>
+  <rect x="670" y="56" width="270" height="48" class="view" rx="6"/>
+  <text x="805" y="78"  text-anchor="middle" class="lbl-blu">Devices</text>
+  <text x="805" y="95"  text-anchor="middle" class="lbl-mut">/run/udev/data records</text>
+
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="175" y1="104" x2="175" y2="150" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="490" y1="104" x2="490" y2="150" class="ln"/>
+  <line stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" x1="805" y1="104" x2="805" y2="150" class="ln"/>
+
+  <rect x="40"  y="152" width="270" height="44" class="src" rx="6"/>
+  <text x="175" y="172" text-anchor="middle" class="lbl-sm">/etc/udev/rules.d, vendor dirs</text>
+  <text x="175" y="187" text-anchor="middle" class="lbl-mut">directory scan, suffix filter</text>
+  <rect x="355" y="152" width="270" height="44" class="src" rx="6"/>
+  <text x="490" y="172" text-anchor="middle" class="lbl-sm">/etc + /usr/lib udev hwdb.d</text>
+  <text x="490" y="187" text-anchor="middle" class="lbl-mut">directory scan, suffix filter</text>
+  <rect x="670" y="152" width="270" height="44" class="src" rx="6"/>
+  <text x="805" y="172" text-anchor="middle" class="lbl-sm">resolved device DB</text>
+  <text x="805" y="187" text-anchor="middle" class="lbl-mut">E:SUBSYSTEM / DEVNAME / P:syspath</text>
+</svg>
+</div>
+
+
+<h2 id="3-rules-and-hwdb">3. Rules and Hwdb</h2>
+
+<p>The Rules and Hwdb views are directory listings of their respective roots, filtered by filename suffix (<code>.rules</code>, <code>.hwdb</code>). Both show a two-column list:</p>
+
+<table>
+<thead>
+<tr>
+<th> Column </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>src</code> </td>
+<td> Source: <code>/etc</code> overrides (green) vs vendor (cyan) </td>
+</tr>
+<tr>
+<td> <code>file</code> </td>
+<td> File name </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Selecting a file previews a path / source header followed by a raw dump of the file. The two views share the same preview renderer, so a hwdb file reads exactly like a rule file &ndash; header plus contents. This makes the page a fast way to see how device naming, permissions, and properties are actually defined on this system across both vendor and local overrides.</p>
+
+<p><figure class="screenshot">
+  <img src="img/udev-rules.png" alt="Lulo UDEV Rules view with file list and rule preview">
+  <figcaption>The Rules view: installed rule files with source ranking, and the selected rule file previewed.</figcaption>
+</figure></p>
+
+<h2 id="4-devices-reading-the-udev-runtime-database">4. Devices: reading the udev runtime database</h2>
+
+<p>The Devices view is the novel part. Instead of enumerating sysfs or calling libudev, it parses udev&rsquo;s own <strong>resolved runtime database</strong> under <code>/run/udev/data</code>. Each file there is a per-device record that udev wrote after processing rules; Lulo reads it line by line, pulling out the subsystem, device node, and syspath.</p>
+
+<table>
+<thead>
+<tr>
+<th> Column </th>
+<th> Meaning </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> <code>subsystem</code> </td>
+<td> Device subsystem (cyan) </td>
+</tr>
+<tr>
+<td> <code>name</code> </td>
+<td> Derived from devnode, then devpath, then the record filename </td>
+</tr>
+<tr>
+<td> <code>devnode</code> </td>
+<td> Device node path </td>
+</tr>
+</tbody>
+</table>
+
+
+<p>Selecting a device previews a header (path / subsystem / devnode / syspath) followed by the raw udev-db record, sorted by subsystem then name. Reading <code>/run/udev/data</code> directly is what lets the page show the <em>resolved</em> device state &ndash; the properties udev actually assigned &ndash; without a libudev dependency or a sysfs crawl.</p>
+
+<h2 id="5-editing">5. Editing</h2>
+
+<p><code>UDEV</code> uses the shared external-editor handoff, the same model as <code>SCHED</code> and <code>SYSTEMD</code>. Rule and hwdb files expose an edit path; pressing <code>i</code> opens it in <code>$VISUAL</code> / <code>$EDITOR</code>, and privileged writes commit through <code>lulod-system</code>&rsquo;s atomic, allowlist-scoped edit protocol. The Devices view is <strong>not</strong> editable &ndash; the <code>/run/udev/data</code> records are runtime state, not user-authored config, so there is no edit path for them.</p>
+
+<table>
+<thead>
+<tr>
+<th> What exists today </th>
+<th> Not the main workflow yet </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td> Browse rule and hwdb files </td>
+<td> Rule creation / deletion as a TUI-first flow </td>
+</tr>
+<tr>
+<td> Inspect live device records </td>
+<td> High-level device action tooling </td>
+</tr>
+<tr>
+<td> Edit rule and hwdb files </td>
+<td> A full <code>udevadm</code> replacement </td>
+</tr>
+</tbody>
+</table>
+
+
+<h2 id="6-see-also">6. See also</h2>
+
+<ul>
+<li><a href="systemd.gen.html">Systemd View</a></li>
+<li><a href="cgroups.gen.html">Cgroups View</a></li>
+<li><a href="tune.gen.html">Tune View</a> &ndash; kernel and pseudo-file tuning</li>
+<li><a href="architecture.gen.html">Architecture Overview</a></li>
+</ul>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("pre code").forEach(function (block) {
+    hljs.highlightElement(block);
+  });
+});
+</script>
+</body></html>

@@ -15,15 +15,60 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <systemd/sd-bus.h>
+
 #ifndef LULO_HELPERDIR
 #define LULO_HELPERDIR ""
 #endif
+
+/* Probe the session bus for the compositor that is actually running right now.
+ * This is authoritative in a way environment variables are not: a systemd user
+ * drop-in can carry a stale XDG_CURRENT_DESKTOP / LULOD_FOCUS_PROVIDER snapshot
+ * captured under a previous desktop session, which would otherwise mis-select
+ * the provider after a GNOME<->KDE switch. Returns "kde", "gnome", or NULL when
+ * neither compositor owns its well-known name (or the bus is unavailable). */
+static const char *focus_provider_from_session_bus(void)
+{
+    static const struct {
+        const char *name;
+        const char *provider;
+    } compositors[] = {
+        { "org.kde.KWin",    "kde" },
+        { "org.gnome.Shell", "gnome" },
+    };
+    sd_bus *bus = NULL;
+    const char *provider = NULL;
+
+    if (sd_bus_open_user(&bus) < 0) return NULL;
+
+    for (size_t i = 0; i < sizeof(compositors) / sizeof(compositors[0]); i++) {
+        sd_bus_error err = SD_BUS_ERROR_NULL;
+        sd_bus_message *reply = NULL;
+        int has_owner = 0;
+
+        if (sd_bus_call_method(bus,
+                "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                "org.freedesktop.DBus", "NameHasOwner",
+                &err, &reply, "s", compositors[i].name) >= 0 &&
+            sd_bus_message_read(reply, "b", &has_owner) >= 0 && has_owner) {
+            provider = compositors[i].provider;
+        }
+
+        sd_bus_error_free(&err);
+        sd_bus_message_unref(reply);
+        if (provider) break;
+    }
+
+    sd_bus_unref(bus);
+    return provider;
+}
 
 static const char *focus_provider_from_env(void)
 {
     const char *override = getenv("LULOD_FOCUS_PROVIDER");
     const char *session_type;
     const char *wayland_display;
+    const char *bus_provider;
     const char *desktop_vars[] = {
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
@@ -45,6 +90,14 @@ static const char *focus_provider_from_env(void)
         (!wayland_display || !*wayland_display)) {
         return NULL;
     }
+
+    /* Prefer the compositor actually present on the session bus; this
+     * self-corrects across desktop switches even when cached env vars are
+     * stale. Fall back to the env heuristic only when the bus probe is
+     * inconclusive (e.g. the bus is unreachable). */
+    bus_provider = focus_provider_from_session_bus();
+    if (bus_provider) return bus_provider;
+
     for (size_t i = 0; i < sizeof(desktop_vars) / sizeof(desktop_vars[0]); i++) {
         const char *value = getenv(desktop_vars[i]);
 

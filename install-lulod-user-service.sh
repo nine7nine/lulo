@@ -31,30 +31,17 @@ escape_systemd_env() {
   printf '%s' "$value"
 }
 
+# Provider baked into the unit drop-in. Default to "auto" so lulod detects the
+# running compositor from the session bus at each start, keeping the GNOME<->KDE
+# switch self-correcting instead of freezing an install-time snapshot. An
+# explicit LULOD_FOCUS_PROVIDER in the calling environment is honored verbatim
+# (kde / gnome / none / auto).
 detect_focus_provider() {
-  local combined=""
-  local vars=(
-    "${LULOD_FOCUS_PROVIDER-}"
-    "${XDG_CURRENT_DESKTOP-}"
-    "${XDG_SESSION_DESKTOP-}"
-    "${DESKTOP_SESSION-}"
-    "${KDE_FULL_SESSION-}"
-    "${KDE_SESSION_VERSION-}"
-  )
-
   if [[ -n "${LULOD_FOCUS_PROVIDER-}" ]]; then
     printf '%s' "$LULOD_FOCUS_PROVIDER"
-    return
+  else
+    printf 'auto'
   fi
-
-  combined="${vars[*]}"
-  shopt -s nocasematch
-  if [[ "$combined" == *kde* || "$combined" == *plasma* ]]; then
-    printf 'kde'
-  elif [[ "$combined" == *gnome* ]]; then
-    printf 'gnome'
-  fi
-  shopt -u nocasematch
 }
 
 if [[ -x "$bindir/lulod" && -d "$datadir" ]]; then

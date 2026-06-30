@@ -16,12 +16,7 @@ full container width with a rounded border.
 | `sched-live.png` | scheduler | SCHED &rarr; Live showing resolved per-process policy |
 | `tune-explore.png` | tune | TUNE &rarr; Explore over /proc/sys with a staged value |
 | `auth-overlay.png` | process-model-ipc | The RW-mode password prompt overlay inside the TUI |
-
-Pending (not yet wired into a page; add once available):
-
-| File | Page | Suggested shot |
-| --- | --- | --- |
-| `focus-boost.png` | focus-providers | SCHED &rarr; Live with the focused app boosted (needs a working focus provider) |
+| `focus-boost.png` | focus-providers | SCHED &rarr; Live with the focused app resolved to the focus profile |
 
 Filenames are referenced from the `.md` sources; if you rename a file, update the
 matching `<img src="img/...">` in that page and re-run `./md2html.sh <page>.md`.

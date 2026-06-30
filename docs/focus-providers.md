@@ -136,6 +136,11 @@ Putting it together, a focus change travels from the compositor to an applied sc
 4. `lulod-system` re-collects metadata for the PID, **verifies the start-time matches** (a PID-reuse guard), records the focus target (PID, comm, exe, unit, slice, cgroup), and runs an immediate rescan.
 5. During the scan, any process matching that target by PID, **unit, or cgroup** receives `focus_profile` -- so the entire focused app's cgroup is boosted, not just the one window-owning thread. See [Scheduler](scheduler.gen.html) for the resolution detail.
 
+<figure class="screenshot">
+  <img src="img/focus-boost.png" alt="SCHED Live view with the focused app resolved to the focus profile under KDE">
+  <figcaption>SCHED &rarr; Live with KDE focus active: the focused app (chiguiro, pid 5047) resolves to the <code>focused</code> profile, and the status bar reads <code>focused kde:chiguiro(5047)</code>.</figcaption>
+</figure>
+
 ## 7. Resilience and fail-safe
 
 The monitor is built to fail safe. When a helper dies, EOFs, or errors, it closes the fd, reaps the child, schedules a restart (2-second backoff), and **commits PID 0** -- so a focused profile is *withdrawn* rather than left applied to a stale window. The same zero-on-vanish behavior happens when the GNOME bus name disappears. Reported PIDs are de-duplicated by `(pid, start_time)` and verified to still exist before a change is reported, guarding against PID reuse at the monitor level as well.

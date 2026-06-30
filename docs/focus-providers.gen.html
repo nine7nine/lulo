@@ -292,6 +292,11 @@
 </ol>
 
 
+<p><figure class="screenshot">
+  <img src="img/focus-boost.png" alt="SCHED Live view with the focused app resolved to the focus profile under KDE">
+  <figcaption>SCHED &rarr; Live with KDE focus active: the focused app (chiguiro, pid 5047) resolves to the <code>focused</code> profile, and the status bar reads <code>focused kde:chiguiro(5047)</code>.</figcaption>
+</figure></p>
+
 <h2 id="7-resilience-and-fail-safe">7. Resilience and fail-safe</h2>
 
 <p>The monitor is built to fail safe. When a helper dies, EOFs, or errors, it closes the fd, reaps the child, schedules a restart (2-second backoff), and <strong>commits PID 0</strong> &ndash; so a focused profile is <em>withdrawn</em> rather than left applied to a stale window. The same zero-on-vanish behavior happens when the GNOME bus name disappears. Reported PIDs are de-duplicated by <code>(pid, start_time)</code> and verified to still exist before a change is reported, guarding against PID reuse at the monitor level as well.</p>
